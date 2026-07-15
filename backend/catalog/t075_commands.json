@@ -1,0 +1,19 @@
+[
+  {
+    "code": "DID",
+    "name": "アクティブタスク分配識別子設定",
+    "description": "分配処理ツールの分配識別子を設定します。カメラ番号・行番号の0は指定なしです。",
+    "syntax": "DID[CC][RR][Text]",
+    "category": "tool",
+    "tool_id": "T075",
+    "tool_name": "分配処理",
+    "response_timing": "after",
+    "has_result": false,
+    "example": "DID0105test001",
+    "arguments": [
+      {"key": "camera", "label": "カメラ番号", "type": "integer", "digits": 2, "min": 0, "max": 8},
+      {"key": "line", "label": "行番号", "type": "integer", "digits": 2, "line_number": true, "min": 0, "max": 999},
+      {"key": "identifier", "label": "分配識別子", "type": "string", "min_length": 1, "max_length": 255}
+    ]
+  }
+]

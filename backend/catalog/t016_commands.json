@@ -1,0 +1,50 @@
+[
+  {
+    "code": "MAA",
+    "name": "アクティブタスク自動文字教示",
+    "description": "指定した文字検査ツールで、自動的に文字モデルの切り出し処理を行います。",
+    "syntax": "MAA[CC][RR]",
+    "category": "tool",
+    "tool_id": "T016",
+    "tool_name": "文字検査",
+    "response_timing": "after",
+    "has_result": false,
+    "example": "MAA0105",
+    "arguments": [
+      {"key": "camera", "label": "カメラ番号", "type": "integer", "digits": 2, "min": 1, "max": 8},
+      {"key": "line", "label": "行番号", "type": "integer", "digits": 2, "line_number": true, "min": 1, "max": 999}
+    ]
+  },
+  {
+    "code": "MMA",
+    "name": "アクティブタスク手動文字教示",
+    "description": "指定した文字検査ツールの手動文字教示画面を表示します。",
+    "syntax": "MMA[CC][RR]",
+    "category": "tool",
+    "tool_id": "T016",
+    "tool_name": "文字検査",
+    "response_timing": "before",
+    "has_result": false,
+    "example": "MMA0105",
+    "arguments": [
+      {"key": "camera", "label": "カメラ番号", "type": "integer", "digits": 2, "min": 1, "max": 8},
+      {"key": "line", "label": "行番号", "type": "integer", "digits": 2, "line_number": true, "min": 1, "max": 999}
+    ]
+  },
+  {
+    "code": "MAC",
+    "name": "アクティブタスク全文字削除",
+    "description": "指定した文字検査ツールの文字モデルと位置決めモデルをすべて削除します。",
+    "syntax": "MAC[CC][RR]",
+    "category": "tool",
+    "tool_id": "T016",
+    "tool_name": "文字検査",
+    "response_timing": "after",
+    "has_result": false,
+    "example": "MAC0105",
+    "arguments": [
+      {"key": "camera", "label": "カメラ番号", "type": "integer", "digits": 2, "min": 1, "max": 8},
+      {"key": "line", "label": "行番号", "type": "integer", "digits": 2, "line_number": true, "min": 1, "max": 999}
+    ]
+  }
+]

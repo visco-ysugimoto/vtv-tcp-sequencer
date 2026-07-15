@@ -1,0 +1,66 @@
+[
+  {
+    "code": "DAA",
+    "name": "アクティブタスク自動基準画像登録",
+    "description": "指定したDefFinderの基準画像へ、コマンド実行時の画像を追加登録します。",
+    "syntax": "DAA[CC][RR]",
+    "category": "tool",
+    "tool_id": "T018",
+    "tool_name": "DefFinder",
+    "response_timing": "after",
+    "has_result": false,
+    "example": "DAA0105",
+    "arguments": [
+      {"key": "camera", "label": "カメラ番号", "type": "integer", "digits": 2, "min": 1, "max": 8},
+      {"key": "line", "label": "行番号", "type": "integer", "digits": 2, "line_number": true, "min": 1, "max": 999}
+    ]
+  },
+  {
+    "code": "DMA",
+    "name": "アクティブタスク手動基準画像登録",
+    "description": "指定したDefFinderの基準画像設定画面を表示します。",
+    "syntax": "DMA[CC][RR]",
+    "category": "tool",
+    "tool_id": "T018",
+    "tool_name": "DefFinder",
+    "response_timing": "before",
+    "has_result": false,
+    "example": "DMA0105",
+    "arguments": [
+      {"key": "camera", "label": "カメラ番号", "type": "integer", "digits": 2, "min": 1, "max": 8},
+      {"key": "line", "label": "行番号", "type": "integer", "digits": 2, "line_number": true, "min": 1, "max": 999}
+    ]
+  },
+  {
+    "code": "DLA",
+    "name": "アクティブタスク自動基準画像1回削除",
+    "description": "指定したDefFinderの基準画像を1回削除します。",
+    "syntax": "DLA[CC][RR]",
+    "category": "tool",
+    "tool_id": "T018",
+    "tool_name": "DefFinder",
+    "response_timing": "after",
+    "has_result": false,
+    "example": "DLA0105",
+    "arguments": [
+      {"key": "camera", "label": "カメラ番号", "type": "integer", "digits": 2, "min": 1, "max": 8},
+      {"key": "line", "label": "行番号", "type": "integer", "digits": 2, "line_number": true, "min": 1, "max": 999}
+    ]
+  },
+  {
+    "code": "DDA",
+    "name": "アクティブタスク基準画像全削除",
+    "description": "指定したDefFinderの基準画像をすべて削除します。",
+    "syntax": "DDA[CC][RR]",
+    "category": "tool",
+    "tool_id": "T018",
+    "tool_name": "DefFinder",
+    "response_timing": "after",
+    "has_result": false,
+    "example": "DDA0105",
+    "arguments": [
+      {"key": "camera", "label": "カメラ番号", "type": "integer", "digits": 2, "min": 1, "max": 8},
+      {"key": "line", "label": "行番号", "type": "integer", "digits": 2, "line_number": true, "min": 1, "max": 999}
+    ]
+  }
+]

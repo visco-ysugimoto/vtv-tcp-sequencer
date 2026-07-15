@@ -1,0 +1,42 @@
+[
+  {
+    "code": "ICA",
+    "name": "キャリブレーションデータID設定",
+    "description": "アクティブタスクの指定した画像取込ツールに、キャリブレーションデータIDを設定します。カメラ番号または行番号の0は指定なし（全対象）です。",
+    "syntax": "ICA[CC][RR][II]",
+    "category": "tool",
+    "category_name": "ツール",
+    "tool_id": "T001",
+    "tool_name": "画像取込",
+    "response_timing": "after",
+    "has_result": false,
+    "example": "ICA021601",
+    "arguments": [
+      {
+        "key": "camera",
+        "label": "カメラ番号",
+        "type": "integer",
+        "digits": 2,
+        "min": 0,
+        "max": 8
+      },
+      {
+        "key": "line",
+        "label": "行番号",
+        "type": "integer",
+        "digits": 2,
+        "line_number": true,
+        "min": 0,
+        "max": 999
+      },
+      {
+        "key": "calibration_id",
+        "label": "キャリブレーションデータID",
+        "type": "integer",
+        "digits": 2,
+        "min": 0,
+        "max": 20
+      }
+    ]
+  }
+]

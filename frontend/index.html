@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VTV TCP Sequencer</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">VTV-9000 NETWORK I/O</p>
+      <h1>TCP Sequencer</h1>
+    </div>
+    <div class="header-actions">
+      <span id="connection-badge" class="badge disconnected">未接続</span>
+      <button id="settings-button" class="button secondary">接続設定</button>
+      <button id="run-button" class="button primary">▶ 実行</button>
+      <button id="stop-button" class="button danger" disabled>■ 停止</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <aside class="palette panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">COMMANDS</p>
+          <h2>カード</h2>
+        </div>
+        <span id="catalog-count" class="count">0</span>
+      </div>
+      <label class="search">
+        <span>⌕</span>
+        <input id="command-search" type="search" placeholder="コマンドを検索">
+      </label>
+      <div class="palette-section">
+        <h3>制御</h3>
+        <div class="control-grid">
+          <button class="palette-card control" data-control="delay">⏱ 待機</button>
+          <button class="palette-card control" data-control="if">◇ 条件</button>
+          <button class="palette-card control" data-control="loop">↻ ループ</button>
+        </div>
+      </div>
+      <div class="palette-section grow">
+        <h3>通信コマンド</h3>
+        <div id="command-palette" class="command-list"></div>
+      </div>
+    </aside>
+
+    <section class="sequence panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">SEQUENCE</p>
+          <h2>実行シーケンス</h2>
+        </div>
+        <div class="compact-actions">
+          <button id="save-button" class="icon-button" title="JSON保存">保存</button>
+          <label class="icon-button file-button" title="JSON読込">
+            読込<input id="load-input" type="file" accept=".json">
+          </label>
+          <button id="clear-button" class="icon-button" title="すべて削除">クリア</button>
+        </div>
+      </div>
+      <div id="sequence-list" class="sequence-list drop-list" data-drop-root="true">
+        <div id="empty-state" class="empty-state">
+          <div class="empty-icon">＋</div>
+          <h3>カードを追加してください</h3>
+          <p>左のカードをクリックすると、ここに順番に追加されます。</p>
+        </div>
+      </div>
+    </section>
+
+    <aside class="monitor panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">MONITOR</p>
+          <h2>通信ログ</h2>
+        </div>
+        <div class="compact-actions">
+          <button id="export-log-button" class="icon-button">出力</button>
+          <button id="clear-log-button" class="icon-button">消去</button>
+        </div>
+      </div>
+      <div id="log" class="log" aria-live="polite">
+        <div class="log-empty">実行すると送受信内容が表示されます。</div>
+      </div>
+    </aside>
+  </main>
+
+  <dialog id="settings-dialog">
+    <form method="dialog" id="settings-form">
+      <div class="dialog-heading">
+        <div>
+          <p class="eyebrow">CONNECTION</p>
+          <h2>接続・プロトコル設定</h2>
+        </div>
+        <button value="cancel" class="close-button" aria-label="閉じる">×</button>
+      </div>
+      <div class="form-section">
+        <h3>接続先</h3>
+        <div class="form-grid three">
+          <label>装置 IP<input id="host" required placeholder="192.168.0.10"></label>
+          <label>ポート<input id="port" type="number" min="1" max="65535" value="55555"></label>
+          <label>タイムアウト（秒）<input id="timeout" type="number" min="0.1" max="300" step="0.1" value="5"></label>
+        </div>
+      </div>
+      <div class="form-section">
+        <h3>プロトコル</h3>
+        <div class="form-grid three">
+          <label>入力終端<select id="input-terminator"><option value="CR">CR</option></select></label>
+          <label>出力終端<select id="output-terminator"><option value="CR">CR</option><option value="CRLF">CR/LF</option></select></label>
+          <label>セパレータ<select id="separator">
+            <option value="space">スペース</option><option value="comma">カンマ</option>
+            <option value="tab">タブ</option><option value="underscore">アンダースコア</option>
+            <option value="hyphen">ハイフン</option><option value="none">なし</option>
+          </select></label>
+          <label>文字エンコード<select id="encoding"><option value="cp932">SJIS</option><option value="utf-8">UTF-8</option></select></label>
+          <label>行番号の桁数<select id="line-digits"><option value="2">2 (01–99)</option><option value="3">3 (001–999)</option></select></label>
+        </div>
+        <div class="check-grid">
+          <label><input id="header-separator" type="checkbox"> ヘッダにセパレータ</label>
+          <label><input id="footer-separator" type="checkbox"> フッタにセパレータ</label>
+          <label><input id="checksum" type="checkbox" checked> チェックサムを検証</label>
+          <label><input id="input-response" type="checkbox" checked> AK/NK/ERを受信</label>
+        </div>
+      </div>
+      <div id="connection-test-result" class="test-result"></div>
+      <div class="dialog-actions">
+        <button id="test-button" type="button" class="button secondary">接続テスト</button>
+        <button id="apply-settings" value="default" class="button primary">設定を保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="log-export-dialog" class="small-dialog">
+    <form method="dialog" id="log-export-form">
+      <div class="dialog-heading">
+        <div>
+          <p class="eyebrow">EXPORT</p>
+          <h2>通信ログを出力</h2>
+        </div>
+        <button value="cancel" class="close-button" aria-label="閉じる">×</button>
+      </div>
+      <div class="form-section">
+        <div class="form-grid">
+          <label>ファイル形式
+            <select id="log-export-format">
+              <option value="csv">CSV（表計算ソフト向け）</option>
+              <option value="txt">TXT（テキストログ）</option>
+            </select>
+          </label>
+        </div>
+        <div class="check-grid single">
+          <label><input id="log-export-timestamp" type="checkbox" checked> 通信時刻を含める</label>
+        </div>
+        <p class="export-note">表示中のログをすべてUTF-8で保存します。</p>
+      </div>
+      <div class="dialog-actions">
+        <button value="cancel" class="button secondary">キャンセル</button>
+        <button id="download-log-button" value="default" class="button primary">ダウンロード</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>

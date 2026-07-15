@@ -1,0 +1,81 @@
+[
+  {
+    "code": "NAA",
+    "name": "アクティブタスク自動基準画像登録",
+    "description": "指定したMatrixDefFinder／SegmentDefFinderの検査点または分割領域へ基準画像を追加登録します。カメラ・行・領域番号の0は指定なしです。",
+    "syntax": "NAA[CC][RR][N][YYY][XXX]",
+    "category": "tool",
+    "tool_id": "T056/T058",
+    "tool_name": "MatrixDefFinder／SegmentDefFinder",
+    "response_timing": "after",
+    "has_result": false,
+    "example": "NAA01051002003",
+    "arguments": [
+      {"key": "camera", "label": "カメラ番号", "type": "integer", "digits": 2, "min": 0, "max": 8},
+      {"key": "line", "label": "行番号", "type": "integer", "digits": 2, "line_number": true, "min": 0, "max": 999},
+      {
+        "key": "allow_search_ng",
+        "label": "サーチNGでも登録",
+        "type": "enum",
+        "options": [
+          {"value": "0", "label": "OFF"},
+          {"value": "1", "label": "ON"}
+        ]
+      },
+      {"key": "region_row", "label": "検査点／分割領域 行番号（T058は0～128）", "type": "integer", "digits": 3, "min": 0, "max": 256},
+      {"key": "region_column", "label": "検査点／分割領域 列番号（T058は0～128）", "type": "integer", "digits": 3, "min": 0, "max": 256}
+    ]
+  },
+  {
+    "code": "NMA",
+    "name": "アクティブタスク手動基準画像登録",
+    "description": "指定したMatrixDefFinder／SegmentDefFinderの検査設定画面を表示します。",
+    "syntax": "NMA[CC][RR]",
+    "category": "tool",
+    "tool_id": "T056/T058",
+    "tool_name": "MatrixDefFinder／SegmentDefFinder",
+    "response_timing": "before",
+    "has_result": false,
+    "example": "NMA0105",
+    "arguments": [
+      {"key": "camera", "label": "カメラ番号", "type": "integer", "digits": 2, "min": 0, "max": 8},
+      {"key": "line", "label": "行番号", "type": "integer", "digits": 2, "line_number": true, "min": 0, "max": 999}
+    ]
+  },
+  {
+    "code": "NLA",
+    "name": "アクティブタスク自動基準画像1回削除",
+    "description": "指定したMatrixDefFinder／SegmentDefFinderの検査点または分割領域の基準画像を1回削除します。",
+    "syntax": "NLA[CC][RR][YYY][XXX]",
+    "category": "tool",
+    "tool_id": "T056/T058",
+    "tool_name": "MatrixDefFinder／SegmentDefFinder",
+    "response_timing": "after",
+    "has_result": false,
+    "example": "NLA0105002003",
+    "arguments": [
+      {"key": "camera", "label": "カメラ番号", "type": "integer", "digits": 2, "min": 0, "max": 8},
+      {"key": "line", "label": "行番号", "type": "integer", "digits": 2, "line_number": true, "min": 0, "max": 999},
+      {"key": "region_row", "label": "検査点／分割領域 行番号（T058は0～128）", "type": "integer", "digits": 3, "min": 0, "max": 256},
+      {"key": "region_column", "label": "検査点／分割領域 列番号（T058は0～128）", "type": "integer", "digits": 3, "min": 0, "max": 256}
+    ]
+  },
+  {
+    "code": "NDA",
+    "name": "アクティブタスク自動基準画像全削除",
+    "description": "指定したMatrixDefFinder／SegmentDefFinderの検査点または分割領域の基準画像をすべて削除します。",
+    "syntax": "NDA[CC][RR][YYY][XXX]",
+    "category": "tool",
+    "tool_id": "T056/T058",
+    "tool_name": "MatrixDefFinder／SegmentDefFinder",
+    "response_timing": "after",
+    "has_result": false,
+    "example": "NDA0105002003",
+    "arguments": [
+      {"key": "camera", "label": "カメラ番号", "type": "integer", "digits": 2, "min": 0, "max": 8},
+      {"key": "line", "label": "行番号", "type": "integer", "digits": 2, "line_number": true, "min": 0, "max": 999},
+      {"key": "region_row", "label": "検査点／分割領域 行番号（T058は0～128）", "type": "integer", "digits": 3, "min": 0, "max": 256},
+      {"key": "region_column", "label": "検査点／分割領域 列番号（T058は0～128）", "type": "integer", "digits": 3, "min": 0, "max": 256}
+    ]
+  }
+]

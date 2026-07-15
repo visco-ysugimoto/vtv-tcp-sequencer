@@ -1,0 +1,6 @@
+-r requirements.txt
+httpx>=0.28
+pytest>=8.4
+pytest-asyncio>=1.0
+ruff>=0.12
+pyinstaller>=6.14

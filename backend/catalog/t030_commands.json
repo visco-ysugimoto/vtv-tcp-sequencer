@@ -1,0 +1,39 @@
+[
+  {
+    "code": "DFA",
+    "name": "アクティブタスク画像保存先設定／取得",
+    "description": "画像＋図形参照表示ツールの画像保存先を設定または取得します。取得時はフォルダ名を空欄にします。",
+    "syntax": "設定: DFA[CC][RR]0[Path] ／ 取得: DFA[CC][RR]1",
+    "category": "tool",
+    "tool_id": "T030",
+    "tool_name": "画像＋図形参照表示",
+    "response_timing": "after",
+    "has_result": false,
+    "result_condition": {"key": "mode", "equals": "1"},
+    "result_mode": "until_idle",
+    "example": "DFA01160C:\\temp\\test001",
+    "arguments": [
+      {"key": "camera", "label": "カメラ番号", "type": "integer", "digits": 2, "min": 0, "max": 8},
+      {"key": "line", "label": "行番号", "type": "integer", "digits": 2, "line_number": true, "min": 0, "max": 999},
+      {
+        "key": "mode",
+        "label": "動作",
+        "type": "enum",
+        "options": [
+          {"value": "0", "label": "保存先を設定"},
+          {"value": "1", "label": "保存先を取得"}
+        ]
+      },
+      {
+        "key": "path",
+        "label": "フォルダ名",
+        "type": "string",
+        "max_length": 200,
+        "optional": true,
+        "default": "",
+        "required_if": {"key": "mode", "equals": "0"},
+        "forbidden_if": {"key": "mode", "equals": "1"}
+      }
+    ]
+  }
+]

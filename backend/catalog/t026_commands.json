@@ -1,0 +1,24 @@
+[
+  {
+    "code": "KMA",
+    "name": "アクティブタスクモジュールパラメータ設定",
+    "description": "計測編集ツールの合成モジュールにある固定点座標を設定します。カメラ・行・モジュール番号の0は指定なしです。",
+    "syntax": "KMA[CC][RR],[t],[mm],[c],[NNN],[座標値X],[座標値Y]",
+    "category": "tool",
+    "tool_id": "T026",
+    "tool_name": "計測編集",
+    "response_timing": "after",
+    "has_result": false,
+    "example": "KMA0105,2,09,1,010,-20.2,+123.5",
+    "arguments": [
+      {"key": "camera", "label": "カメラ番号", "type": "integer", "digits": 2, "min": 0, "max": 8},
+      {"key": "line", "label": "行番号", "type": "integer", "digits": 2, "line_number": true, "min": 0, "max": 999},
+      {"key": "module_type", "label": "モジュール種類", "type": "enum", "prefix": ",", "options": [{"value": "2", "label": "合成モジュール"}]},
+      {"key": "module_id", "label": "モジュールID", "type": "enum", "prefix": ",", "options": [{"value": "09", "label": "固定点"}]},
+      {"key": "operation", "label": "処理", "type": "enum", "prefix": ",", "options": [{"value": "1", "label": "固定点座標設定"}]},
+      {"key": "module_number", "label": "モジュール番号", "type": "integer", "digits": 3, "min": 0, "max": 200, "prefix": ","},
+      {"key": "x", "label": "座標値X", "type": "number", "min": -99999, "max": 99999, "max_length": 15, "prefix": ","},
+      {"key": "y", "label": "座標値Y", "type": "number", "min": -99999, "max": 99999, "max_length": 15, "prefix": ","}
+    ]
+  }
+]

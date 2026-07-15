@@ -1,0 +1,30 @@
+[
+  {
+    "code": "MCA",
+    "name": "アクティブタスク座標系数設定",
+    "description": "マルチ座標系ツールの繰り返し数を設定します。カメラ番号・行番号の0は指定なしです。自由配置には使用できません。",
+    "syntax": "MCA[CC][RR][F][rrr][ccc]",
+    "category": "tool",
+    "tool_id": "T004",
+    "tool_name": "マルチ座標系",
+    "response_timing": "after",
+    "has_result": false,
+    "example": "MCA01052001030",
+    "arguments": [
+      {"key": "camera", "label": "カメラ番号", "type": "integer", "digits": 2, "min": 0, "max": 8},
+      {"key": "line", "label": "行番号", "type": "integer", "digits": 2, "line_number": true, "min": 0, "max": 999},
+      {
+        "key": "fixed_position",
+        "label": "固定位置",
+        "type": "enum",
+        "options": [
+          {"value": "0", "label": "始端固定"},
+          {"value": "1", "label": "両端固定"},
+          {"value": "2", "label": "中心固定"}
+        ]
+      },
+      {"key": "rows", "label": "行数", "type": "integer", "digits": 3, "min": 1, "max": 999},
+      {"key": "columns", "label": "列数", "type": "integer", "digits": 3, "min": 2, "max": 999}
+    ]
+  }
+]
