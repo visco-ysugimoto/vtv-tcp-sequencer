@@ -12,6 +12,8 @@ const state = {
   nextId: 1,
   logs: [],
   draggingId: null,
+  connectionVerified: false,
+  verifiedSettingsKey: "",
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -21,6 +23,7 @@ const escapeHtml = (value) => String(value).replace(
 
 async function initialize() {
   restoreSettings();
+  restoreConnectionState();
   applySettingsToForm();
   const response = await fetch("/api/catalog");
   state.catalog = await response.json();
@@ -419,10 +422,14 @@ function readSettingsForm() {
   };
 }
 
-function saveSettings(event) {
+async function saveSettings(event) {
   if (event.submitter?.value === "cancel") return;
   state.settings = readSettingsForm();
   localStorage.setItem("vtv-settings", JSON.stringify(state.settings));
+  await verifyConnectionSettings({
+    showMessage: true,
+    resultEl: $("#connection-test-result"),
+  });
 }
 
 function restoreSettings() {
@@ -442,23 +449,93 @@ function applySettingsToForm() {
   $("#input-response").checked = state.settings.input_response;
 }
 
-async function testConnection() {
-  const result = $("#connection-test-result");
-  result.className = "test-result"; result.textContent = "接続しています…";
+function settingsKey(settings) {
+  return `${settings.host}:${settings.port}`;
+}
+
+function markConnectionVerified(verified, settings) {
+  state.connectionVerified = verified;
+  state.verifiedSettingsKey = verified ? settingsKey(settings) : "";
+  localStorage.setItem(
+    "vtv-connection-verified",
+    JSON.stringify({
+      verified,
+      key: state.verifiedSettingsKey,
+    })
+  );
+}
+
+function restoreConnectionState() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("vtv-connection-verified"));
+    const key = settingsKey(state.settings);
+    if (saved?.verified && saved?.key === key && state.settings.host) {
+      state.connectionVerified = true;
+      state.verifiedSettingsKey = key;
+      setConnection("connected");
+    }
+  } catch (_) {}
+}
+
+function refreshConnectionBadge() {
+  if (state.running) return;
+  if (
+    state.connectionVerified
+    && state.verifiedSettingsKey === settingsKey(state.settings)
+  ) {
+    setConnection("connected");
+    return;
+  }
+  setConnection("disconnected");
+}
+
+async function verifyConnectionSettings({ showMessage = false, resultEl = null } = {}) {
+  const settings = readSettingsForm();
+  if (!settings.host) {
+    markConnectionVerified(false, settings);
+    refreshConnectionBadge();
+    if (showMessage && resultEl) {
+      resultEl.className = "test-result error";
+      resultEl.textContent = "装置 IP を入力してください。";
+    }
+    return false;
+  }
+  if (showMessage && resultEl) {
+    resultEl.className = "test-result";
+    resultEl.textContent = "接続しています…";
+  }
   setConnection("connecting");
   try {
     const response = await fetch("/api/test-connection", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(readSettingsForm()),
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || "接続できません");
+    markConnectionVerified(true, settings);
     setConnection("connected");
-    result.className = "test-result success"; result.textContent = "接続に成功しました。";
+    if (showMessage && resultEl) {
+      resultEl.className = "test-result success";
+      resultEl.textContent = "接続に成功しました。";
+    }
+    return true;
   } catch (error) {
-    setConnection("disconnected");
-    result.className = "test-result error"; result.textContent = error.message;
+    markConnectionVerified(false, settings);
+    refreshConnectionBadge();
+    if (showMessage && resultEl) {
+      resultEl.className = "test-result error";
+      resultEl.textContent = error.message;
+    }
+    return false;
   }
+}
+
+async function testConnection() {
+  await verifyConnectionSettings({
+    showMessage: true,
+    resultEl: $("#connection-test-result"),
+  });
 }
 
 function runSequence() {
@@ -494,8 +571,14 @@ function stopSequence() {
 
 function handleEvent(event) {
   if (event.type === "connection") {
-    setConnection(event.state);
-    if (event.state === "connecting") addLog("info", "SYS", `${event.message} に接続中`);
+    if (event.state === "connecting") {
+      setConnection("connecting");
+      addLog("info", "SYS", `${event.message} に接続中`);
+    } else if (event.state === "connected") {
+      setConnection("connected");
+    } else if (event.state === "disconnected") {
+      refreshConnectionBadge();
+    }
     if (event.state === "disconnected" && state.socket?.readyState === WebSocket.OPEN) {
       state.socket.close();
     }
@@ -532,6 +615,7 @@ function setRunning(running) {
   state.running = running;
   $("#run-button").disabled = running;
   $("#stop-button").disabled = !running;
+  if (!running) refreshConnectionBadge();
 }
 
 function addLog(css, kind, data) {
