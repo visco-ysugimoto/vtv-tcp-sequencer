@@ -445,6 +445,7 @@ function applySettingsToForm() {
 async function testConnection() {
   const result = $("#connection-test-result");
   result.className = "test-result"; result.textContent = "接続しています…";
+  setConnection("connecting");
   try {
     const response = await fetch("/api/test-connection", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -452,8 +453,10 @@ async function testConnection() {
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || "接続できません");
+    setConnection("connected");
     result.className = "test-result success"; result.textContent = "接続に成功しました。";
   } catch (error) {
+    setConnection("disconnected");
     result.className = "test-result error"; result.textContent = error.message;
   }
 }
