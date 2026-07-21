@@ -14,6 +14,7 @@ const state = {
   draggingId: null,
   connectionVerified: false,
   verifiedSettingsKey: "",
+  viewMode: "normal", // "normal" | "compact"
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -24,6 +25,7 @@ const escapeHtml = (value) => String(value).replace(
 async function initialize() {
   restoreSettings();
   restoreConnectionState();
+  restoreViewMode();
   applySettingsToForm();
   const response = await fetch("/api/catalog");
   state.catalog = await response.json();
@@ -55,7 +57,33 @@ function bindEvents() {
   $("#log-export-form").addEventListener("submit", exportLog);
   $("#save-button").addEventListener("click", saveSequence);
   $("#load-input").addEventListener("change", loadSequence);
+  $("#view-mode-button").addEventListener("click", toggleViewMode);
   bindDragDropEvents();
+}
+
+function restoreViewMode() {
+  try {
+    const saved = localStorage.getItem("vtv-view-mode");
+    if (saved === "compact" || saved === "normal") state.viewMode = saved;
+  } catch (_) {}
+  applyViewMode();
+}
+
+function applyViewMode() {
+  const sequenceList = $("#sequence-list");
+  sequenceList?.classList.toggle("compact-mode", state.viewMode === "compact");
+
+  const btn = $("#view-mode-button");
+  if (btn) btn.textContent = state.viewMode === "compact" ? "標準" : "コンパクト";
+}
+
+function toggleViewMode() {
+  if (state.running) return;
+  const next = state.viewMode === "compact" ? "normal" : "compact";
+  state.viewMode = next;
+  localStorage.setItem("vtv-view-mode", next);
+  applyViewMode();
+  renderSequence();
 }
 
 function renderPalette() {
@@ -117,46 +145,63 @@ function renderSequence() {
 }
 
 function stepHtml(step, nested = false) {
+  const isCompact = state.viewMode === "compact";
   if (step.type === "command") {
     const def = state.catalog.find((item) => item.code === step.command);
     const fields = (def.arguments || []).map((arg) => argumentField(step, arg)).join("");
     const raw = def.raw_arguments ? `
       <label>引数文字列<input data-field="raw" value="${escapeHtml(step.arguments.raw || "")}" placeholder="別資料の構文に従って入力"></label>` : "";
+    const compactSummary = commandCompactSummary(step, def);
     return `<article class="step-card generated-step" data-id="${step.id}">
       ${stepHeader(step, `<strong>${def.code}</strong>${escapeHtml(def.name)}${def.tool_name ? `<small class="tool-badge">${escapeHtml(def.tool_id)} ${escapeHtml(def.tool_name)}</small>` : ""}`, nested)}
-      <div class="step-body">${fields}${raw}
+      ${isCompact
+    ? (compactSummary ? `<div class="step-compact-row">${compactSummary}</div>` : "")
+    : `<div class="step-body">${fields}${raw}
         <p class="step-description">${escapeHtml(def.description || "")}${def.example ? `　例: ${escapeHtml(def.example)}` : ""}</p>
-      </div>
+      </div>`}
     </article>`;
   }
   if (step.type === "delay") {
+    const title = isCompact
+      ? `<strong>WAIT</strong>待機 ${step.milliseconds}ms`
+      : "<strong>WAIT</strong>待機";
     return `<article class="step-card control-step generated-step" data-id="${step.id}">
-      ${stepHeader(step, "<strong>WAIT</strong>待機", nested)}
-      <div class="step-body"><label>待機時間（ミリ秒）
+      ${stepHeader(step, title, nested)}
+      ${isCompact ? "" : `<div class="step-body"><label>待機時間（ミリ秒）
         <input data-field="milliseconds" type="number" min="0" max="3600000" value="${step.milliseconds}">
-      </label></div>
+      </label></div>`}
     </article>`;
   }
   if (step.type === "break") {
     return `<article class="step-card break-step generated-step" data-id="${step.id}">
       ${stepHeader(step, "<strong>BREAK</strong>最寄りのループを抜ける", nested)}
-      <div class="step-body">
+      ${isCompact ? "" : `<div class="step-body">
         <p class="step-description">このカードを実行すると、内側から最も近いループを終了します。</p>
-      </div>
+      </div>`}
     </article>`;
   }
   if (step.type === "loop") {
+    const title = isCompact
+      ? `<strong>LOOP</strong>×${step.count}`
+      : "<strong>LOOP</strong>指定回数くり返す";
     return `<article class="step-card control-step generated-step" data-id="${step.id}">
-      ${stepHeader(step, "<strong>LOOP</strong>指定回数くり返す", nested)}
-      <div class="step-body"><label>回数
+      ${stepHeader(step, title, nested)}
+      ${isCompact ? "" : `<div class="step-body"><label>回数
         <input data-field="count" type="number" min="1" max="10000" value="${step.count}">
-      </label></div>
+      </label></div>`}
       ${childArea(step, "steps", "くり返すカード")}
     </article>`;
   }
   return `<article class="step-card control-step generated-step" data-id="${step.id}">
-    ${stepHeader(step, "<strong>IF</strong>応答による条件分岐", nested)}
-    <div class="step-body">
+    ${stepHeader(step, (() => {
+      if (!isCompact) return "<strong>IF</strong>応答による条件分岐";
+      const sourceLabel = step.source === "status" ? "AK/NK/ER" : "受信全体";
+      const opLabel = step.operator === "equals" ? "等しい"
+        : step.operator === "contains" ? "含む"
+          : "含まない";
+      return `<strong>IF</strong>${sourceLabel} ${opLabel} ${escapeHtml(step.value)}`;
+    })(), nested)}
+    ${isCompact ? "" : `<div class="step-body">
       <label>判定対象<select data-field="source">
         <option value="status" ${step.source === "status" ? "selected" : ""}>AK / NK / ER</option>
         <option value="response" ${step.source === "response" ? "selected" : ""}>受信内容全体</option>
@@ -167,10 +212,22 @@ function stepHtml(step, nested = false) {
         <option value="not_contains" ${step.operator === "not_contains" ? "selected" : ""}>含まない</option>
       </select></label>
       <label>比較値<input data-field="value" value="${escapeHtml(step.value)}"></label>
-    </div>
+    </div>`}
     ${childArea(step, "then_steps", "条件に一致")}
     ${childArea(step, "else_steps", "条件に不一致")}
   </article>`;
+}
+
+function commandCompactSummary(step, def) {
+  const parts = [];
+  for (const arg of def.arguments || []) {
+    const value = step.arguments[arg.key];
+    if (value === undefined || value === null || value === "") continue;
+    parts.push(`${arg.label}:${value}`);
+    if (parts.length >= 3) break;
+  }
+  if (def.raw_arguments && step.arguments.raw) parts.push(`raw:${step.arguments.raw}`);
+  return parts.map((part) => `<span>${escapeHtml(part)}</span>`).join("");
 }
 
 function stepHeader(step, title, nested) {
@@ -198,6 +255,7 @@ function argumentField(step, arg) {
 }
 
 function childArea(step, key, label) {
+  const isCompact = state.viewMode === "compact";
   const controlOptions = `
     <optgroup label="制御カード">
       <option value="control:delay">WAIT｜待機</option>
@@ -213,9 +271,9 @@ function childArea(step, key, label) {
   return `<div class="nested-area" data-child="${key}">
     <h3>${label}</h3>
     <div class="nested-cards drop-list" data-parent-id="${step.id}" data-child-key="${key}">${(step[key] || []).map((child) => stepHtml(child, true)).join("")}</div>
-    <div class="nested-add"><select data-child-select="${key}">${controlOptions}${commandOptions}</select>
+    ${isCompact ? "" : `<div class="nested-add"><select data-child-select="${key}">${controlOptions}${commandOptions}</select>
       <button data-add-child="${key}" class="icon-button">＋ カード追加</button>
-    </div>
+    </div>`}
   </div>`;
 }
 
