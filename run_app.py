@@ -19,6 +19,9 @@ from backend.main import app
 HOST = "127.0.0.1"
 PORT = 8765
 URL = f"http://{HOST}:{PORT}"
+CATALOG_URL = f"{URL}/api/catalog"
+MUTEX_NAME = "Local\\VTV_TCP_Sequencer"
+_instance_mutex: int | None = None
 
 
 def _ensure_stdio() -> None:
@@ -79,11 +82,11 @@ def _profile_dir() -> Path:
     return path
 
 
-def _wait_for_server(timeout: float = 15.0) -> None:
+def _wait_for_server(url: str = URL, timeout: float = 15.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(URL, timeout=0.5) as response:
+            with urllib.request.urlopen(url, timeout=0.5) as response:
                 if 200 <= response.status < 500:
                     return
         except (urllib.error.URLError, TimeoutError, OSError):
@@ -91,10 +94,123 @@ def _wait_for_server(timeout: float = 15.0) -> None:
     raise TimeoutError(f"サーバーが {timeout:.0f} 秒以内に起動しませんでした")
 
 
-def _port_available(host: str, port: int) -> bool:
+def _port_listening(host: str, port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.5)
-        return sock.connect_ex((host, port)) != 0
+        return sock.connect_ex((host, port)) == 0
+
+
+def _is_our_server_running() -> bool:
+    try:
+        with urllib.request.urlopen(CATALOG_URL, timeout=0.5) as response:
+            return response.status == 200
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return False
+
+
+def _acquire_instance_lock() -> bool:
+    """True ならこのプロセスがサーバー担当。False なら別インスタンスがいる。"""
+    global _instance_mutex
+    if sys.platform != "win32":
+        return True
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    ERROR_ALREADY_EXISTS = 183
+    handle = kernel32.CreateMutexW(None, True, MUTEX_NAME)
+    if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+        kernel32.CloseHandle(handle)
+        return False
+    _instance_mutex = handle
+    return True
+
+
+def _release_instance_lock() -> None:
+    global _instance_mutex
+    if sys.platform != "win32" or _instance_mutex is None:
+        return
+    import ctypes
+
+    ctypes.windll.kernel32.CloseHandle(_instance_mutex)
+    _instance_mutex = None
+
+
+def _launch_browser(browser: Path) -> subprocess.Popen[bytes]:
+    return subprocess.Popen(
+        [
+            str(browser),
+            f"--app={URL}",
+            f"--user-data-dir={_profile_dir()}",
+            "--no-first-run",
+            "--no-default-browser-check",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _run_browser_session(browser: Path) -> None:
+    process = _launch_browser(browser)
+    try:
+        process.wait()
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+
+
+def _attach_to_existing_server(browser: Path) -> None:
+    deadline = time.monotonic() + 8.0
+    while time.monotonic() < deadline:
+        if _is_our_server_running():
+            _run_browser_session(browser)
+            return
+        time.sleep(0.15)
+    _message_box(
+        "VTV TCP Sequencer は起動処理中です。\n"
+        "少し待ってから再度 exe を実行してください。"
+    )
+    raise SystemExit(1)
+
+
+def _port_blocked_message() -> None:
+    _message_box(
+        f"ポート {PORT} は別のプログラムが使用中です。\n"
+        "タスクマネージャーで VTV_TCP_Sequencer.exe が残っていないか確認し、\n"
+        "終了してから再度起動してください。"
+    )
+
+
+def _run_server_and_browser(browser: Path) -> None:
+    config = uvicorn.Config(
+        app,
+        host=HOST,
+        port=PORT,
+        log_level="warning",
+        access_log=False,
+    )
+    server = uvicorn.Server(config)
+    server_thread = threading.Thread(target=server.run, name="uvicorn", daemon=False)
+    server_thread.start()
+
+    try:
+        _wait_for_server()
+    except TimeoutError as exc:
+        server.should_exit = True
+        server_thread.join(timeout=10)
+        _message_box(str(exc))
+        raise SystemExit(1) from exc
+
+    try:
+        _run_browser_session(browser)
+    finally:
+        server.should_exit = True
+        if hasattr(server, "force_exit"):
+            server.force_exit = True
+        server_thread.join(timeout=15)
 
 
 def main() -> None:
@@ -108,47 +224,21 @@ def main() -> None:
         )
         raise SystemExit(1)
 
-    if not _port_available(HOST, PORT):
-        _message_box(
-            f"ポート {PORT} は既に使用中です。\n"
-            "別の VTV TCP Sequencer が起動していないか確認してください。"
-        )
-        raise SystemExit(1)
-
-    config = uvicorn.Config(
-        app,
-        host=HOST,
-        port=PORT,
-        log_level="warning",
-        access_log=False,
-    )
-    server = uvicorn.Server(config)
-    server_thread = threading.Thread(target=server.run, name="uvicorn", daemon=True)
-    server_thread.start()
+    if not _acquire_instance_lock():
+        _attach_to_existing_server(browser)
+        return
 
     try:
-        _wait_for_server()
-    except TimeoutError as exc:
-        server.should_exit = True
-        _message_box(str(exc))
-        raise SystemExit(1) from exc
+        if _port_listening(HOST, PORT):
+            if _is_our_server_running():
+                _run_browser_session(browser)
+                return
+            _port_blocked_message()
+            raise SystemExit(1)
 
-    process = subprocess.Popen(
-        [
-            str(browser),
-            f"--app={URL}",
-            f"--user-data-dir={_profile_dir()}",
-            "--no-first-run",
-            "--no-default-browser-check",
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    try:
-        process.wait()
+        _run_server_and_browser(browser)
     finally:
-        server.should_exit = True
-        server_thread.join(timeout=5)
+        _release_instance_lock()
 
 
 if __name__ == "__main__":
