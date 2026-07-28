@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Protocol
 
 from .catalog import catalog_by_code, format_command
 from .models import (
@@ -11,11 +11,32 @@ from .models import (
     DelayStep,
     IfStep,
     LoopStep,
+    ProtocolSettings,
     SequenceStep,
 )
-from .protocol import CommandResult, ProtocolError, VtvTcpClient
+from .plc_link import PlcLinkClient
+from .protocol import (
+    CommandResult,
+    ProtocolError,
+    VtvTcpClient,
+    frame_outbound_command,
+)
 
 EventHandler = Callable[[dict[str, Any]], Awaitable[None]]
+
+
+class DeviceClient(Protocol):
+    settings: ProtocolSettings
+
+    async def send_command(
+        self,
+        command: str,
+        expect_result: bool = False,
+        result_mode: str = "single",
+        *,
+        tcp_code: str | None = None,
+        arguments: dict[str, Any] | None = None,
+    ) -> CommandResult: ...
 
 
 class SequenceStopped(RuntimeError):
@@ -26,10 +47,16 @@ class LoopBreak(RuntimeError):
     pass
 
 
+def create_client(settings: ProtocolSettings) -> VtvTcpClient | PlcLinkClient:
+    if settings.transport == "plclink":
+        return PlcLinkClient(settings)
+    return VtvTcpClient(settings)
+
+
 class SequenceEngine:
     def __init__(
         self,
-        client: VtvTcpClient,
+        client: DeviceClient,
         on_event: EventHandler,
         stop_event: asyncio.Event,
     ):
@@ -87,34 +114,58 @@ class SequenceEngine:
         if code not in self.catalog:
             raise ProtocolError(f"未定義のコマンドです: {code}")
         definition = self.catalog[code]
-        try:
-            command = format_command(
-                definition,
-                step.arguments,
-                self.client.settings.line_number_digits,
-            )
-        except ValueError as exc:
-            raise ProtocolError(str(exc)) from exc
+        transport = self.client.settings.transport
 
-        await self.on_event(
-            {
-                "type": "tx",
-                "index": index,
-                "command": command,
-                "display": command + "\\r",
-            }
-        )
-        expect_result = bool(definition.get("has_result"))
-        condition = definition.get("result_condition")
-        if condition:
-            expect_result = (
-                str(step.arguments.get(condition["key"])) == condition["equals"]
+        if transport == "plclink":
+            from .plc_link.commands import format_plclink_display, resolve_spec
+
+            spec = resolve_spec(code)
+            display = format_plclink_display(spec, step.arguments)
+            await self.on_event(
+                {
+                    "type": "tx",
+                    "index": index,
+                    "command": display,
+                    "display": display,
+                }
             )
-        result = await self.client.send_command(
-            command,
-            expect_result,
-            definition.get("result_mode", "single"),
-        )
+            result = await self.client.send_command(
+                display,
+                tcp_code=code,
+                arguments=step.arguments,
+            )
+        else:
+            try:
+                command = format_command(
+                    definition,
+                    step.arguments,
+                    self.client.settings.line_number_digits,
+                )
+            except ValueError as exc:
+                raise ProtocolError(str(exc)) from exc
+
+            framed = frame_outbound_command(command, self.client.settings)
+            await self.on_event(
+                {
+                    "type": "tx",
+                    "index": index,
+                    "command": framed,
+                    "display": framed + "\\r",
+                }
+            )
+            expect_result = bool(definition.get("has_result"))
+            condition = definition.get("result_condition")
+            if condition:
+                expect_result = (
+                    str(step.arguments.get(condition["key"]))
+                    == condition["equals"]
+                )
+            result = await self.client.send_command(
+                command,
+                expect_result,
+                definition.get("result_mode", "single"),
+            )
+
         self.last_result = result
         for response in result.responses:
             await self.on_event(

@@ -2,10 +2,14 @@ const state = {
   catalog: [],
   steps: [],
   settings: {
+    transport: "tcp",
     host: "", port: 55555, timeout: 5, input_terminator: "CR",
     output_terminator: "CR", separator: "space", header_separator: false,
     footer_separator: false, checksum: true, input_response: true,
     encoding: "cp932", line_number_digits: 2,
+    command_address: 4096, command_size: 64,
+    response_address: 8192, response_size: 64,
+    busy_address: 1024, byte_order: "high_low",
   },
   socket: null,
   running: false,
@@ -15,6 +19,11 @@ const state = {
   connectionVerified: false,
   verifiedSettingsKey: "",
   viewMode: "normal", // "normal" | "compact"
+  watchItems: [],
+  watchValues: {},
+  watchRunning: false,
+  watchTimer: null,
+  nextWatchId: 1,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -26,12 +35,14 @@ async function initialize() {
   restoreSettings();
   restoreConnectionState();
   restoreViewMode();
+  restoreWatchItems();
   applySettingsToForm();
   const response = await fetch("/api/catalog");
   state.catalog = await response.json();
   $("#catalog-count").textContent = state.catalog.length;
   renderPalette();
   renderSequence();
+  renderWatchList();
   bindEvents();
 }
 
@@ -44,6 +55,7 @@ function bindEvents() {
   });
   $("#settings-button").addEventListener("click", () => $("#settings-dialog").showModal());
   $("#settings-form").addEventListener("submit", saveSettings);
+  $("#transport").addEventListener("change", syncTransportUi);
   $("#test-button").addEventListener("click", testConnection);
   $("#run-button").addEventListener("click", runSequence);
   $("#stop-button").addEventListener("click", stopSequence);
@@ -58,6 +70,15 @@ function bindEvents() {
   $("#save-button").addEventListener("click", saveSequence);
   $("#load-input").addEventListener("change", loadSequence);
   $("#view-mode-button").addEventListener("click", toggleViewMode);
+  document.querySelectorAll("[data-monitor-tab]").forEach((button) => {
+    button.addEventListener("click", () => selectMonitorTab(button.dataset.monitorTab));
+  });
+  $("#add-watch-button").addEventListener("click", addWatchItem);
+  $("#start-watch-button").addEventListener("click", startWatch);
+  $("#stop-watch-button").addEventListener("click", () => stopWatch(false));
+  $("#watch-list").addEventListener("input", updateWatchItem);
+  $("#watch-list").addEventListener("change", updateWatchItem);
+  $("#watch-list").addEventListener("click", removeWatchItem);
   bindDragDropEvents();
 }
 
@@ -86,18 +107,214 @@ function toggleViewMode() {
   renderSequence();
 }
 
+function restoreWatchItems() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("vtv-plclink-watch-items"));
+    if (Array.isArray(saved)) state.watchItems = saved;
+  } catch (_) {}
+  const ids = state.watchItems
+    .map((item) => Number(String(item.id || "").replace("watch-", "")))
+    .filter(Number.isFinite);
+  state.nextWatchId = ids.length ? Math.max(...ids) + 1 : 1;
+}
+
+function saveWatchItems() {
+  localStorage.setItem("vtv-plclink-watch-items", JSON.stringify(state.watchItems));
+}
+
+function selectMonitorTab(tab) {
+  if (tab === "watch" && $("#watch-tab-button").disabled) return;
+  document.querySelectorAll("[data-monitor-tab]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.monitorTab === tab);
+  });
+  $("#monitor-log-panel").classList.toggle("hidden", tab !== "log");
+  $("#monitor-watch-panel").classList.toggle("hidden", tab !== "watch");
+}
+
+function addWatchItem() {
+  state.watchItems.push({
+    id: `watch-${state.nextWatchId++}`,
+    label: "",
+    device: "D",
+    address: 0,
+    format: "int32",
+    length: 8,
+    decimals: 3,
+  });
+  saveWatchItems();
+  renderWatchList();
+}
+
+function removeWatchItem(event) {
+  const button = event.target.closest("[data-watch-remove]");
+  if (!button) return;
+  state.watchItems = state.watchItems.filter((item) => item.id !== button.dataset.watchRemove);
+  delete state.watchValues[button.dataset.watchRemove];
+  saveWatchItems();
+  renderWatchList();
+}
+
+function updateWatchItem(event) {
+  const input = event.target.closest("[data-watch-field]");
+  if (!input) return;
+  const item = state.watchItems.find((candidate) => candidate.id === input.dataset.watchId);
+  if (!item) return;
+  const numeric = ["address", "length", "decimals"].includes(input.dataset.watchField);
+  item[input.dataset.watchField] = numeric ? Number(input.value) : input.value;
+  if (item.device === "M") item.format = "bit";
+  if (item.device === "D" && item.format === "bit") item.format = "int32";
+  saveWatchItems();
+  if (["device", "format"].includes(input.dataset.watchField)) renderWatchList();
+}
+
+function renderWatchList(changed = new Set()) {
+  const list = $("#watch-list");
+  if (!list) return;
+  if (!state.watchItems.length) {
+    list.innerHTML = '<div class="watch-empty">「＋追加」で監視アドレスを登録してください。</div>';
+    return;
+  }
+  list.innerHTML = state.watchItems.map((item) => {
+    const formats = item.device === "M"
+      ? [["bit", "ビット"]]
+      : [["word", "ワード"], ["int32", "32bit整数"], ["fixed", "固定小数点"], ["string", "文字列"]];
+    const extra = item.format === "fixed"
+      ? `<input data-watch-id="${item.id}" data-watch-field="decimals" type="number" min="0" max="9" value="${item.decimals}" title="小数桁数">`
+      : item.format === "string"
+        ? `<input data-watch-id="${item.id}" data-watch-field="length" type="number" min="1" max="128" value="${item.length}" title="読取ワード数">`
+        : "<span></span>";
+    const snapshot = state.watchValues[item.id];
+    const value = snapshot === undefined
+      ? "—"
+      : snapshot.valid === false
+        ? "無効"
+        : formatWatchValue(snapshot.value, item);
+    return `<div class="watch-row">
+      <div class="watch-row-grid">
+        <input data-watch-id="${item.id}" data-watch-field="label" value="${escapeHtml(item.label)}" placeholder="表示名">
+        <select data-watch-id="${item.id}" data-watch-field="device">
+          <option value="D"${item.device === "D" ? " selected" : ""}>D</option>
+          <option value="M"${item.device === "M" ? " selected" : ""}>M</option>
+        </select>
+        <input data-watch-id="${item.id}" data-watch-field="address" type="number" min="0" max="65535" value="${item.address}">
+      </div>
+      <div class="watch-row-grid">
+        <select data-watch-id="${item.id}" data-watch-field="format">
+          ${formats.map(([valueKey, label]) => `<option value="${valueKey}"${item.format === valueKey ? " selected" : ""}>${label}</option>`).join("")}
+        </select>
+        ${extra}
+        <div class="watch-value${changed.has(item.id) ? " changed" : ""}" data-watch-value="${item.id}">${escapeHtml(value)}</div>
+        <button class="watch-remove" data-watch-remove="${item.id}" title="削除">×</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function formatWatchValue(value, item) {
+  if (item.format === "bit") return value ? "ON (1)" : "OFF (0)";
+  if (item.format === "fixed" && typeof value === "number") {
+    return value.toFixed(item.decimals);
+  }
+  return String(value);
+}
+
+function updateWatchValueDisplays(changed = new Set()) {
+  for (const item of state.watchItems) {
+    const element = document.querySelector(`[data-watch-value="${item.id}"]`);
+    if (!element) continue;
+    const snapshot = state.watchValues[item.id];
+    element.textContent = snapshot === undefined
+      ? "—"
+      : snapshot.valid === false
+        ? "無効"
+        : formatWatchValue(snapshot.value, item);
+    element.classList.toggle("changed", changed.has(item.id));
+  }
+}
+
+function setWatchStatus(text, status = "") {
+  const element = $("#watch-status");
+  element.textContent = text;
+  element.className = `watch-status ${status}`.trim();
+}
+
+function startWatch() {
+  const settings = readSettingsForm();
+  if (settings.transport !== "plclink") {
+    setWatchStatus("PLCLINKを選択してください", "error");
+    return;
+  }
+  if (!state.watchItems.length) {
+    setWatchStatus("監視アドレスがありません", "error");
+    return;
+  }
+  state.watchRunning = true;
+  $("#start-watch-button").disabled = true;
+  $("#stop-watch-button").disabled = false;
+  setWatchStatus("監視中", "running");
+  pollWatchValues();
+}
+
+function stopWatch(resetValues = false) {
+  state.watchRunning = false;
+  clearTimeout(state.watchTimer);
+  state.watchTimer = null;
+  if (resetValues) {
+    state.watchValues = {};
+    renderWatchList();
+  }
+  $("#start-watch-button").disabled = false;
+  $("#stop-watch-button").disabled = true;
+  setWatchStatus("停止中");
+}
+
+async function pollWatchValues() {
+  if (!state.watchRunning) return;
+  try {
+    const response = await fetch("/api/plclink/memory/read", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: state.watchItems }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "監視データを取得できません");
+    const changed = new Set();
+    const nextValues = {};
+    for (const snapshot of data.values) {
+      nextValues[snapshot.id] = snapshot;
+      if (
+        state.watchValues[snapshot.id] !== undefined
+        && JSON.stringify(state.watchValues[snapshot.id]) !== JSON.stringify(snapshot)
+      ) changed.add(snapshot.id);
+    }
+    state.watchValues = nextValues;
+    setWatchStatus("監視中", "running");
+    updateWatchValueDisplays(changed);
+  } catch (error) {
+    state.watchValues = {};
+    updateWatchValueDisplays();
+    setWatchStatus(`再接続待ち: ${error.message}`, "error");
+  } finally {
+    if (state.watchRunning) state.watchTimer = setTimeout(pollWatchValues, 500);
+  }
+}
+
 function renderPalette() {
   const query = $("#command-search")?.value.trim().toLowerCase() || "";
-  const filtered = state.catalog.filter((item) =>
+  const isPlc = ($("#transport")?.value || state.settings.transport) === "plclink";
+  const available = state.catalog.filter((item) => !isPlc || item.plclink_supported);
+  const filtered = available.filter((item) =>
     `${item.code} ${item.name} ${item.description} ${item.tool_name || ""}`.toLowerCase().includes(query)
   );
+  if ($("#catalog-count")) $("#catalog-count").textContent = available.length;
   $("#command-palette").innerHTML = catalogGroups(filtered).map((group) => `
     <section class="command-group">
       <h4>${escapeHtml(group.label)}<span>${group.items.length}</span></h4>
       ${group.items.map((item) => `
         <button class="palette-card palette-command" data-code="${item.code}">
-          <span class="command-code">${item.code}</span>
+          <span class="command-code">${isPlc ? `${item.plclink_code}：` : item.code}</span>
           <span class="command-name">${escapeHtml(item.name)}</span>
+          ${isPlc ? '<small class="plclink-code">PLCLINKコマンド</small>' : ""}
         </button>`).join("")}
     </section>`).join("");
   document.querySelectorAll(".palette-command").forEach((button) => {
@@ -148,16 +365,20 @@ function stepHtml(step, nested = false) {
   const isCompact = state.viewMode === "compact";
   if (step.type === "command") {
     const def = state.catalog.find((item) => item.code === step.command);
+    const isPlc = ($("#transport")?.value || state.settings.transport) === "plclink";
+    const unsupported = isPlc && !def.plclink_supported;
     const fields = (def.arguments || []).map((arg) => argumentField(step, arg)).join("");
     const raw = def.raw_arguments ? `
       <label>引数文字列<input data-field="raw" value="${escapeHtml(step.arguments.raw || "")}" placeholder="別資料の構文に従って入力"></label>` : "";
     const compactSummary = commandCompactSummary(step, def);
-    return `<article class="step-card generated-step" data-id="${step.id}">
-      ${stepHeader(step, `<strong>${def.code}</strong>${escapeHtml(def.name)}${def.tool_name ? `<small class="tool-badge">${escapeHtml(def.tool_id)} ${escapeHtml(def.tool_name)}</small>` : ""}`, nested)}
+    const displayCode = isPlc && def.plclink_code ? `${def.plclink_code}：` : def.code;
+    return `<article class="step-card generated-step${unsupported ? " unsupported-step" : ""}" data-id="${step.id}">
+      ${stepHeader(step, `<strong>${displayCode}</strong>${escapeHtml(def.name)}${isPlc ? '<small class="plclink-code">PLCLINKコマンド</small>' : ""}${def.tool_name ? `<small class="tool-badge">${escapeHtml(def.tool_id)} ${escapeHtml(def.tool_name)}</small>` : ""}`, nested)}
       ${isCompact
     ? (compactSummary ? `<div class="step-compact-row">${compactSummary}</div>` : "")
     : `<div class="step-body">${fields}${raw}
-        <p class="step-description">${escapeHtml(def.description || "")}${def.example ? `　例: ${escapeHtml(def.example)}` : ""}</p>
+        ${unsupported ? `<p class="step-warning">${escapeHtml(def.plclink_reason || "PLCLINKでは使用できません")}</p>` : ""}
+        <p class="step-description">${escapeHtml(def.description || "")}${!isPlc && def.example ? `　例: ${escapeHtml(def.example)}` : ""}</p>
       </div>`}
     </article>`;
   }
@@ -470,13 +691,33 @@ function assignIds(step) {
 }
 
 function readSettingsForm() {
+  const transport = $("#transport").value;
+  const encoding = transport === "plclink"
+    ? $("#plclink-encoding").value
+    : $("#encoding").value;
+  const lineDigits = transport === "plclink"
+    ? Number($("#plclink-line-digits").value)
+    : Number($("#line-digits").value);
   return {
-    host: $("#host").value.trim(), port: Number($("#port").value), timeout: Number($("#timeout").value),
-    input_terminator: $("#input-terminator").value, output_terminator: $("#output-terminator").value,
-    separator: $("#separator").value, header_separator: $("#header-separator").checked,
-    footer_separator: $("#footer-separator").checked, checksum: $("#checksum").checked,
-    input_response: $("#input-response").checked, encoding: $("#encoding").value,
-    line_number_digits: Number($("#line-digits").value),
+    transport,
+    host: $("#host").value.trim(),
+    port: Number($("#port").value),
+    timeout: Number($("#timeout").value),
+    input_terminator: $("#input-terminator").value,
+    output_terminator: $("#output-terminator").value,
+    separator: $("#separator").value,
+    header_separator: $("#header-separator").checked,
+    footer_separator: $("#footer-separator").checked,
+    checksum: $("#checksum").checked,
+    input_response: $("#input-response").checked,
+    encoding,
+    line_number_digits: lineDigits,
+    command_address: Number($("#command-address").value),
+    command_size: Number($("#command-size").value),
+    response_address: Number($("#response-address").value),
+    response_size: Number($("#response-size").value),
+    busy_address: Number($("#busy-address").value),
+    byte_order: $("#byte-order").value,
   };
 }
 
@@ -495,20 +736,73 @@ function restoreSettings() {
 }
 
 function applySettingsToForm() {
-  const map = {
-    host: "host", port: "port", timeout: "timeout", input_terminator: "input-terminator",
-    output_terminator: "output-terminator", separator: "separator", encoding: "encoding",
-    line_number_digits: "line-digits",
-  };
-  for (const [key, id] of Object.entries(map)) $(`#${id}`).value = state.settings[key];
-  $("#header-separator").checked = state.settings.header_separator;
-  $("#footer-separator").checked = state.settings.footer_separator;
-  $("#checksum").checked = state.settings.checksum;
-  $("#input-response").checked = state.settings.input_response;
+  const s = state.settings;
+  $("#transport").value = s.transport || "tcp";
+  $("#host").value = s.host;
+  $("#port").value = s.port;
+  $("#timeout").value = s.timeout;
+  $("#input-terminator").value = s.input_terminator;
+  $("#output-terminator").value = s.output_terminator;
+  $("#separator").value = s.separator;
+  $("#encoding").value = s.encoding;
+  $("#plclink-encoding").value = s.encoding;
+  $("#line-digits").value = String(s.line_number_digits);
+  $("#plclink-line-digits").value = String(s.line_number_digits);
+  $("#header-separator").checked = s.header_separator;
+  $("#footer-separator").checked = s.footer_separator;
+  $("#checksum").checked = s.checksum;
+  $("#input-response").checked = s.input_response;
+  $("#command-address").value = s.command_address ?? 4096;
+  $("#command-size").value = s.command_size ?? 64;
+  $("#response-address").value = s.response_address ?? 8192;
+  $("#response-size").value = s.response_size ?? 64;
+  $("#busy-address").value = s.busy_address ?? 1024;
+  $("#byte-order").value = s.byte_order || "high_low";
+  syncTransportUi();
+}
+
+function syncTransportUi() {
+  const transport = $("#transport").value;
+  const isPlc = transport === "plclink";
+  $("#tcp-settings").classList.toggle("hidden", isPlc);
+  $("#plclink-settings").classList.toggle("hidden", !isPlc);
+  const hint = $("#transport-hint");
+  if (isPlc) {
+    $("#host-label-text").textContent = "待受アドレス";
+    $("#host").placeholder = "0.0.0.0";
+    if (!$("#host").value) $("#host").value = "0.0.0.0";
+    if (Number($("#port").value) === 55555) $("#port").value = 5000;
+    $("#port-label-text").textContent = "待受ポート";
+    hint.textContent = "アプリが疑似 PLC（MC 3E）として待ち受け、VTV から接続します。";
+  } else {
+    $("#host-label-text").textContent = "装置 IP";
+    $("#host").placeholder = "192.168.0.10";
+    if ($("#host").value === "0.0.0.0") $("#host").value = "";
+    if (Number($("#port").value) === 5000) $("#port").value = 55555;
+    $("#port-label-text").textContent = "ポート";
+    hint.textContent = "装置の Network I/O（TCP）へクライアント接続します。";
+  }
+  $("#watch-tab-button").disabled = !isPlc;
+  $("#watch-note").textContent = isPlc
+    ? "PLCLINK接続後に監視を開始してください。更新周期は500msです。"
+    : "D/M監視はPLCLINKモードで利用できます。";
+  if (!isPlc) {
+    stopWatch(true);
+    selectMonitorTab("log");
+  }
+  renderPalette();
+  renderSequence();
 }
 
 function settingsKey(settings) {
-  return `${settings.host}:${settings.port}`;
+  return [
+    settings.transport || "tcp",
+    settings.host,
+    settings.port,
+    settings.command_address,
+    settings.response_address,
+    settings.busy_address,
+  ].join(":");
 }
 
 function markConnectionVerified(verified, settings) {
@@ -554,13 +848,17 @@ async function verifyConnectionSettings({ showMessage = false, resultEl = null }
     refreshConnectionBadge();
     if (showMessage && resultEl) {
       resultEl.className = "test-result error";
-      resultEl.textContent = "装置 IP を入力してください。";
+      resultEl.textContent = settings.transport === "plclink"
+        ? "待受アドレスを入力してください。"
+        : "装置 IP を入力してください。";
     }
     return false;
   }
   if (showMessage && resultEl) {
     resultEl.className = "test-result";
-    resultEl.textContent = "接続しています…";
+    resultEl.textContent = settings.transport === "plclink"
+      ? "疑似 PLC を起動し、VTV からの接続を待っています…"
+      : "接続しています…";
   }
   setConnection("connecting");
   try {
@@ -575,7 +873,7 @@ async function verifyConnectionSettings({ showMessage = false, resultEl = null }
     setConnection("connected");
     if (showMessage && resultEl) {
       resultEl.className = "test-result success";
-      resultEl.textContent = "接続に成功しました。";
+      resultEl.textContent = data.message || "接続に成功しました。";
     }
     return true;
   } catch (error) {
@@ -601,10 +899,19 @@ function runSequence() {
   if (!state.settings.host) {
     $("#settings-dialog").showModal();
     $("#connection-test-result").className = "test-result error";
-    $("#connection-test-result").textContent = "装置 IP を入力してください。";
+    $("#connection-test-result").textContent = state.settings.transport === "plclink"
+      ? "待受アドレスを入力してください。"
+      : "装置 IP を入力してください。";
     return;
   }
   if (!state.steps.length) { alert("実行するカードを追加してください。"); return; }
+  if (state.settings.transport === "plclink") {
+    const unsupported = findUnsupportedPlcLinkCommand(state.steps);
+    if (unsupported) {
+      alert(`${unsupported.command}: ${unsupported.reason}`);
+      return;
+    }
+  }
   clearExecutionStyles(); clearLog(); setRunning(true);
   const protocol = location.protocol === "https:" ? "wss" : "ws";
   state.socket = new WebSocket(`${protocol}://${location.host}/ws`);
@@ -614,6 +921,27 @@ function runSequence() {
   state.socket.addEventListener("message", (event) => handleEvent(JSON.parse(event.data)));
   state.socket.addEventListener("error", () => { addLog("error", "ERR", "WebSocket接続に失敗しました"); setRunning(false); });
   state.socket.addEventListener("close", () => { if (state.running) setRunning(false); });
+}
+
+function findUnsupportedPlcLinkCommand(steps) {
+  for (const step of steps) {
+    if (step.type === "command") {
+      const definition = state.catalog.find((item) => item.code === step.command);
+      if (!definition?.plclink_supported) {
+        return {
+          command: step.command,
+          reason: definition?.plclink_reason || "PLCLINKでは使用できません",
+        };
+      }
+    }
+    for (const key of ["steps", "then_steps", "else_steps"]) {
+      if (step[key]) {
+        const nested = findUnsupportedPlcLinkCommand(step[key]);
+        if (nested) return nested;
+      }
+    }
+  }
+  return null;
 }
 
 function cleanSteps(steps) {
@@ -667,6 +995,7 @@ function setConnection(status) {
   const badge = $("#connection-badge");
   badge.className = `badge ${status}`;
   badge.textContent = status === "connected" ? "接続中" : status === "connecting" ? "接続中…" : "未接続";
+  if (status === "disconnected") stopWatch(true);
 }
 
 function setRunning(running) {

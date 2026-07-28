@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>VTV TCP Sequencer</title>
-  <link rel="stylesheet" href="/style.css">
+  <title>VTV Network Sequencer</title>
+  <link rel="stylesheet" href="/style.css?v=20260727-2">
 </head>
 <body>
   <header class="app-header">
     <div>
       <p class="eyebrow">VTV-9000 NETWORK I/O</p>
-      <h1>TCP Sequencer</h1>
+      <h1>Network Sequencer</h1>
     </div>
     <div class="header-actions">
       <span id="connection-badge" class="badge disconnected">未接続</span>
@@ -75,15 +75,31 @@
       <div class="panel-heading">
         <div>
           <p class="eyebrow">MONITOR</p>
-          <h2>通信ログ</h2>
+          <h2>モニター</h2>
         </div>
-        <div class="compact-actions">
+      </div>
+      <div class="monitor-tabs">
+        <button class="monitor-tab active" data-monitor-tab="log">通信ログ</button>
+        <button id="watch-tab-button" class="monitor-tab" data-monitor-tab="watch">D/M監視</button>
+      </div>
+      <div id="monitor-log-panel" class="monitor-content">
+        <div class="monitor-toolbar">
           <button id="export-log-button" class="icon-button">出力</button>
           <button id="clear-log-button" class="icon-button">消去</button>
         </div>
+        <div id="log" class="log" aria-live="polite">
+          <div class="log-empty">実行すると送受信内容が表示されます。</div>
+        </div>
       </div>
-      <div id="log" class="log" aria-live="polite">
-        <div class="log-empty">実行すると送受信内容が表示されます。</div>
+      <div id="monitor-watch-panel" class="monitor-content hidden">
+        <div class="monitor-toolbar">
+          <span id="watch-status" class="watch-status">停止中</span>
+          <button id="add-watch-button" class="icon-button">＋追加</button>
+          <button id="start-watch-button" class="icon-button">開始</button>
+          <button id="stop-watch-button" class="icon-button" disabled>停止</button>
+        </div>
+        <div id="watch-list" class="watch-list"></div>
+        <p id="watch-note" class="watch-note">PLCLINK接続後に監視を開始してください。</p>
       </div>
     </aside>
   </main>
@@ -98,15 +114,27 @@
         <button value="cancel" class="close-button" aria-label="閉じる">×</button>
       </div>
       <div class="form-section">
+        <h3>通信方式</h3>
+        <div class="form-grid">
+          <label>方式
+            <select id="transport">
+              <option value="tcp">TCP（Network I/O）</option>
+              <option value="plclink">PLCLINK（MC 3E 疑似 PLC）</option>
+            </select>
+          </label>
+        </div>
+        <p id="transport-hint" class="export-note"></p>
+      </div>
+      <div class="form-section">
         <h3>接続先</h3>
         <div class="form-grid three">
-          <label>装置 IP<input id="host" required placeholder="192.168.0.10"></label>
-          <label>ポート<input id="port" type="number" min="1" max="65535" value="55555"></label>
+          <label id="host-label"><span id="host-label-text">装置 IP</span><input id="host" required placeholder="192.168.0.10"></label>
+          <label id="port-label"><span id="port-label-text">ポート</span><input id="port" type="number" min="1" max="65535" value="55555"></label>
           <label>タイムアウト（秒）<input id="timeout" type="number" min="0.1" max="300" step="0.1" value="5"></label>
         </div>
       </div>
-      <div class="form-section">
-        <h3>プロトコル</h3>
+      <div id="tcp-settings" class="form-section">
+        <h3>TCP プロトコル</h3>
         <div class="form-grid three">
           <label>入力終端<select id="input-terminator"><option value="CR">CR</option></select></label>
           <label>出力終端<select id="output-terminator"><option value="CR">CR</option><option value="CRLF">CR/LF</option></select></label>
@@ -121,9 +149,26 @@
         <div class="check-grid">
           <label><input id="header-separator" type="checkbox"> ヘッダにセパレータ</label>
           <label><input id="footer-separator" type="checkbox"> フッタにセパレータ</label>
-          <label><input id="checksum" type="checkbox" checked> チェックサムを検証</label>
+          <label><input id="checksum" type="checkbox" checked> 受信チェックサムを検証</label>
           <label><input id="input-response" type="checkbox" checked> AK/NK/ERを受信</label>
         </div>
+      </div>
+      <div id="plclink-settings" class="form-section hidden">
+        <h3>PLCLINK アドレス割当</h3>
+        <div class="form-grid three">
+          <label>コマンド先頭 D<input id="command-address" type="number" min="0" max="65535" value="4096"></label>
+          <label>コマンドサイズ（ワード）<input id="command-size" type="number" min="4" max="256" step="2" value="64"></label>
+          <label>レスポンス先頭 D<input id="response-address" type="number" min="0" max="65535" value="8192"></label>
+          <label>レスポンスサイズ（ワード）<input id="response-size" type="number" min="8" max="256" step="2" value="64"></label>
+          <label>BUSY ビット M<input id="busy-address" type="number" min="0" max="65535" value="1024"></label>
+          <label>バイトオーダー<select id="byte-order">
+            <option value="high_low">上位→下位</option>
+            <option value="low_high">下位→上位</option>
+          </select></label>
+          <label>文字エンコード<select id="plclink-encoding"><option value="cp932">SJIS</option><option value="utf-8">UTF-8</option></select></label>
+          <label>行番号の桁数<select id="plclink-line-digits"><option value="2">2 (01–99)</option><option value="3">3 (001–999)</option></select></label>
+        </div>
+        <p class="export-note">VTV の「環境設定 → PLCLINK」と同一の値にしてください。接続テストは VTV からの接続待ちになります。</p>
       </div>
       <div id="connection-test-result" class="test-result"></div>
       <div class="dialog-actions">
@@ -163,6 +208,6 @@
     </form>
   </dialog>
 
-  <script src="/app.js" defer></script>
+  <script src="/app.js?v=20260727-2" defer></script>
 </body>
 </html>

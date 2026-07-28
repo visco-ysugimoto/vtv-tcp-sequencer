@@ -14,6 +14,9 @@ SEPARATORS = {
     "none": "",
 }
 
+TCP_CONNECT_SETTLE_SECONDS = 0.5
+TCP_DISCONNECT_GRACE_SECONDS = 0.5
+
 
 class ProtocolError(RuntimeError):
     """VTV-9000 との通信プロトコルが成立しなかった場合の例外。"""
@@ -40,6 +43,16 @@ def xor_checksum(data: bytes) -> str:
 def add_checksum(payload: str, separator: str, encoding: str) -> str:
     prefix = f"{payload}{separator}"
     return f"{prefix}{xor_checksum(prefix.encode(encoding))}"
+
+
+def frame_outbound_command(command: str, settings: ProtocolSettings) -> str:
+    """VTV へ送信するコマンド文字列を返す。
+
+    C019 のチェックサム設定は VTV からの出力にだけ適用されるため、
+    VTV への入力コマンドにはチェックサムを付加しない。
+    """
+    del settings
+    return command
 
 
 def remove_and_verify_checksum(
@@ -88,11 +101,15 @@ class VtvTcpClient:
                 asyncio.open_connection(self.settings.host, self.settings.port),
                 timeout=self.settings.timeout,
             )
+            # VTV は TCP 接続直後にはコマンド受付準備が完了していない。
+            await asyncio.sleep(TCP_CONNECT_SETTLE_SECONDS)
         except (TimeoutError, OSError) as exc:
             raise ProtocolError(f"接続できません: {exc}") from exc
 
     async def close(self) -> None:
         if self.writer is not None:
+            # 応答直後の切断で VTV の処理を中断しないよう猶予を設ける。
+            await asyncio.sleep(TCP_DISCONNECT_GRACE_SECONDS)
             self.writer.close()
             try:
                 await self.writer.wait_closed()
@@ -106,11 +123,16 @@ class VtvTcpClient:
         command: str,
         expect_result: bool = False,
         result_mode: str = "single",
+        *,
+        tcp_code: str | None = None,
+        arguments: dict | None = None,
     ) -> CommandResult:
+        del tcp_code, arguments
         if self.reader is None or self.writer is None:
             raise ProtocolError("装置に接続されていません")
 
-        encoded = command.encode(self.settings.encoding)
+        framed = frame_outbound_command(command, self.settings)
+        encoded = framed.encode(self.settings.encoding)
         self.writer.write(encoded + b"\r")
         try:
             await asyncio.wait_for(
@@ -127,7 +149,7 @@ class VtvTcpClient:
             responses.append(line)
             status = self._status_from(line)
             if status in {"NK", "ER"}:
-                return CommandResult(command, status, responses)
+                return CommandResult(framed, status, responses)
             if status != "AK":
                 raise ProtocolError(f"不明な入力応答です: {line}")
 
@@ -145,7 +167,7 @@ class VtvTcpClient:
                         break
                     responses.append(line)
 
-        return CommandResult(command, status, responses)
+        return CommandResult(framed, status, responses)
 
     async def _read_line(
         self,

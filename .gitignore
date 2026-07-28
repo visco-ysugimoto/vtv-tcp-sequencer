@@ -7,3 +7,5 @@ __pycache__/
 sequences/
 build/
 dist/
+tmp_pkg/
+tmp_type3e.py
