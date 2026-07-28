@@ -13,7 +13,7 @@ from backend.plc_link.commands import (
     resolve_spec,
 )
 from backend.plc_link.memory import DeviceMemory
-from backend.plc_link.monitor import read_memory_items
+from backend.plc_link.monitor import build_mapped_watch_items, read_memory_items
 from backend.plc_link.server import SoftPlcServer
 from backend.protocol import ProtocolError
 
@@ -49,6 +49,89 @@ def test_plclink_command_metadata() -> None:
         "plclink_reason": None,
     }
     assert command_metadata("POA")["plclink_supported"] is False
+
+
+def test_busy_address_from_plo_port() -> None:
+    settings = ProtocolSettings(
+        transport="plclink",
+        host="0.0.0.0",
+        plo_address=1024,
+        busy_port=5,
+    )
+    assert settings.busy_address == 1028
+
+
+def test_build_mapped_watch_items() -> None:
+    settings = ProtocolSettings(
+        transport="plclink",
+        host="0.0.0.0",
+        command_address=4096,
+        response_address=8192,
+        plo_address=1024,
+        plo_port_count=4,
+        busy_port=2,
+        result_data_enabled=False,
+        result_data_address=512,
+        result_data_size=8,
+        result_data_watch_words=8,
+        notify_area_enabled=True,
+        notify_address=2560,
+    )
+    items = build_mapped_watch_items(settings)
+    by_id = {item.id: item for item in items}
+
+    assert by_id["cmd-trigger"].address == 4096
+    assert by_id["cmd-code"].address == 4098
+    assert by_id["rsp-result"].address == 8192
+    assert by_id["rsp-error"].address == 8194
+    assert by_id["rsp-echo"].address == 8196
+    assert by_id["rsp-param-size"].address == 8198
+    assert by_id["notify-status"].address == 2560
+    assert by_id["notify-error"].address == 2562
+    assert by_id["notify-data-address"].address == 2564
+    assert by_id["notify-data-size"].address == 2566
+    assert [item.id for item in items if item.group == "結果データ"] == [
+        "result-data-0",
+        "result-data-2",
+        "result-data-4",
+        "result-data-6",
+    ]
+    assert by_id["result-data-0"].address == 512
+    assert [item.id for item in items if item.group == "PLO出力"] == [
+        "plo-port-1",
+        "plo-port-2",
+        "plo-port-3",
+        "plo-port-4",
+    ]
+    assert by_id["plo-port-2"].label == "BUSY (Port 2)"
+    assert by_id["plo-port-2"].address == 1025
+    assert by_id["plo-port-2"].format == "bit"
+
+
+def test_result_data_overlap_rejected() -> None:
+    with pytest.raises(ValueError, match="コマンド領域と結果データ領域が重複"):
+        ProtocolSettings(
+            transport="plclink",
+            host="0.0.0.0",
+            command_address=4096,
+            command_size=64,
+            result_data_enabled=True,
+            result_data_address=4100,
+            result_data_size=16,
+        )
+
+
+def test_busy_address_migrates_from_legacy_field() -> None:
+    settings = ProtocolSettings.model_validate(
+        {
+            "transport": "plclink",
+            "host": "0.0.0.0",
+            "busy_address": 1100,
+        }
+    )
+    assert settings.plo_address == 1100
+    assert settings.busy_port == 1
+    assert settings.busy_address == 1100
 
 
 def test_read_typed_memory_items() -> None:

@@ -9,7 +9,9 @@ const state = {
     encoding: "cp932", line_number_digits: 2,
     command_address: 4096, command_size: 64,
     response_address: 8192, response_size: 64,
-    busy_address: 1024, byte_order: "high_low",
+    plo_address: 1024, plo_port_count: 32, busy_port: 1, byte_order: "high_low",
+    result_data_enabled: false, result_data_address: 512, result_data_size: 2048,
+    result_data_watch_words: 64, notify_area_enabled: false, notify_address: 2560,
   },
   socket: null,
   running: false,
@@ -19,11 +21,11 @@ const state = {
   connectionVerified: false,
   verifiedSettingsKey: "",
   viewMode: "normal", // "normal" | "compact"
+  layoutMode: "workspace", // "workspace" | "monitor"
   watchItems: [],
   watchValues: {},
   watchRunning: false,
   watchTimer: null,
-  nextWatchId: 1,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -35,8 +37,9 @@ async function initialize() {
   restoreSettings();
   restoreConnectionState();
   restoreViewMode();
-  restoreWatchItems();
+  restoreLayoutMode();
   applySettingsToForm();
+  refreshMappedWatchItems();
   const response = await fetch("/api/catalog");
   state.catalog = await response.json();
   $("#catalog-count").textContent = state.catalog.length;
@@ -56,6 +59,25 @@ function bindEvents() {
   $("#settings-button").addEventListener("click", () => $("#settings-dialog").showModal());
   $("#settings-form").addEventListener("submit", saveSettings);
   $("#transport").addEventListener("change", syncTransportUi);
+  $("#plo-address").addEventListener("input", updateBusyAddressHint);
+  $("#plo-port-count").addEventListener("input", updateBusyAddressHint);
+  $("#busy-port").addEventListener("input", updateBusyAddressHint);
+  $("#result-data-enabled").addEventListener("change", () => {
+    syncResultDataUi();
+    refreshMappedWatchItems();
+    renderWatchList();
+  });
+  $("#notify-area-enabled").addEventListener("change", () => {
+    syncResultDataUi();
+    refreshMappedWatchItems();
+    renderWatchList();
+  });
+  ["result-data-address", "result-data-size", "result-data-watch-words", "notify-address"].forEach((id) => {
+    $(`#${id}`).addEventListener("change", () => {
+      refreshMappedWatchItems();
+      renderWatchList();
+    });
+  });
   $("#test-button").addEventListener("click", testConnection);
   $("#run-button").addEventListener("click", runSequence);
   $("#stop-button").addEventListener("click", stopSequence);
@@ -70,15 +92,23 @@ function bindEvents() {
   $("#save-button").addEventListener("click", saveSequence);
   $("#load-input").addEventListener("change", loadSequence);
   $("#view-mode-button").addEventListener("click", toggleViewMode);
+  $("#layout-mode-button").addEventListener("click", toggleLayoutMode);
+  $("#layout-mode-monitor-button").addEventListener("click", toggleLayoutMode);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && state.layoutMode === "monitor") {
+      setLayoutMode("workspace");
+    }
+  });
   document.querySelectorAll("[data-monitor-tab]").forEach((button) => {
     button.addEventListener("click", () => selectMonitorTab(button.dataset.monitorTab));
   });
-  $("#add-watch-button").addEventListener("click", addWatchItem);
+  $("#refresh-map-button").addEventListener("click", () => {
+    refreshMappedWatchItems();
+    renderWatchList();
+    setWatchStatus("一覧を再生成しました");
+  });
   $("#start-watch-button").addEventListener("click", startWatch);
   $("#stop-watch-button").addEventListener("click", () => stopWatch(false));
-  $("#watch-list").addEventListener("input", updateWatchItem);
-  $("#watch-list").addEventListener("change", updateWatchItem);
-  $("#watch-list").addEventListener("click", removeWatchItem);
   bindDragDropEvents();
 }
 
@@ -107,19 +137,41 @@ function toggleViewMode() {
   renderSequence();
 }
 
-function restoreWatchItems() {
+function restoreLayoutMode() {
   try {
-    const saved = JSON.parse(localStorage.getItem("vtv-plclink-watch-items"));
-    if (Array.isArray(saved)) state.watchItems = saved;
+    const saved = localStorage.getItem("vtv-layout-mode");
+    if (saved === "monitor" || saved === "workspace") state.layoutMode = saved;
   } catch (_) {}
-  const ids = state.watchItems
-    .map((item) => Number(String(item.id || "").replace("watch-", "")))
-    .filter(Number.isFinite);
-  state.nextWatchId = ids.length ? Math.max(...ids) + 1 : 1;
+  applyLayoutMode();
 }
 
-function saveWatchItems() {
-  localStorage.setItem("vtv-plclink-watch-items", JSON.stringify(state.watchItems));
+function applyLayoutMode() {
+  const focused = state.layoutMode === "monitor";
+  const watchEnabled = !$("#watch-tab-button")?.disabled;
+  document.body.classList.toggle("layout-monitor-focus", focused);
+  // 拡大時は監視を全幅優先（ログは通常画面のタブで確認）
+  document.body.classList.toggle("layout-monitor-split", false);
+  const headerBtn = $("#layout-mode-button");
+  const panelBtn = $("#layout-mode-monitor-button");
+  if (headerBtn) {
+    headerBtn.textContent = focused ? "通常画面" : "モニター拡大";
+    headerBtn.title = focused ? "シーケンス編集画面に戻る" : "モニター専用表示に切替";
+  }
+  if (panelBtn) {
+    panelBtn.textContent = focused ? "通常へ" : "拡大";
+    panelBtn.title = focused ? "シーケンス編集画面に戻る" : "モニター専用表示に切替";
+  }
+  if (focused && watchEnabled) selectMonitorTab("watch");
+}
+
+function setLayoutMode(mode) {
+  state.layoutMode = mode === "monitor" ? "monitor" : "workspace";
+  localStorage.setItem("vtv-layout-mode", state.layoutMode);
+  applyLayoutMode();
+}
+
+function toggleLayoutMode() {
+  setLayoutMode(state.layoutMode === "monitor" ? "workspace" : "monitor");
 }
 
 function selectMonitorTab(tab) {
@@ -131,91 +183,162 @@ function selectMonitorTab(tab) {
   $("#monitor-watch-panel").classList.toggle("hidden", tab !== "watch");
 }
 
-function addWatchItem() {
-  state.watchItems.push({
-    id: `watch-${state.nextWatchId++}`,
-    label: "",
-    device: "D",
-    address: 0,
-    format: "int32",
-    length: 8,
-    decimals: 3,
-  });
-  saveWatchItems();
-  renderWatchList();
+function buildMappedWatchItems(settings) {
+  const command = Number(settings.command_address) || 0;
+  const response = Number(settings.response_address) || 0;
+  const plo = Number(settings.plo_address) || 0;
+  const portCount = Math.max(1, Number(settings.plo_port_count) || 32);
+  const busyPort = Number(settings.busy_port) || 1;
+  const items = [
+    { id: "cmd-trigger", label: "トリガ", group: "コマンド領域", device: "D", address: command, format: "int32" },
+    { id: "cmd-code", label: "コマンドコード", group: "コマンド領域", device: "D", address: command + 2, format: "int32" },
+    { id: "rsp-result", label: "実行結果", group: "レスポンス領域", device: "D", address: response, format: "int32" },
+    { id: "rsp-error", label: "エラーコード", group: "レスポンス領域", device: "D", address: response + 2, format: "int32" },
+    { id: "rsp-echo", label: "コマンドエコー", group: "レスポンス領域", device: "D", address: response + 4, format: "int32" },
+    { id: "rsp-param-size", label: "パラメータ総サイズ", group: "レスポンス領域", device: "D", address: response + 6, format: "int32" },
+  ];
+  // 結果データ領域は監視用に常時表示（有効フラグは VTV 設定整合用）
+  {
+    const base = Number(settings.result_data_address) || 0;
+    const size = Number(settings.result_data_size) || 0;
+    const watchLimit = Number(settings.result_data_watch_words) || 64;
+    let watchWords = Math.min(size, watchLimit);
+    watchWords -= watchWords % 2;
+    for (let offset = 0; offset < watchWords; offset += 2) {
+      items.push({
+        id: `result-data-${offset}`,
+        label: `+${String(offset).padStart(4, "0")}`,
+        group: "結果データ",
+        device: "D",
+        address: base + offset,
+        format: "int32",
+        valueKind: "result_data",
+      });
+    }
+  }
+  if (settings.notify_area_enabled) {
+    const notify = Number(settings.notify_address) || 0;
+    items.push(
+      { id: "notify-status", label: "書込ステータス", group: "結果通知エリア", device: "D", address: notify, format: "int32", valueKind: "notify_status" },
+      { id: "notify-error", label: "エラーコード", group: "結果通知エリア", device: "D", address: notify + 2, format: "int32", valueKind: "notify_error" },
+      { id: "notify-data-address", label: "結果データ先頭", group: "結果通知エリア", device: "D", address: notify + 4, format: "int32" },
+      { id: "notify-data-size", label: "結果データサイズ", group: "結果通知エリア", device: "D", address: notify + 6, format: "int32" },
+    );
+  }
+  for (let port = 1; port <= portCount; port += 1) {
+    items.push({
+      id: `plo-port-${port}`,
+      label: port === busyPort ? `BUSY (Port ${port})` : `Port ${port}`,
+      group: "PLO出力",
+      device: "M",
+      address: plo + port - 1,
+      format: "bit",
+      busy: port === busyPort,
+    });
+  }
+  return items;
 }
 
-function removeWatchItem(event) {
-  const button = event.target.closest("[data-watch-remove]");
-  if (!button) return;
-  state.watchItems = state.watchItems.filter((item) => item.id !== button.dataset.watchRemove);
-  delete state.watchValues[button.dataset.watchRemove];
-  saveWatchItems();
-  renderWatchList();
-}
-
-function updateWatchItem(event) {
-  const input = event.target.closest("[data-watch-field]");
-  if (!input) return;
-  const item = state.watchItems.find((candidate) => candidate.id === input.dataset.watchId);
-  if (!item) return;
-  const numeric = ["address", "length", "decimals"].includes(input.dataset.watchField);
-  item[input.dataset.watchField] = numeric ? Number(input.value) : input.value;
-  if (item.device === "M") item.format = "bit";
-  if (item.device === "D" && item.format === "bit") item.format = "int32";
-  saveWatchItems();
-  if (["device", "format"].includes(input.dataset.watchField)) renderWatchList();
+function refreshMappedWatchItems() {
+  const settings = {
+    ...state.settings,
+    ...(($("#transport") && readSettingsForm()) || {}),
+  };
+  state.watchItems = buildMappedWatchItems(settings.transport === "plclink" ? settings : state.settings);
+  const keep = new Set(state.watchItems.map((item) => item.id));
+  for (const id of Object.keys(state.watchValues)) {
+    if (!keep.has(id)) delete state.watchValues[id];
+  }
 }
 
 function renderWatchList(changed = new Set()) {
   const list = $("#watch-list");
   if (!list) return;
   if (!state.watchItems.length) {
-    list.innerHTML = '<div class="watch-empty">「＋追加」で監視アドレスを登録してください。</div>';
+    list.innerHTML = '<div class="watch-empty">接続設定から監視アドレスを生成できません。</div>';
     return;
   }
-  list.innerHTML = state.watchItems.map((item) => {
-    const formats = item.device === "M"
-      ? [["bit", "ビット"]]
-      : [["word", "ワード"], ["int32", "32bit整数"], ["fixed", "固定小数点"], ["string", "文字列"]];
-    const extra = item.format === "fixed"
-      ? `<input data-watch-id="${item.id}" data-watch-field="decimals" type="number" min="0" max="9" value="${item.decimals}" title="小数桁数">`
-      : item.format === "string"
-        ? `<input data-watch-id="${item.id}" data-watch-field="length" type="number" min="1" max="128" value="${item.length}" title="読取ワード数">`
-        : "<span></span>";
-    const snapshot = state.watchValues[item.id];
-    const value = snapshot === undefined
-      ? "—"
-      : snapshot.valid === false
-        ? "無効"
-        : formatWatchValue(snapshot.value, item);
-    return `<div class="watch-row">
-      <div class="watch-row-grid">
-        <input data-watch-id="${item.id}" data-watch-field="label" value="${escapeHtml(item.label)}" placeholder="表示名">
-        <select data-watch-id="${item.id}" data-watch-field="device">
-          <option value="D"${item.device === "D" ? " selected" : ""}>D</option>
-          <option value="M"${item.device === "M" ? " selected" : ""}>M</option>
-        </select>
-        <input data-watch-id="${item.id}" data-watch-field="address" type="number" min="0" max="65535" value="${item.address}">
-      </div>
-      <div class="watch-row-grid">
-        <select data-watch-id="${item.id}" data-watch-field="format">
-          ${formats.map(([valueKey, label]) => `<option value="${valueKey}"${item.format === valueKey ? " selected" : ""}>${label}</option>`).join("")}
-        </select>
-        ${extra}
-        <div class="watch-value${changed.has(item.id) ? " changed" : ""}" data-watch-value="${item.id}">${escapeHtml(value)}</div>
-        <button class="watch-remove" data-watch-remove="${item.id}" title="削除">×</button>
-      </div>
-    </div>`;
-  }).join("");
+  const groups = [];
+  for (const item of state.watchItems) {
+    const last = groups[groups.length - 1];
+    if (!last || last.name !== item.group) groups.push({ name: item.group, items: [item] });
+    else last.items.push(item);
+  }
+  const renderGroup = (group) => {
+    const title = watchGroupTitle(group.name, group.items);
+    const dense = group.items.length >= 8;
+    const rows = group.items.map((item) => {
+      const snapshot = state.watchValues[item.id];
+      const value = snapshot === undefined
+        ? "—"
+        : snapshot.valid === false
+          ? "無効"
+          : formatWatchValue(snapshot.value, item);
+      const valueClass = watchValueClass(snapshot, item, changed.has(item.id));
+      return `<div class="watch-map-row${item.busy ? " busy" : ""}">
+        <span class="watch-map-label">${escapeHtml(item.label)}</span>
+        <span class="watch-map-address">${item.device}${item.address}</span>
+        <div class="watch-value ${valueClass}" data-watch-value="${item.id}">${escapeHtml(value)}</div>
+      </div>`;
+    }).join("");
+    return `<section class="watch-group${dense ? " watch-group-dense" : ""}">
+      <div class="watch-group-title">${escapeHtml(title)}</div>
+      <div class="watch-group-body">${rows}</div>
+    </section>`;
+  };
+  const summary = groups.filter((group) => group.items.length < 8);
+  const dense = groups.filter((group) => group.items.length >= 8);
+  list.innerHTML = [
+    summary.length ? `<div class="watch-summary-row">${summary.map(renderGroup).join("")}</div>` : "",
+    ...dense.map(renderGroup),
+  ].join("");
+}
+
+function watchGroupTitle(name, items) {
+  if (!items.length) return name;
+  if (name === "結果データ") {
+    const first = items[0].address;
+    const last = items[items.length - 1].address + 1;
+    return `${name}（D${first}–D${last}）`;
+  }
+  if (name === "結果通知エリア") {
+    return `${name}（D${items[0].address}–D${items[0].address + 7}）`;
+  }
+  return name;
 }
 
 function formatWatchValue(value, item) {
-  if (item.format === "bit") return value ? "ON (1)" : "OFF (0)";
+  if (item.format === "bit") return value ? "ON" : "OFF";
   if (item.format === "fixed" && typeof value === "number") {
     return value.toFixed(item.decimals);
   }
+  if (item.valueKind === "notify_status") {
+    const labels = {
+      1: "書込許可",
+      2: "書込完了",
+      3: "分割先頭完了",
+      4: "分割中間完了",
+      5: "分割末尾完了",
+    };
+    return labels[value] ? `${value} (${labels[value]})` : String(value);
+  }
+  if (item.valueKind === "notify_error") {
+    const labels = { 0: "なし", 100: "オーバーフロー", 101: "書込許可TO" };
+    return labels[value] !== undefined ? `${value} (${labels[value]})` : String(value);
+  }
+  if (item.valueKind === "result_data" && typeof value === "number") {
+    const unsigned = value >>> 0;
+    return `${value} (0x${unsigned.toString(16).toUpperCase().padStart(8, "0")})`;
+  }
   return String(value);
+}
+
+function watchValueClass(snapshot, item, changed) {
+  const classes = [];
+  if (changed) classes.push("changed");
+  if (snapshot === undefined || snapshot.valid === false) return classes.join(" ");
+  if (item.format === "bit") classes.push(snapshot.value ? "on" : "off");
+  return classes.join(" ");
 }
 
 function updateWatchValueDisplays(changed = new Set()) {
@@ -228,7 +351,7 @@ function updateWatchValueDisplays(changed = new Set()) {
       : snapshot.valid === false
         ? "無効"
         : formatWatchValue(snapshot.value, item);
-    element.classList.toggle("changed", changed.has(item.id));
+    element.className = `watch-value ${watchValueClass(snapshot, item, changed.has(item.id))}`.trim();
   }
 }
 
@@ -244,6 +367,8 @@ function startWatch() {
     setWatchStatus("PLCLINKを選択してください", "error");
     return;
   }
+  refreshMappedWatchItems();
+  renderWatchList();
   if (!state.watchItems.length) {
     setWatchStatus("監視アドレスがありません", "error");
     return;
@@ -274,7 +399,18 @@ async function pollWatchValues() {
     const response = await fetch("/api/plclink/memory/read", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items: state.watchItems }),
+      body: JSON.stringify({
+        items: state.watchItems.map(({ id, label, group, device, address, format, length, decimals }) => ({
+          id,
+          label: label || "",
+          group: group || "",
+          device,
+          address,
+          format,
+          length: length ?? 8,
+          decimals: decimals ?? 3,
+        })),
+      }),
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || "監視データを取得できません");
@@ -716,8 +852,16 @@ function readSettingsForm() {
     command_size: Number($("#command-size").value),
     response_address: Number($("#response-address").value),
     response_size: Number($("#response-size").value),
-    busy_address: Number($("#busy-address").value),
+    plo_address: Number($("#plo-address").value),
+    plo_port_count: Number($("#plo-port-count").value),
+    busy_port: Number($("#busy-port").value),
     byte_order: $("#byte-order").value,
+    result_data_enabled: $("#result-data-enabled").checked,
+    result_data_address: Number($("#result-data-address").value),
+    result_data_size: Number($("#result-data-size").value),
+    result_data_watch_words: Number($("#result-data-watch-words").value),
+    notify_area_enabled: $("#notify-area-enabled").checked,
+    notify_address: Number($("#notify-address").value),
   };
 }
 
@@ -725,6 +869,8 @@ async function saveSettings(event) {
   if (event.submitter?.value === "cancel") return;
   state.settings = readSettingsForm();
   localStorage.setItem("vtv-settings", JSON.stringify(state.settings));
+  refreshMappedWatchItems();
+  renderWatchList();
   await verifyConnectionSettings({
     showMessage: true,
     resultEl: $("#connection-test-result"),
@@ -732,7 +878,15 @@ async function saveSettings(event) {
 }
 
 function restoreSettings() {
-  try { state.settings = { ...state.settings, ...JSON.parse(localStorage.getItem("vtv-settings")) }; } catch (_) {}
+  try {
+    const saved = { ...state.settings, ...JSON.parse(localStorage.getItem("vtv-settings")) };
+    if (saved.plo_address === undefined && saved.busy_address !== undefined) {
+      saved.plo_address = saved.busy_address;
+      saved.busy_port = saved.busy_port || 1;
+    }
+    delete saved.busy_address;
+    state.settings = { ...state.settings, ...saved };
+  } catch (_) {}
 }
 
 function applySettingsToForm() {
@@ -756,9 +910,19 @@ function applySettingsToForm() {
   $("#command-size").value = s.command_size ?? 64;
   $("#response-address").value = s.response_address ?? 8192;
   $("#response-size").value = s.response_size ?? 64;
-  $("#busy-address").value = s.busy_address ?? 1024;
+  $("#plo-address").value = s.plo_address ?? s.busy_address ?? 1024;
+  $("#plo-port-count").value = s.plo_port_count ?? 32;
+  $("#busy-port").value = s.busy_port ?? 1;
   $("#byte-order").value = s.byte_order || "high_low";
+  $("#result-data-enabled").checked = !!s.result_data_enabled;
+  $("#result-data-address").value = s.result_data_address ?? 512;
+  $("#result-data-size").value = s.result_data_size ?? 2048;
+  $("#result-data-watch-words").value = s.result_data_watch_words ?? 64;
+  $("#notify-area-enabled").checked = !!s.notify_area_enabled;
+  $("#notify-address").value = s.notify_address ?? 2560;
   syncTransportUi();
+  syncResultDataUi();
+  updateBusyAddressHint();
 }
 
 function syncTransportUi() {
@@ -784,14 +948,38 @@ function syncTransportUi() {
   }
   $("#watch-tab-button").disabled = !isPlc;
   $("#watch-note").textContent = isPlc
-    ? "PLCLINK接続後に監視を開始してください。更新周期は500msです。"
+    ? "接続設定のコマンド／レスポンス／PLOから自動生成。更新周期は500msです。"
     : "D/M監視はPLCLINKモードで利用できます。";
   if (!isPlc) {
     stopWatch(true);
     selectMonitorTab("log");
+  } else {
+    refreshMappedWatchItems();
+    renderWatchList();
   }
+  applyLayoutMode();
   renderPalette();
   renderSequence();
+}
+
+function updateBusyAddressHint() {
+  const hint = $("#busy-address-hint");
+  if (!hint) return;
+  const plo = Number($("#plo-address").value) || 0;
+  const portCount = Number($("#plo-port-count")?.value) || 32;
+  const port = Number($("#busy-port").value) || 1;
+  const busy = plo + port - 1;
+  hint.textContent = `BUSY 実アドレス: M${busy}（PLO先頭 M${plo} + Port ${port} - 1 / ポート数 ${portCount}）。`
+    + "VTV の「ステータス信号」割付と一致させてください。";
+}
+
+function syncResultDataUi() {
+  const notifyOn = $("#notify-area-enabled")?.checked;
+  // 結果データアドレスは常に編集可（監視一覧は常時この値を参照）
+  $("#result-data-address").disabled = false;
+  $("#result-data-size").disabled = false;
+  $("#result-data-watch-words").disabled = false;
+  $("#notify-address").disabled = !notifyOn;
 }
 
 function settingsKey(settings) {
@@ -801,7 +989,15 @@ function settingsKey(settings) {
     settings.port,
     settings.command_address,
     settings.response_address,
-    settings.busy_address,
+    settings.plo_address ?? settings.busy_address,
+    settings.plo_port_count ?? 32,
+    settings.busy_port ?? 1,
+    settings.result_data_enabled ? 1 : 0,
+    settings.result_data_address ?? 512,
+    settings.result_data_size ?? 2048,
+    settings.result_data_watch_words ?? 64,
+    settings.notify_area_enabled ? 1 : 0,
+    settings.notify_address ?? 2560,
   ].join(":");
 }
 

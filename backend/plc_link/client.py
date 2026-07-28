@@ -147,7 +147,8 @@ class PlcLinkClient:
             if asyncio.get_running_loop().time() >= deadline:
                 raise ProtocolError(
                     f"{self.settings.timeout:g}秒以内に {label} を検出できません"
-                    f"（M{address}）"
+                    f"（M{address} = PLO先頭 M{self.settings.plo_address}"
+                    f" + Port {self.settings.busy_port}）"
                 )
             if self.server.client_count == 0:
                 raise ProtocolError("応答の途中で接続が切断されました")

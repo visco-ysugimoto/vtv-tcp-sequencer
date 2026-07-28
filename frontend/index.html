@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>VTV Network Sequencer</title>
-  <link rel="stylesheet" href="/style.css?v=20260727-2">
+  <link rel="stylesheet" href="/style.css?v=20260728-10">
 </head>
 <body>
   <header class="app-header">
@@ -14,6 +14,7 @@
     </div>
     <div class="header-actions">
       <span id="connection-badge" class="badge disconnected">未接続</span>
+      <button id="layout-mode-button" class="button secondary" title="モニター専用表示に切替">モニター拡大</button>
       <button id="settings-button" class="button secondary">接続設定</button>
       <button id="run-button" class="button primary">▶ 実行</button>
       <button id="stop-button" class="button danger" disabled>■ 停止</button>
@@ -75,31 +76,38 @@
       <div class="panel-heading">
         <div>
           <p class="eyebrow">MONITOR</p>
-          <h2>モニター</h2>
+          <h2 id="monitor-heading-title">モニター</h2>
+        </div>
+        <div class="compact-actions">
+          <button id="layout-mode-monitor-button" class="icon-button" title="モニター専用表示に切替">拡大</button>
         </div>
       </div>
       <div class="monitor-tabs">
         <button class="monitor-tab active" data-monitor-tab="log">通信ログ</button>
         <button id="watch-tab-button" class="monitor-tab" data-monitor-tab="watch">D/M監視</button>
       </div>
-      <div id="monitor-log-panel" class="monitor-content">
-        <div class="monitor-toolbar">
-          <button id="export-log-button" class="icon-button">出力</button>
-          <button id="clear-log-button" class="icon-button">消去</button>
+      <div class="monitor-panes">
+        <div id="monitor-log-panel" class="monitor-content">
+          <div class="monitor-toolbar">
+            <span class="monitor-pane-label">通信ログ</span>
+            <button id="export-log-button" class="icon-button">出力</button>
+            <button id="clear-log-button" class="icon-button">消去</button>
+          </div>
+          <div id="log" class="log" aria-live="polite">
+            <div class="log-empty">実行すると送受信内容が表示されます。</div>
+          </div>
         </div>
-        <div id="log" class="log" aria-live="polite">
-          <div class="log-empty">実行すると送受信内容が表示されます。</div>
+        <div id="monitor-watch-panel" class="monitor-content hidden">
+          <div class="monitor-toolbar">
+            <span class="monitor-pane-label">D/M監視</span>
+            <span id="watch-status" class="watch-status">停止中</span>
+            <button id="refresh-map-button" class="icon-button" title="接続設定から一覧を再生成">再読込</button>
+            <button id="start-watch-button" class="icon-button">開始</button>
+            <button id="stop-watch-button" class="icon-button" disabled>停止</button>
+          </div>
+          <div id="watch-list" class="watch-list"></div>
+          <p id="watch-note" class="watch-note">接続設定のコマンド／レスポンス／PLO割付から自動生成します。</p>
         </div>
-      </div>
-      <div id="monitor-watch-panel" class="monitor-content hidden">
-        <div class="monitor-toolbar">
-          <span id="watch-status" class="watch-status">停止中</span>
-          <button id="add-watch-button" class="icon-button">＋追加</button>
-          <button id="start-watch-button" class="icon-button">開始</button>
-          <button id="stop-watch-button" class="icon-button" disabled>停止</button>
-        </div>
-        <div id="watch-list" class="watch-list"></div>
-        <p id="watch-note" class="watch-note">PLCLINK接続後に監視を開始してください。</p>
       </div>
     </aside>
   </main>
@@ -160,7 +168,9 @@
           <label>コマンドサイズ（ワード）<input id="command-size" type="number" min="4" max="256" step="2" value="64"></label>
           <label>レスポンス先頭 D<input id="response-address" type="number" min="0" max="65535" value="8192"></label>
           <label>レスポンスサイズ（ワード）<input id="response-size" type="number" min="8" max="256" step="2" value="64"></label>
-          <label>BUSY ビット M<input id="busy-address" type="number" min="0" max="65535" value="1024"></label>
+          <label>仮想出力(PLO)先頭 M<input id="plo-address" type="number" min="0" max="65535" value="1024"></label>
+          <label>仮想出力ポート数<input id="plo-port-count" type="number" min="1" max="256" value="32"></label>
+          <label>BUSY ポート番号<input id="busy-port" type="number" min="1" max="256" value="1"></label>
           <label>バイトオーダー<select id="byte-order">
             <option value="high_low">上位→下位</option>
             <option value="low_high">下位→上位</option>
@@ -168,6 +178,19 @@
           <label>文字エンコード<select id="plclink-encoding"><option value="cp932">SJIS</option><option value="utf-8">UTF-8</option></select></label>
           <label>行番号の桁数<select id="plclink-line-digits"><option value="2">2 (01–99)</option><option value="3">3 (001–999)</option></select></label>
         </div>
+        <p id="busy-address-hint" class="export-note">BUSY 実アドレス: M1024（PLO先頭 + ポート番号 - 1）。VTV の「ステータス信号」割付と一致させてください。</p>
+        <h3 class="subsection-title">結果データ出力</h3>
+        <div class="check-grid single result-data-toggles">
+          <label><input id="result-data-enabled" type="checkbox">結果データ出力を有効にする</label>
+          <label><input id="notify-area-enabled" type="checkbox">通知エリアを有効にする</label>
+        </div>
+        <div class="form-grid three" id="result-data-fields">
+          <label>結果データ先頭 D<input id="result-data-address" type="number" min="0" max="65535" value="512"></label>
+          <label>結果データサイズ（ワード）<input id="result-data-size" type="number" min="2" max="65536" step="2" value="2048"></label>
+          <label>監視表示ワード数<input id="result-data-watch-words" type="number" min="2" max="256" step="2" value="64" title="D/M監視に表示する先頭ワード数"></label>
+          <label>通知エリア先頭 D<input id="notify-address" type="number" min="0" max="65535" value="2560"></label>
+        </div>
+        <p class="export-note">結果データ領域は D/M監視に常時表示されます（先頭から監視表示ワード数まで）。VTV の先頭アドレス／サイズと合わせてください。「有効にする」は VTV 側設定との整合確認用です。</p>
         <p class="export-note">VTV の「環境設定 → PLCLINK」と同一の値にしてください。接続テストは VTV からの接続待ちになります。</p>
       </div>
       <div id="connection-test-result" class="test-result"></div>
@@ -208,6 +231,6 @@
     </form>
   </dialog>
 
-  <script src="/app.js?v=20260727-2" defer></script>
+  <script src="/app.js?v=20260728-10" defer></script>
 </body>
 </html>

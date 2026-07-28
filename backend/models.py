@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
 
 class ProtocolSettings(BaseModel):
@@ -26,8 +26,23 @@ class ProtocolSettings(BaseModel):
     command_size: int = Field(default=64, ge=4, le=256)
     response_address: int = Field(default=8192, ge=0, le=65535)
     response_size: int = Field(default=64, ge=8, le=256)
-    busy_address: int = Field(default=1024, ge=0, le=65535)
+    plo_address: int = Field(default=1024, ge=0, le=65535)
+    plo_port_count: int = Field(default=32, ge=1, le=256)
+    busy_port: int = Field(default=1, ge=1, le=256)
     byte_order: Literal["high_low", "low_high"] = "high_low"
+    # 結果データ出力（VTV 環境設定 → PLCLINK）
+    result_data_enabled: bool = False
+    result_data_address: int = Field(default=512, ge=0, le=65535)
+    result_data_size: int = Field(default=2048, ge=2, le=65536)
+    result_data_watch_words: int = Field(default=64, ge=2, le=256)
+    notify_area_enabled: bool = False
+    notify_address: int = Field(default=2560, ge=0, le=65535)
+
+    @computed_field
+    @property
+    def busy_address(self) -> int:
+        """BUSY = 仮想出力(PLO)先頭 + ポート番号 - 1。"""
+        return self.plo_address + self.busy_port - 1
 
     @field_validator("host")
     @classmethod
@@ -37,27 +52,89 @@ class ProtocolSettings(BaseModel):
             raise ValueError("装置IP / 待受アドレスを入力してください")
         return value
 
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_busy_settings(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        values = dict(data)
+        if "plo_address" not in values and "busy_address" in values:
+            values["plo_address"] = values["busy_address"]
+            values.setdefault("busy_port", 1)
+        values.pop("busy_address", None)
+        return values
+
     @model_validator(mode="after")
     def validate_plclink_layout(self) -> ProtocolSettings:
         if self.command_size % 2:
             raise ValueError("コマンドアドレスサイズは偶数にしてください")
         if self.response_size % 2:
             raise ValueError("レスポンスアドレスサイズは偶数にしてください")
+        if self.result_data_size % 2:
+            raise ValueError("結果データ出力サイズは偶数にしてください")
+        if self.result_data_watch_words % 2:
+            raise ValueError("結果データ監視ワード数は偶数にしてください")
+        if self.busy_port > self.plo_port_count:
+            raise ValueError(
+                "BUSYポート番号は仮想出力ポート数以下にしてください"
+            )
+        if self.busy_address > 65535:
+            raise ValueError(
+                "BUSYアドレスが範囲外です"
+                f"（PLO先頭 M{self.plo_address} + Port {self.busy_port}）"
+            )
+        plo_end = self.plo_address + self.plo_port_count - 1
+        if plo_end > 65535:
+            raise ValueError(
+                "仮想出力ポート範囲がデバイス範囲を超えています"
+            )
+        command_start = self.command_address
         command_end = self.command_address + self.command_size
+        response_start = self.response_address
         response_end = self.response_address + self.response_size
-        if not (
-            command_end <= self.response_address
-            or response_end <= self.command_address
-        ):
+        if _ranges_overlap(command_start, command_end, response_start, response_end):
             raise ValueError(
                 "コマンド領域とレスポンス領域が重複しています"
             )
+
+        d_ranges: list[tuple[str, int, int]] = [
+            ("コマンド領域", command_start, command_end),
+            ("レスポンス領域", response_start, response_end),
+        ]
+        if self.result_data_enabled:
+            result_end = self.result_data_address + self.result_data_size
+            if result_end > 65536:
+                raise ValueError(
+                    "結果データ出力範囲がデバイス範囲を超えています"
+                )
+            d_ranges.append(
+                ("結果データ領域", self.result_data_address, result_end)
+            )
+        if self.notify_area_enabled:
+            notify_end = self.notify_address + 8
+            if notify_end > 65536:
+                raise ValueError(
+                    "通知エリア範囲がデバイス範囲を超えています"
+                )
+            d_ranges.append(("通知エリア", self.notify_address, notify_end))
+
+        for index, (left_name, left_start, left_end) in enumerate(d_ranges):
+            for right_name, right_start, right_end in d_ranges[index + 1 :]:
+                if _ranges_overlap(left_start, left_end, right_start, right_end):
+                    raise ValueError(
+                        f"{left_name}と{right_name}が重複しています"
+                    )
         return self
+
+
+def _ranges_overlap(start_a: int, end_a: int, start_b: int, end_b: int) -> bool:
+    return not (end_a <= start_b or end_b <= start_a)
 
 
 class MemoryWatchItem(BaseModel):
     id: str = Field(min_length=1, max_length=64)
     label: str = Field(default="", max_length=100)
+    group: str = Field(default="", max_length=40)
     device: Literal["D", "M"]
     address: int = Field(ge=0, le=65535)
     format: Literal["bit", "word", "int32", "fixed", "string"]
@@ -79,7 +156,7 @@ class MemoryWatchItem(BaseModel):
 
 
 class MemoryReadRequest(BaseModel):
-    items: list[MemoryWatchItem] = Field(min_length=1, max_length=128)
+    items: list[MemoryWatchItem] = Field(min_length=1, max_length=512)
 
 
 class CommandStep(BaseModel):

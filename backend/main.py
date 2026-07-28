@@ -92,14 +92,10 @@ async def test_connection(settings: ProtocolSettings) -> dict[str, str]:
 @app.post("/api/plclink/memory/read")
 async def read_plclink_memory(request: MemoryReadRequest) -> dict[str, object]:
     client = _plclink_client
-    if (
-        client is None
-        or not client.server.is_running
-        or client.server.client_count == 0
-    ):
+    if client is None or not client.server.is_running:
         raise HTTPException(
             status_code=503,
-            detail="VTVとのPLCLINK接続がありません",
+            detail="疑似PLCが起動していません。先に接続テストを行ってください。",
         )
     values = read_memory_items(
         client.memory,
