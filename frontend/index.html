@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>VTV Network Sequencer</title>
-  <link rel="stylesheet" href="/style.css?v=20260802-1">
+  <link rel="stylesheet" href="/style.css?v=20260803-3">
 </head>
 <body>
   <header class="app-header">
@@ -13,6 +13,11 @@
       <h1>Network Sequencer</h1>
     </div>
     <div class="header-actions">
+      <label class="header-timeout" title="コマンド応答の待ち時間（秒）。重い処理の前に延ばしてください。">
+        <span class="header-timeout-label">TO</span>
+        <input id="header-timeout" type="number" min="0.1" max="300" step="0.1" value="5" aria-label="タイムアウト（秒）">
+        <span class="header-timeout-unit">秒</span>
+      </label>
       <span id="connection-badge" class="badge disconnected">未接続</span>
       <button id="layout-mode-button" class="button secondary" title="モニター専用表示に切替">モニター拡大</button>
       <button id="settings-button" class="button secondary">接続設定</button>
@@ -98,19 +103,33 @@
           </div>
         </div>
         <div id="monitor-watch-panel" class="monitor-content hidden">
-          <div class="monitor-toolbar">
-            <span class="monitor-pane-label">D/M監視</span>
-            <span id="watch-status" class="watch-status">停止中</span>
-            <label class="watch-display-mode">結果データ
-              <select id="result-data-display-mode" title="VTV結果データモニタの表記に対応">
-                <option value="fixed">固定小数点</option>
-                <option value="dec">整数 (Dec)</option>
-                <option value="hex">16進 (Hex)</option>
-              </select>
-            </label>
-            <button id="refresh-map-button" class="icon-button" title="接続設定から一覧を再生成">再読込</button>
-            <button id="start-watch-button" class="icon-button">開始</button>
-            <button id="stop-watch-button" class="icon-button" disabled>停止</button>
+          <div class="monitor-toolbar watch-toolbar">
+            <div class="watch-toolbar-row watch-toolbar-main">
+              <span id="watch-status" class="watch-status">停止中</span>
+              <div class="watch-toolbar-actions">
+                <button id="refresh-map-button" class="icon-button" title="接続設定から一覧を再生成">再読込</button>
+                <button id="start-watch-button" class="icon-button">開始</button>
+                <button id="stop-watch-button" class="icon-button" disabled>停止</button>
+              </div>
+            </div>
+            <div class="watch-toolbar-row watch-toolbar-settings">
+              <label class="watch-field">
+                <span class="watch-field-label">更新周期</span>
+                <span class="watch-field-control">
+                  <input id="watch-interval" type="number" min="10" max="10000" step="1" value="500"
+                    title="D/M 監視の更新間隔（ミリ秒）。下限 10 ms。HTTP 取得にかかる時間は別途加算されます。" aria-label="更新周期（ミリ秒）">
+                  <span class="watch-field-unit">ms</span>
+                </span>
+              </label>
+              <label class="watch-field">
+                <span class="watch-field-label">結果データ</span>
+                <select id="result-data-display-mode" title="VTV結果データモニタの表記に対応">
+                  <option value="fixed">固定小数点</option>
+                  <option value="dec">整数 (Dec)</option>
+                  <option value="hex">16進 (Hex)</option>
+                </select>
+              </label>
+            </div>
           </div>
           <div id="watch-list" class="watch-list"></div>
           <p id="watch-note" class="watch-note">接続設定のコマンド／レスポンス／PLO割付から自動生成します。</p>
@@ -240,6 +259,6 @@
     </form>
   </dialog>
 
-  <script src="/app.js?v=20260802-2" defer></script>
+  <script src="/app.js?v=20260803-2" defer></script>
 </body>
 </html>

@@ -1,3 +1,7 @@
+const WATCH_INTERVAL_MIN_MS = 10;
+const WATCH_INTERVAL_MAX_MS = 10_000;
+const WATCH_INTERVAL_DEFAULT_MS = 500;
+
 const state = {
   catalog: [],
   steps: [],
@@ -27,6 +31,7 @@ const state = {
   watchValues: {},
   watchRunning: false,
   watchTimer: null,
+  watchIntervalMs: WATCH_INTERVAL_DEFAULT_MS,
   softPlcPollTimer: null,
   softPlcClientCount: 0,
 };
@@ -41,8 +46,10 @@ async function initialize() {
   restoreConnectionState();
   restoreViewMode();
   restoreResultDataDisplayMode();
+  restoreWatchInterval();
   restoreLayoutMode();
   applySettingsToForm();
+  applyWatchIntervalToForm();
   refreshMappedWatchItems();
   const response = await fetch("/api/catalog");
   state.catalog = await response.json();
@@ -92,8 +99,12 @@ function bindEvents() {
     localStorage.setItem("vtv-result-data-display-mode", $("#result-data-display-mode").value);
     updateWatchValueDisplays();
   });
+  $("#watch-interval")?.addEventListener("change", onWatchIntervalChanged);
   $("#test-button").addEventListener("click", testConnection);
   $("#start-softplc-button")?.addEventListener("click", startSoftPlc);
+  for (const id of ["header-timeout", "timeout"]) {
+    $(`#${id}`)?.addEventListener("change", onTimeoutChanged);
+  }
   $("#run-button").addEventListener("click", runSequence);
   $("#stop-button").addEventListener("click", stopSequence);
   $("#clear-button").addEventListener("click", () => {
@@ -133,6 +144,57 @@ function restoreViewMode() {
     if (saved === "compact" || saved === "normal") state.viewMode = saved;
   } catch (_) {}
   applyViewMode();
+}
+
+function restoreWatchInterval() {
+  try {
+    const saved = Number(localStorage.getItem("vtv-watch-interval-ms"));
+    if (Number.isFinite(saved)) {
+      state.watchIntervalMs = clampWatchIntervalMs(saved);
+    }
+  } catch (_) {}
+}
+
+function applyWatchIntervalToForm() {
+  const input = $("#watch-interval");
+  if (input) input.value = String(state.watchIntervalMs);
+  updateWatchNote();
+}
+
+function clampWatchIntervalMs(value) {
+  if (!Number.isFinite(value)) return WATCH_INTERVAL_DEFAULT_MS;
+  return Math.min(WATCH_INTERVAL_MAX_MS, Math.max(WATCH_INTERVAL_MIN_MS, Math.round(value)));
+}
+
+function readWatchIntervalMs() {
+  const value = Number($("#watch-interval")?.value);
+  return clampWatchIntervalMs(Number.isFinite(value) ? value : state.watchIntervalMs);
+}
+
+function onWatchIntervalChanged() {
+  state.watchIntervalMs = readWatchIntervalMs();
+  applyWatchIntervalToForm();
+  localStorage.setItem("vtv-watch-interval-ms", String(state.watchIntervalMs));
+}
+
+function scheduleNextWatchPoll(elapsedMs = 0) {
+  if (!state.watchRunning) return;
+  const delay = Math.max(0, readWatchIntervalMs() - elapsedMs);
+  state.watchTimer = setTimeout(pollWatchValues, delay);
+}
+
+function updateWatchNote() {
+  const note = $("#watch-note");
+  if (!note) return;
+  const isPlc = ($("#transport")?.value || state.settings.transport) === "plclink";
+  if (!isPlc) {
+    note.textContent = "PLCLINK 接続時に D/M 監視が利用できます。";
+    return;
+  }
+  note.textContent =
+    `接続設定のコマンド／レスポンス／PLO から自動生成。`
+    + `更新周期 ${readWatchIntervalMs()} ms（HTTP 取得時間を除く。`
+    + `1 ms は不可、実効周期は取得処理時間以上になります）。`;
 }
 
 function restoreResultDataDisplayMode() {
@@ -433,6 +495,7 @@ function stopWatch(resetValues = false) {
 
 async function pollWatchValues() {
   if (!state.watchRunning) return;
+  const started = performance.now();
   try {
     const response = await fetch("/api/plclink/memory/read", {
       method: "POST",
@@ -469,7 +532,7 @@ async function pollWatchValues() {
     updateWatchValueDisplays();
     setWatchStatus(`再接続待ち: ${error.message}`, "error");
   } finally {
-    if (state.watchRunning) state.watchTimer = setTimeout(pollWatchValues, 500);
+    scheduleNextWatchPoll(performance.now() - started);
   }
 }
 
@@ -864,6 +927,29 @@ function assignIds(step) {
   for (const key of ["steps", "then_steps", "else_steps"]) (step[key] || []).forEach(assignIds);
 }
 
+function syncTimeoutInputs(value) {
+  const text = String(value);
+  for (const id of ["header-timeout", "timeout"]) {
+    const input = $(`#${id}`);
+    if (input) input.value = text;
+  }
+}
+
+function readTimeoutValue() {
+  const header = Number($("#header-timeout")?.value);
+  if (Number.isFinite(header) && header > 0) return header;
+  const settings = Number($("#timeout")?.value);
+  if (Number.isFinite(settings) && settings > 0) return settings;
+  return state.settings.timeout || 5;
+}
+
+function onTimeoutChanged() {
+  const timeout = readTimeoutValue();
+  syncTimeoutInputs(timeout);
+  state.settings.timeout = timeout;
+  localStorage.setItem("vtv-settings", JSON.stringify(state.settings));
+}
+
 function readSettingsForm() {
   const transport = $("#transport").value;
   const encoding = transport === "plclink"
@@ -876,7 +962,7 @@ function readSettingsForm() {
     transport,
     host: $("#host").value.trim(),
     port: Number($("#port").value),
-    timeout: Number($("#timeout").value),
+    timeout: readTimeoutValue(),
     input_terminator: $("#input-terminator").value,
     output_terminator: $("#output-terminator").value,
     separator: $("#separator").value,
@@ -949,7 +1035,7 @@ function applySettingsToForm() {
   $("#transport").value = s.transport || "tcp";
   $("#host").value = s.host;
   $("#port").value = s.port;
-  $("#timeout").value = s.timeout;
+  syncTimeoutInputs(s.timeout ?? 5);
   $("#input-terminator").value = s.input_terminator;
   $("#output-terminator").value = s.output_terminator;
   $("#separator").value = s.separator;
@@ -1015,9 +1101,7 @@ function syncTransportUi() {
   $("#start-softplc-button")?.classList.toggle("hidden", !isPlc);
   lastTransport = transport;
   $("#watch-tab-button").disabled = !isPlc;
-  $("#watch-note").textContent = isPlc
-    ? "接続設定のコマンド／レスポンス／PLOから自動生成。更新周期は500msです。"
-    : "D/M監視はPLCLINKモードで利用できます。";
+  updateWatchNote();
   if (!isPlc) {
     stopWatch(true);
     selectMonitorTab("log");
