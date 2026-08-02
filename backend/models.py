@@ -35,6 +35,8 @@ class ProtocolSettings(BaseModel):
     result_data_address: int = Field(default=512, ge=0, le=65535)
     result_data_size: int = Field(default=2048, ge=2, le=65536)
     result_data_watch_words: int = Field(default=64, ge=2, le=256)
+    # VTV「環境設定 → PLCLINK → 詳細設定 → 小数点以下桁数」と合わせる
+    result_data_decimals: int = Field(default=3, ge=0, le=9)
     notify_area_enabled: bool = False
     notify_address: int = Field(default=2560, ge=0, le=65535)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 from collections.abc import Awaitable, Callable
 
 from . import mc3e
@@ -83,6 +84,7 @@ class SoftPlcServer:
         peer_text = f"{peer[0]}:{peer[1]}" if peer else "unknown"
         self._clients.add(writer)
         self._connected.set()
+        self._enable_keepalive(writer)
         if self.on_connect is not None:
             result = self.on_connect(peer_text)
             if asyncio.iscoroutine(result):
@@ -107,12 +109,19 @@ class SoftPlcServer:
                         break
                     frame = bytes(buffer[:needed])
                     del buffer[:needed]
-                    response = mc3e.handle_request(self.memory, frame)
+                    try:
+                        response = mc3e.handle_request(self.memory, frame)
+                    except Exception:
+                        # handle_request は原則例外を返さないが、接続維持を優先する。
+                        response = mc3e.error_response(frame)
                     writer.write(response)
                     await writer.drain()
                     if mc3e.decode_u16(response, 9) == 0:
                         self._communicated.set()
         except (asyncio.IncompleteReadError, ConnectionResetError, OSError):
+            pass
+        except Exception:
+            # 1 クライアントの予期せぬ例外でサーバ全体は落とさない。
             pass
         finally:
             self._clients.discard(writer)
@@ -128,3 +137,23 @@ class SoftPlcServer:
                 result = self.on_disconnect(peer_text)
                 if asyncio.iscoroutine(result):
                     await result
+
+    @staticmethod
+    def _enable_keepalive(writer: asyncio.StreamWriter) -> None:
+        """アイドル切断を減らすため TCP keepalive を有効化する。"""
+        sock = writer.get_extra_info("socket")
+        if sock is None:
+            return
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            if hasattr(socket, "TCP_KEEPIDLE"):
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)
+            if hasattr(socket, "TCP_KEEPINTVL"):
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
+            if hasattr(socket, "TCP_KEEPCNT"):
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+            # Windows
+            if hasattr(socket, "SIO_KEEPALIVE_VALS"):
+                sock.ioctl(socket.SIO_KEEPALIVE_VALS, (1, 30_000, 10_000))
+        except (OSError, AttributeError, ValueError):
+            pass

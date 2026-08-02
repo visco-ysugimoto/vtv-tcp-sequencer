@@ -20,9 +20,10 @@ class PlcLinkClient:
     def __init__(self, settings: ProtocolSettings):
         self.settings = settings
         self.memory = DeviceMemory()
+        # 全 NIC で待受する。host 欄は表示・メッセージ用（特定 IP bind はしない）。
         self.server = SoftPlcServer(
             self.memory,
-            host=settings.host or "0.0.0.0",
+            host="0.0.0.0",
             port=settings.port,
         )
         self._peer: str | None = None
@@ -34,20 +35,24 @@ class PlcLinkClient:
     async def __aexit__(self, *_: object) -> None:
         await self.close()
 
-    async def connect(self) -> None:
+    async def start(self) -> None:
+        """疑似 PLC の待受を開始する（接続待ちは別メソッド）。"""
+        if self.server.is_running:
+            return
         self.memory.clear()
         try:
             await self.server.start()
         except OSError as exc:
             raise ProtocolError(
                 f"疑似 PLC を起動できません"
-                f"（{self.settings.host}:{self.settings.port}）: {exc}"
+                f"（0.0.0.0:{self.settings.port}）: {exc}。"
+                " 待受アドレスにはこの PC の IP または 0.0.0.0 を指定してください"
+                "（VTV / 装置側の IP ではありません）"
             ) from exc
-        try:
-            await self.wait_for_client()
-        except ProtocolError:
-            await self.server.stop()
-            raise
+
+    async def connect(self) -> None:
+        await self.start()
+        await self.wait_for_client()
 
     async def wait_for_client(self) -> None:
         """起動済みの疑似 PLC へ VTV が接続するまで待つ。"""
@@ -57,7 +62,10 @@ class PlcLinkClient:
             raise ProtocolError(
                 f"{self.settings.timeout:g}秒以内に VTV からの接続がありません。"
                 f" VTV の PLCLINK 通信先を"
-                f" この PC の IP:{self.settings.port} に設定してください"
+                f" この PC の IP:{self.settings.port} に設定し、"
+                " Windows ファイアウォールで python.exe / 待受ポートの"
+                "受信を許可してください。"
+                " 疑似 PLC は待受を継続しているので、接続後に再度テストできます"
             ) from exc
 
     async def close(self) -> None:

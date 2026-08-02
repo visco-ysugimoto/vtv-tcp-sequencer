@@ -237,20 +237,114 @@ def test_mc3e_bit_read_write_round_trip() -> None:
     assert bits == [1, 0, 1]
 
 
-def test_mc3e_out_of_range_returns_error_response() -> None:
-    memory = DeviceMemory()
+def test_mc3e_out_of_range_expands_memory() -> None:
+    memory = DeviceMemory(d_size=100)
     request = mc3e.build_request(
         command=mc3e.CMD_BATCH_READ,
         subcommand=mc3e.SUBCMD_WORD,
         device="D",
-        head=65535,
+        head=200,
         points=2,
     )
 
     response = mc3e.handle_request(memory, request)
 
     assert response[0:2] == b"\xd0\x00"
-    assert mc3e.decode_u16(response, 9) == 0xC050
+    assert mc3e.decode_u16(response, 9) == 0
+    assert memory.read_words(200, 2) == [0, 0]
+
+
+def test_mc3e_high_bit_word_read_does_not_crash() -> None:
+    """自動運転移行時のメモリチェックで 0x8000/0xFFFF が読まれても応答する。"""
+    memory = DeviceMemory()
+    memory.write_words(10, [0xFFFF, 0x8000, 0x7FFF])
+    request = mc3e.build_request(
+        command=mc3e.CMD_BATCH_READ,
+        subcommand=mc3e.SUBCMD_WORD,
+        device="D",
+        head=10,
+        points=3,
+    )
+    response = mc3e.handle_request(memory, request)
+    assert mc3e.decode_u16(response, 9) == 0
+    data = response[11:]
+    assert [mc3e.decode_u16(data, i * 2) for i in range(3)] == [0xFFFF, 0x8000, 0x7FFF]
+
+
+def test_mc3e_m_word_read_write_round_trip() -> None:
+    memory = DeviceMemory()
+    write = mc3e.build_request(
+        command=mc3e.CMD_BATCH_WRITE,
+        subcommand=mc3e.SUBCMD_WORD,
+        device="M",
+        head=1024,
+        points=1,
+        write_payload=mc3e.encode_u16(0xA5A5),
+    )
+    assert mc3e.decode_u16(mc3e.handle_request(memory, write), 9) == 0
+    assert memory.read_bits(1024, 16) == [
+        1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1
+    ]
+
+    read = mc3e.build_request(
+        command=mc3e.CMD_BATCH_READ,
+        subcommand=mc3e.SUBCMD_WORD,
+        device="M",
+        head=1024,
+        points=1,
+    )
+    response = mc3e.handle_request(memory, read)
+    assert mc3e.decode_u16(response, 9) == 0
+    assert mc3e.decode_u16(response, 11) == 0xA5A5
+
+
+def test_mc3e_random_read_write_round_trip() -> None:
+    memory = DeviceMemory()
+    memory.write_words(10, [11])
+    memory.write_words(20, [21, 22])
+
+    # word_n=1, dword_n=1 → D10 + D20(dword)
+    devices = mc3e.build_device_data("D", 10) + mc3e.build_device_data("D", 20)
+    request_body = (
+        mc3e.encode_u16(mc3e.CMD_RANDOM_READ)
+        + mc3e.encode_u16(mc3e.SUBCMD_WORD)
+        + bytes([1, 1])
+        + devices
+    )
+    frame = (
+        mc3e.SUBHEADER_REQUEST.to_bytes(2, "big")
+        + bytes([0, 0xFF])
+        + mc3e.encode_u16(0x3FF)
+        + bytes([0])
+        + mc3e.encode_u16(2 + len(request_body))
+        + mc3e.encode_u16(4)
+        + request_body
+    )
+    response = mc3e.handle_request(memory, frame)
+    assert mc3e.decode_u16(response, 9) == 0
+    data = response[11:]
+    assert mc3e.decode_i16(data, 0) == 11
+    assert mc3e.decode_i16(data, 2) == 21
+    assert mc3e.decode_i16(data, 4) == 22
+
+    write_body = (
+        mc3e.encode_u16(mc3e.CMD_RANDOM_WRITE)
+        + mc3e.encode_u16(mc3e.SUBCMD_WORD)
+        + bytes([1, 0])
+        + mc3e.build_device_data("D", 10)
+        + mc3e.encode_i16(99)
+    )
+    write_frame = (
+        mc3e.SUBHEADER_REQUEST.to_bytes(2, "big")
+        + bytes([0, 0xFF])
+        + mc3e.encode_u16(0x3FF)
+        + bytes([0])
+        + mc3e.encode_u16(2 + len(write_body))
+        + mc3e.encode_u16(4)
+        + write_body
+    )
+    assert mc3e.decode_u16(mc3e.handle_request(memory, write_frame), 9) == 0
+    assert memory.read_words(10, 1) == [99]
 
 
 async def _transact(

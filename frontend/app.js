@@ -11,7 +11,8 @@ const state = {
     response_address: 8192, response_size: 64,
     plo_address: 1024, plo_port_count: 32, busy_port: 1, byte_order: "high_low",
     result_data_enabled: false, result_data_address: 512, result_data_size: 2048,
-    result_data_watch_words: 64, notify_area_enabled: false, notify_address: 2560,
+    result_data_watch_words: 64, result_data_decimals: 3,
+    notify_area_enabled: false, notify_address: 2560,
   },
   socket: null,
   running: false,
@@ -26,6 +27,8 @@ const state = {
   watchValues: {},
   watchRunning: false,
   watchTimer: null,
+  softPlcPollTimer: null,
+  softPlcClientCount: 0,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -37,6 +40,7 @@ async function initialize() {
   restoreSettings();
   restoreConnectionState();
   restoreViewMode();
+  restoreResultDataDisplayMode();
   restoreLayoutMode();
   applySettingsToForm();
   refreshMappedWatchItems();
@@ -47,6 +51,7 @@ async function initialize() {
   renderSequence();
   renderWatchList();
   bindEvents();
+  startSoftPlcStatusPoll();
 }
 
 function bindEvents() {
@@ -73,12 +78,22 @@ function bindEvents() {
     renderWatchList();
   });
   ["result-data-address", "result-data-size", "result-data-watch-words", "notify-address"].forEach((id) => {
-    $(`#${id}`).addEventListener("change", () => {
+    $(`#${id}`)?.addEventListener("change", () => {
       refreshMappedWatchItems();
       renderWatchList();
     });
   });
+  $("#result-data-decimals")?.addEventListener("change", () => {
+    refreshMappedWatchItems();
+    renderWatchList();
+    updateWatchValueDisplays();
+  });
+  $("#result-data-display-mode")?.addEventListener("change", () => {
+    localStorage.setItem("vtv-result-data-display-mode", $("#result-data-display-mode").value);
+    updateWatchValueDisplays();
+  });
   $("#test-button").addEventListener("click", testConnection);
+  $("#start-softplc-button")?.addEventListener("click", startSoftPlc);
   $("#run-button").addEventListener("click", runSequence);
   $("#stop-button").addEventListener("click", stopSequence);
   $("#clear-button").addEventListener("click", () => {
@@ -118,6 +133,17 @@ function restoreViewMode() {
     if (saved === "compact" || saved === "normal") state.viewMode = saved;
   } catch (_) {}
   applyViewMode();
+}
+
+function restoreResultDataDisplayMode() {
+  const select = $("#result-data-display-mode");
+  if (!select) return;
+  try {
+    const saved = localStorage.getItem("vtv-result-data-display-mode");
+    if (saved === "fixed" || saved === "dec" || saved === "hex") {
+      select.value = saved;
+    }
+  } catch (_) {}
 }
 
 function applyViewMode() {
@@ -212,6 +238,7 @@ function buildMappedWatchItems(settings) {
         device: "D",
         address: base + offset,
         format: "int32",
+        decimals: Number(settings.result_data_decimals) || 3,
         valueKind: "result_data",
       });
     }
@@ -327,10 +354,21 @@ function formatWatchValue(value, item) {
     return labels[value] !== undefined ? `${value} (${labels[value]})` : String(value);
   }
   if (item.valueKind === "result_data" && typeof value === "number") {
-    const unsigned = value >>> 0;
-    return `${value} (0x${unsigned.toString(16).toUpperCase().padStart(8, "0")})`;
+    return formatResultDataValue(value, item);
   }
   return String(value);
+}
+
+function formatResultDataValue(value, item) {
+  const decimals = Number(item.decimals ?? $("#result-data-decimals")?.value ?? 3);
+  const mode = $("#result-data-display-mode")?.value || "fixed";
+  const unsigned = value >>> 0;
+  const hex = `0x${unsigned.toString(16).toUpperCase().padStart(8, "0")}`;
+  if (mode === "hex") return hex;
+  if (mode === "dec") return String(value);
+  // 固定小数点: VTV「データ」列相当。出力値(整数)も併記。
+  const scaled = value / (10 ** decimals);
+  return `${scaled.toFixed(decimals)}  (出力値 ${value})`;
 }
 
 function watchValueClass(snapshot, item, changed) {
@@ -860,6 +898,7 @@ function readSettingsForm() {
     result_data_address: Number($("#result-data-address").value),
     result_data_size: Number($("#result-data-size").value),
     result_data_watch_words: Number($("#result-data-watch-words").value),
+    result_data_decimals: Number($("#result-data-decimals").value),
     notify_area_enabled: $("#notify-area-enabled").checked,
     notify_address: Number($("#notify-address").value),
   };
@@ -867,14 +906,30 @@ function readSettingsForm() {
 
 async function saveSettings(event) {
   if (event.submitter?.value === "cancel") return;
+  // method=dialog だと保存完了前に閉じるため、適用完了まで止める
+  event.preventDefault();
   state.settings = readSettingsForm();
   localStorage.setItem("vtv-settings", JSON.stringify(state.settings));
   refreshMappedWatchItems();
   renderWatchList();
-  await verifyConnectionSettings({
+  const resultEl = $("#connection-test-result");
+  // PLCLINK は設定保存で接続テストし直さない（再起動すると VTV が切れる）。
+  if (state.settings.transport === "plclink") {
+    const data = await startSoftPlc({ updateBadge: true });
+    if (!data) return;
+    if (resultEl) {
+      resultEl.className = "test-result success";
+      resultEl.textContent =
+        `${resultEl.textContent}\n設定を保存しました（既存の VTV 接続は維持します）。`;
+    }
+    $("#settings-dialog").close();
+    return;
+  }
+  const ok = await verifyConnectionSettings({
     showMessage: true,
-    resultEl: $("#connection-test-result"),
+    resultEl,
   });
+  if (ok) $("#settings-dialog").close();
 }
 
 function restoreSettings() {
@@ -918,34 +973,47 @@ function applySettingsToForm() {
   $("#result-data-address").value = s.result_data_address ?? 512;
   $("#result-data-size").value = s.result_data_size ?? 2048;
   $("#result-data-watch-words").value = s.result_data_watch_words ?? 64;
+  $("#result-data-decimals").value = s.result_data_decimals ?? 3;
   $("#notify-area-enabled").checked = !!s.notify_area_enabled;
   $("#notify-address").value = s.notify_address ?? 2560;
   syncTransportUi();
   syncResultDataUi();
   updateBusyAddressHint();
+  restoreResultDataDisplayMode();
 }
+
+let lastTransport = null;
 
 function syncTransportUi() {
   const transport = $("#transport").value;
   const isPlc = transport === "plclink";
+  const switchedFromTcp = lastTransport === "tcp" && isPlc;
+  const switchedFromPlc = lastTransport === "plclink" && !isPlc;
   $("#tcp-settings").classList.toggle("hidden", isPlc);
   $("#plclink-settings").classList.toggle("hidden", !isPlc);
   const hint = $("#transport-hint");
   if (isPlc) {
     $("#host-label-text").textContent = "待受アドレス";
     $("#host").placeholder = "0.0.0.0";
-    if (!$("#host").value) $("#host").value = "0.0.0.0";
-    if (Number($("#port").value) === 55555) $("#port").value = 5000;
+    // TCP の装置 IP が残ると混乱するため、切替時は待受用にリセットする
+    if (!$("#host").value || switchedFromTcp) $("#host").value = "0.0.0.0";
+    if (Number($("#port").value) === 55555 || switchedFromTcp) $("#port").value = 5000;
     $("#port-label-text").textContent = "待受ポート";
-    hint.textContent = "アプリが疑似 PLC（MC 3E）として待ち受け、VTV から接続します。";
+    hint.textContent =
+      "アプリが疑似 PLC（MC 3E）として全 NIC で待ち受けます。"
+      + " 先に「疑似PLC待受開始」を押し、VTV 側の接続先を"
+      + " この PC の LAN IP（例: 192.168.0.100）:待受ポート にしてください。"
+      + " 装置 IP（例: 192.168.0.10）ではありません。";
   } else {
     $("#host-label-text").textContent = "装置 IP";
     $("#host").placeholder = "192.168.0.10";
-    if ($("#host").value === "0.0.0.0") $("#host").value = "";
-    if (Number($("#port").value) === 5000) $("#port").value = 55555;
+    if ($("#host").value === "0.0.0.0" || switchedFromPlc) $("#host").value = "";
+    if (Number($("#port").value) === 5000 || switchedFromPlc) $("#port").value = 55555;
     $("#port-label-text").textContent = "ポート";
     hint.textContent = "装置の Network I/O（TCP）へクライアント接続します。";
   }
+  $("#start-softplc-button")?.classList.toggle("hidden", !isPlc);
+  lastTransport = transport;
   $("#watch-tab-button").disabled = !isPlc;
   $("#watch-note").textContent = isPlc
     ? "接続設定のコマンド／レスポンス／PLOから自動生成。更新周期は500msです。"
@@ -996,6 +1064,7 @@ function settingsKey(settings) {
     settings.result_data_address ?? 512,
     settings.result_data_size ?? 2048,
     settings.result_data_watch_words ?? 64,
+    settings.result_data_decimals ?? 3,
     settings.notify_area_enabled ? 1 : 0,
     settings.notify_address ?? 2560,
   ].join(":");
@@ -1027,14 +1096,90 @@ function restoreConnectionState() {
 
 function refreshConnectionBadge() {
   if (state.running) return;
-  if (
+  const settingsMatch =
     state.connectionVerified
-    && state.verifiedSettingsKey === settingsKey(state.settings)
-  ) {
+    && state.verifiedSettingsKey === settingsKey(state.settings);
+  if (state.settings.transport === "plclink") {
+    // PLCLINK は実際の VTV TCP 接続数を優先する。
+    if (state.softPlcClientCount > 0) {
+      setConnection("connected");
+      return;
+    }
+    if (settingsMatch) {
+      setConnection("connecting");
+      return;
+    }
+    setConnection("disconnected");
+    return;
+  }
+  if (settingsMatch) {
     setConnection("connected");
     return;
   }
   setConnection("disconnected");
+}
+
+function startSoftPlcStatusPoll() {
+  if (state.softPlcPollTimer) return;
+  state.softPlcPollTimer = setInterval(() => {
+    pollSoftPlcStatus();
+  }, 1500);
+  pollSoftPlcStatus();
+}
+
+async function pollSoftPlcStatus() {
+  if (state.settings.transport !== "plclink" || state.running) return;
+  try {
+    const response = await fetch("/api/plclink/status");
+    if (!response.ok) return;
+    const data = await response.json();
+    state.softPlcClientCount = Number(data.client_count) || 0;
+    refreshConnectionBadge();
+  } catch (_) {}
+}
+
+async function startSoftPlc({ updateBadge = true } = {}) {
+  const settings = readSettingsForm();
+  const resultEl = $("#connection-test-result");
+  if (settings.transport !== "plclink") {
+    resultEl.className = "test-result error";
+    resultEl.textContent = "PLCLINK モードで実行してください。";
+    return null;
+  }
+  if (!settings.host) {
+    resultEl.className = "test-result error";
+    resultEl.textContent = "待受アドレスを入力してください。";
+    return null;
+  }
+  resultEl.className = "test-result";
+  resultEl.textContent = "疑似 PLC を起動しています…";
+  try {
+    const response = await fetch("/api/plclink/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "待受を開始できません");
+    const targets = (data.connect_targets || []).join(" / ") || data.preferred_target;
+    resultEl.className = "test-result success";
+    resultEl.textContent =
+      `${data.message || "待受を開始しました。"}\n`
+      + `VTV に設定する接続先: ${targets}`;
+    if (updateBadge) {
+      state.softPlcClientCount = Number(data.client_count) || 0;
+      const live = state.softPlcClientCount > 0;
+      if (live) {
+        markConnectionVerified(true, settings);
+      }
+      refreshConnectionBadge();
+    }
+    return data;
+  } catch (error) {
+    resultEl.className = "test-result error";
+    resultEl.textContent = error.message;
+    return null;
+  }
 }
 
 async function verifyConnectionSettings({ showMessage = false, resultEl = null } = {}) {
@@ -1050,11 +1195,17 @@ async function verifyConnectionSettings({ showMessage = false, resultEl = null }
     }
     return false;
   }
-  if (showMessage && resultEl) {
+  if (settings.transport === "plclink") {
+    const started = await startSoftPlc({ updateBadge: false });
+    if (!started) return false;
+    if (showMessage && resultEl) {
+      resultEl.className = "test-result";
+      resultEl.textContent =
+        `${resultEl.textContent}\nVTV からの接続・MC 3E 通信を待っています…`;
+    }
+  } else if (showMessage && resultEl) {
     resultEl.className = "test-result";
-    resultEl.textContent = settings.transport === "plclink"
-      ? "疑似 PLC を起動し、VTV からの接続を待っています…"
-      : "接続しています…";
+    resultEl.textContent = "接続しています…";
   }
   setConnection("connecting");
   try {

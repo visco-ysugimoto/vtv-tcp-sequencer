@@ -11,6 +11,8 @@ DEVICE_D = 0xA8
 DEVICE_M = 0x90
 CMD_BATCH_READ = 0x0401
 CMD_BATCH_WRITE = 0x1401
+CMD_RANDOM_READ = 0x0403
+CMD_RANDOM_WRITE = 0x1402
 SUBCMD_WORD = 0x0000
 SUBCMD_BIT = 0x0001
 
@@ -50,7 +52,8 @@ def encode_u16(value: int) -> bytes:
 
 
 def encode_i16(value: int) -> bytes:
-    return int(value).to_bytes(2, "little", signed=True)
+    # 互換用。MC ワード応答は常に unsigned 16bit として扱うこと。
+    return encode_u16(value)
 
 
 def decode_u16(data: bytes, offset: int = 0) -> int:
@@ -186,39 +189,128 @@ def parse_request(frame: bytes) -> McRequest:
 def handle_request(memory: DeviceMemory, frame: bytes) -> bytes:
     request: McRequest | None = None
     try:
+        if len(frame) < 15:
+            raise McProtocolError(0xC050, "要求電文が短すぎます")
+        command = decode_u16(frame, 11)
+        subcommand = decode_u16(frame, 13)
+        if command in {CMD_RANDOM_READ, CMD_RANDOM_WRITE}:
+            data = _execute_random(memory, frame, command, subcommand)
+            meta = _header_meta(frame)
+            return build_response(meta, end_code=0, data=data)
+
         request = parse_request(frame)
         data = _execute(memory, request)
         return build_response(request, end_code=0, data=data)
-    except (McProtocolError, IndexError, ValueError) as exc:
+    except (McProtocolError, IndexError, ValueError, OverflowError) as exc:
         end_code = exc.end_code if isinstance(exc, McProtocolError) else 0xC050
-        # Prefer echoing header fields when parse partially succeeded.
-        fallback = McRequest(
-            network=frame[2] if len(frame) > 2 else 0,
-            pc=frame[3] if len(frame) > 3 else 0xFF,
-            dest_moduleio=decode_u16(frame, 4) if len(frame) >= 6 else 0x3FF,
-            dest_modulesta=frame[6] if len(frame) > 6 else 0,
-            timer=0,
-            command=0,
-            subcommand=0,
-            device="D",
-            head=0,
-            points=0,
-            payload=b"",
-        )
+        fallback = _header_meta(frame)
         if request is None:
             try:
                 request = parse_request(frame)
             except McProtocolError:
                 request = fallback
         return build_response(request, end_code=end_code)
+    except Exception:
+        # 予期しない例外でも応答を返し、VTV 側の無応答タイムアウト切断を防ぐ。
+        return error_response(frame)
+
+
+def error_response(frame: bytes, end_code: int = 0xC050) -> bytes:
+    return build_response(_header_meta(frame), end_code=end_code)
+
+
+def _header_meta(frame: bytes) -> McRequest:
+    return McRequest(
+        network=frame[2] if len(frame) > 2 else 0,
+        pc=frame[3] if len(frame) > 3 else 0xFF,
+        dest_moduleio=decode_u16(frame, 4) if len(frame) >= 6 else 0x3FF,
+        dest_modulesta=frame[6] if len(frame) > 6 else 0,
+        timer=0,
+        command=decode_u16(frame, 11) if len(frame) >= 13 else 0,
+        subcommand=decode_u16(frame, 13) if len(frame) >= 15 else 0,
+        device="D",
+        head=0,
+        points=0,
+        payload=b"",
+    )
+
+
+def _read_device_words(memory: DeviceMemory, device: str, head: int, count: int) -> list[int]:
+    if device == "D":
+        return memory.read_words(head, count)
+    if device == "M":
+        return memory.read_bit_words(head, count)
+    raise McProtocolError(0xC050, f"未対応デバイス: {device}")
+
+
+def _write_device_words(
+    memory: DeviceMemory, device: str, head: int, values: list[int]
+) -> None:
+    if device == "D":
+        memory.write_words(head, values)
+        return
+    if device == "M":
+        memory.write_bit_words(head, values)
+        return
+    raise McProtocolError(0xC050, f"未対応デバイス: {device}")
+
+
+def _execute_random(
+    memory: DeviceMemory,
+    frame: bytes,
+    command: int,
+    subcommand: int,
+) -> bytes:
+    """ランダム読出/書込（ワード）。自動運転移行時のメモリチェックで使われる。"""
+    if subcommand != SUBCMD_WORD:
+        raise McProtocolError(0xC050, "ランダムアクセスはワードのみ対応")
+    if len(frame) < 17:
+        raise McProtocolError(0xC050, "ランダム要求が短すぎます")
+    word_n = frame[15]
+    dword_n = frame[16]
+    offset = 17
+
+    if command == CMD_RANDOM_READ:
+        data = bytearray()
+        for _ in range(word_n):
+            if len(frame) < offset + 4:
+                raise McProtocolError(0xC050, "ランダム読出のデバイス不足")
+            device, head = parse_device_data(frame[offset : offset + 4])
+            offset += 4
+            data.extend(encode_u16(_read_device_words(memory, device, head, 1)[0]))
+        for _ in range(dword_n):
+            if len(frame) < offset + 4:
+                raise McProtocolError(0xC050, "ランダム読出のデバイス不足")
+            device, head = parse_device_data(frame[offset : offset + 4])
+            offset += 4
+            words = _read_device_words(memory, device, head, 2)
+            data.extend(encode_u16(words[0]))
+            data.extend(encode_u16(words[1]))
+        return bytes(data)
+
+    # CMD_RANDOM_WRITE
+    for _ in range(word_n):
+        if len(frame) < offset + 6:
+            raise McProtocolError(0xC050, "ランダム書込のデータ不足")
+        device, head = parse_device_data(frame[offset : offset + 4])
+        value = decode_u16(frame, offset + 4)
+        offset += 6
+        _write_device_words(memory, device, head, [value])
+    for _ in range(dword_n):
+        if len(frame) < offset + 8:
+            raise McProtocolError(0xC050, "ランダム書込のデータ不足")
+        device, head = parse_device_data(frame[offset : offset + 4])
+        low = decode_u16(frame, offset + 4)
+        high = decode_u16(frame, offset + 6)
+        offset += 8
+        _write_device_words(memory, device, head, [low, high])
+    return b""
 
 
 def _execute(memory: DeviceMemory, request: McRequest) -> bytes:
     if request.command == CMD_BATCH_READ and request.subcommand == SUBCMD_WORD:
-        if request.device != "D":
-            raise McProtocolError(0xC050, "ワード読出は D のみ対応")
-        words = memory.read_words(request.head, request.points)
-        return b"".join(encode_i16(value) for value in words)
+        words = _read_device_words(memory, request.device, request.head, request.points)
+        return b"".join(encode_u16(value) for value in words)
 
     if request.command == CMD_BATCH_READ and request.subcommand == SUBCMD_BIT:
         if request.device != "M":
@@ -227,16 +319,14 @@ def _execute(memory: DeviceMemory, request: McRequest) -> bytes:
         return pack_bits(bits)
 
     if request.command == CMD_BATCH_WRITE and request.subcommand == SUBCMD_WORD:
-        if request.device != "D":
-            raise McProtocolError(0xC050, "ワード書込は D のみ対応")
         needed = request.points * 2
         if len(request.payload) < needed:
             raise McProtocolError(0xC050, "書込データが不足しています")
         values = [
-            decode_i16(request.payload, index * 2)
+            decode_u16(request.payload, index * 2)
             for index in range(request.points)
         ]
-        memory.write_words(request.head, values)
+        _write_device_words(memory, request.device, request.head, values)
         return b""
 
     if request.command == CMD_BATCH_WRITE and request.subcommand == SUBCMD_BIT:

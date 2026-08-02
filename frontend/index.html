@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>VTV Network Sequencer</title>
-  <link rel="stylesheet" href="/style.css?v=20260728-10">
+  <link rel="stylesheet" href="/style.css?v=20260802-1">
 </head>
 <body>
   <header class="app-header">
@@ -101,6 +101,13 @@
           <div class="monitor-toolbar">
             <span class="monitor-pane-label">D/M監視</span>
             <span id="watch-status" class="watch-status">停止中</span>
+            <label class="watch-display-mode">結果データ
+              <select id="result-data-display-mode" title="VTV結果データモニタの表記に対応">
+                <option value="fixed">固定小数点</option>
+                <option value="dec">整数 (Dec)</option>
+                <option value="hex">16進 (Hex)</option>
+              </select>
+            </label>
             <button id="refresh-map-button" class="icon-button" title="接続設定から一覧を再生成">再読込</button>
             <button id="start-watch-button" class="icon-button">開始</button>
             <button id="stop-watch-button" class="icon-button" disabled>停止</button>
@@ -188,13 +195,15 @@
           <label>結果データ先頭 D<input id="result-data-address" type="number" min="0" max="65535" value="512"></label>
           <label>結果データサイズ（ワード）<input id="result-data-size" type="number" min="2" max="65536" step="2" value="2048"></label>
           <label>監視表示ワード数<input id="result-data-watch-words" type="number" min="2" max="256" step="2" value="64" title="D/M監視に表示する先頭ワード数"></label>
+          <label>小数点以下桁数<input id="result-data-decimals" type="number" min="0" max="9" value="3" title="VTV 詳細設定の小数点以下桁数と一致させてください"></label>
           <label>通知エリア先頭 D<input id="notify-address" type="number" min="0" max="65535" value="2560"></label>
         </div>
-        <p class="export-note">結果データ領域は D/M監視に常時表示されます（先頭から監視表示ワード数まで）。VTV の先頭アドレス／サイズと合わせてください。「有効にする」は VTV 側設定との整合確認用です。</p>
+        <p class="export-note">結果データ領域は D/M監視に常時表示されます（先頭から監視表示ワード数まで）。実数は固定小数点（整数×10^桁数）で書き込まれるため、監視の「結果データ」表記を VTV モニタに合わせて切り替えてください。</p>
         <p class="export-note">VTV の「環境設定 → PLCLINK」と同一の値にしてください。接続テストは VTV からの接続待ちになります。</p>
       </div>
       <div id="connection-test-result" class="test-result"></div>
       <div class="dialog-actions">
+        <button id="start-softplc-button" type="button" class="button secondary hidden">疑似PLC待受開始</button>
         <button id="test-button" type="button" class="button secondary">接続テスト</button>
         <button id="apply-settings" value="default" class="button primary">設定を保存</button>
       </div>
@@ -231,6 +240,6 @@
     </form>
   </dialog>
 
-  <script src="/app.js?v=20260728-10" defer></script>
+  <script src="/app.js?v=20260802-2" defer></script>
 </body>
 </html>

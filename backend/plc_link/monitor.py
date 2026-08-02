@@ -77,6 +77,7 @@ def build_mapped_watch_items(settings: ProtocolSettings) -> list[MemoryWatchItem
                 device="D",
                 address=address,
                 format="int32",
+                decimals=settings.result_data_decimals,
             )
         )
     if settings.notify_area_enabled:

@@ -28,8 +28,16 @@ hiddenimports = [
     "backend.catalog",
     "backend.engine",
     "backend.models",
+    "backend.network",
     "backend.paths",
     "backend.protocol",
+    "backend.plc_link",
+    "backend.plc_link.client",
+    "backend.plc_link.commands",
+    "backend.plc_link.mc3e",
+    "backend.plc_link.memory",
+    "backend.plc_link.monitor",
+    "backend.plc_link.server",
 ]
 
 for package in ("uvicorn", "fastapi", "starlette", "anyio", "pydantic"):

@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from .catalog import load_catalog
 from .engine import DeviceClient, SequenceEngine, create_client
 from .models import MemoryReadRequest, ProtocolSettings, SequenceRequest
+from .network import connect_targets
 from .paths import frontend_dir
 from .plc_link import PlcLinkClient
 from .plc_link.commands import command_metadata
@@ -35,26 +36,53 @@ app = FastAPI(
 FRONTEND = frontend_dir()
 
 
-async def _get_plclink_client(settings: ProtocolSettings) -> PlcLinkClient:
-    """設定が同じ間は疑似 PLC と VTV の接続を再利用する。"""
+def _plclink_listen_info(settings: ProtocolSettings, client: PlcLinkClient) -> dict[str, object]:
+    targets = connect_targets(settings.port)
+    preferred = next(
+        (t for t in targets if t.startswith("192.168.")),
+        targets[0] if targets else f"このPCのIP:{settings.port}",
+    )
+    return {
+        "status": "listening",
+        "bind": f"0.0.0.0:{settings.port}",
+        "port": settings.port,
+        "connect_targets": targets,
+        "preferred_target": preferred,
+        "client_count": client.server.client_count,
+        "message": (
+            f"疑似 PLC 待受中（{preferred}）。"
+            f" VTV の PLCLINK 接続先を {preferred} に設定してください"
+        ),
+    }
+
+
+async def _ensure_plclink_started(settings: ProtocolSettings) -> PlcLinkClient:
+    """疑似 PLC を起動する。接続待ちはしない。
+
+    待受ポートが同じなら TCP 接続を維持したまま設定だけ更新する。
+    （設定保存のたびに SoftPLC を再起動すると VTV が切断されるため。）
+    """
     global _plclink_client
 
     client = _plclink_client
-    if (
-        client is not None
-        and client.settings == settings
-        and client.server.is_running
-    ):
-        if client.server.client_count == 0:
-            await client.wait_for_client()
-        return client
+    if client is not None and client.server.is_running:
+        if client.settings.port == settings.port:
+            client.settings = settings
+            return client
+        await _close_plclink_client()
 
-    await _close_plclink_client()
     created = create_client(settings)
-    assert isinstance(created, PlcLinkClient)
-    await created.connect()
+    await created.start()
     _plclink_client = created
     return created
+
+
+async def _get_plclink_client(settings: ProtocolSettings) -> PlcLinkClient:
+    """設定が同じ間は疑似 PLC と VTV の接続を再利用する。"""
+    client = await _ensure_plclink_started(settings)
+    if client.server.client_count == 0:
+        await client.wait_for_client()
+    return client
 
 
 async def _close_plclink_client() -> None:
@@ -73,15 +101,42 @@ async def get_catalog() -> list[dict]:
     return catalog
 
 
+@app.post("/api/plclink/start")
+async def start_plclink(settings: ProtocolSettings) -> dict[str, object]:
+    """疑似 PLC の待受だけ開始する（VTV 接続待ちなし）。"""
+    if settings.transport != "plclink":
+        raise HTTPException(status_code=400, detail="PLCLINK モード専用です")
+    try:
+        client = await _ensure_plclink_started(settings)
+    except ProtocolError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return _plclink_listen_info(settings, client)
+
+
+@app.get("/api/plclink/status")
+async def plclink_status() -> dict[str, object]:
+    client = _plclink_client
+    if client is None or not client.server.is_running:
+        return {
+            "status": "stopped",
+            "bind": None,
+            "connect_targets": connect_targets(5000),
+            "client_count": 0,
+            "message": "疑似 PLC は停止しています",
+        }
+    return _plclink_listen_info(client.settings, client)
+
+
 @app.post("/api/test-connection")
 async def test_connection(settings: ProtocolSettings) -> dict[str, str]:
     try:
         if settings.transport == "plclink":
             client = await _get_plclink_client(settings)
             await client.wait_for_communication()
+            preferred = _plclink_listen_info(settings, client)["preferred_target"]
             return {
                 "status": "connected",
-                "message": "VTV との MC 3E 通信を確認しました",
+                "message": f"VTV との MC 3E 通信を確認しました（{preferred}）",
             }
         async with create_client(settings):
             return {"status": "connected"}

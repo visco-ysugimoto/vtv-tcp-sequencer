@@ -70,8 +70,11 @@ def test_plclink_connection_persists_and_is_reused(
             self.waited = 0
             self.closed = False
 
-        async def connect(self) -> None:
+        async def start(self) -> None:
             self.connected += 1
+
+        async def wait_for_client(self) -> None:
+            return None
 
         async def wait_for_communication(self) -> None:
             self.waited += 1
@@ -105,7 +108,113 @@ def test_plclink_connection_persists_and_is_reused(
     assert created[0].connected == 1
     assert created[0].waited == 2
     assert not created[0].closed
-    assert first.json()["message"] == "VTV との MC 3E 通信を確認しました"
+    assert first.json()["message"].startswith("VTV との MC 3E 通信を確認しました")
+    main_module._plclink_client = None
+
+
+def test_plclink_settings_update_keeps_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeServer:
+        is_running = True
+        client_count = 1
+
+    class FakePlcLinkClient:
+        def __init__(self, settings: object) -> None:
+            self.settings = settings
+            self.server = FakeServer()
+            self.started = 0
+            self.closed = False
+
+        async def start(self) -> None:
+            self.started += 1
+
+        async def close(self) -> None:
+            self.closed = True
+
+    created: list[FakePlcLinkClient] = []
+
+    def create_fake(settings: object) -> FakePlcLinkClient:
+        fake = FakePlcLinkClient(settings)
+        created.append(fake)
+        return fake
+
+    monkeypatch.setattr(main_module, "_plclink_client", None)
+    monkeypatch.setattr(main_module, "create_client", create_fake)
+    monkeypatch.setattr(
+        main_module,
+        "connect_targets",
+        lambda port: [f"192.168.0.100:{port}"],
+    )
+
+    first = client.post(
+        "/api/plclink/start",
+        json={
+            "transport": "plclink",
+            "host": "0.0.0.0",
+            "port": 5000,
+            "timeout": 5,
+            "command_address": 4096,
+        },
+    )
+    second = client.post(
+        "/api/plclink/start",
+        json={
+            "transport": "plclink",
+            "host": "0.0.0.0",
+            "port": 5000,
+            "timeout": 30,
+            "command_address": 5000,
+        },
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert len(created) == 1
+    assert created[0].started == 1
+    assert not created[0].closed
+    assert created[0].settings.command_address == 5000
+    assert created[0].settings.timeout == 30.0
+    main_module._plclink_client = None
+
+
+def test_plclink_start_returns_listen_info(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeServer:
+        is_running = True
+        client_count = 0
+
+    class FakePlcLinkClient:
+        def __init__(self, settings: object) -> None:
+            self.settings = settings
+            self.server = FakeServer()
+
+        async def start(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(main_module, "_plclink_client", None)
+    monkeypatch.setattr(
+        main_module,
+        "create_client",
+        lambda settings: FakePlcLinkClient(settings),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "connect_targets",
+        lambda port: [f"192.168.0.100:{port}"],
+    )
+
+    response = client.post(
+        "/api/plclink/start",
+        json={"transport": "plclink", "host": "0.0.0.0", "port": 5000, "timeout": 5},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "listening"
+    assert body["preferred_target"] == "192.168.0.100:5000"
+    assert body["bind"] == "0.0.0.0:5000"
     main_module._plclink_client = None
 
 
