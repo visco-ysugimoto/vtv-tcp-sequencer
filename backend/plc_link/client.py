@@ -43,6 +43,26 @@ class PlcLinkClient:
         try:
             await self.server.start()
         except OSError as exc:
+            winerr = getattr(exc, "winerror", None)
+            errno = getattr(exc, "errno", None)
+            if winerr == 10048 or errno in {98, 10048}:
+                raise ProtocolError(
+                    f"待受ポート {self.settings.port} は既に使用中です。"
+                    " 以前起動した Network Sequencer / python.exe が残っている可能性があります。"
+                    " アプリウィンドウをすべて閉じ、タスクマネージャーで python.exe を終了するか、"
+                    " 接続設定の待受ポートを別番号（例: 5001）に変更してください。"
+                    f"（詳細: {exc}）"
+                ) from exc
+            if winerr == 10013 or errno in {13, 10013}:
+                raise ProtocolError(
+                    f"待受ポート {self.settings.port} を開けません（アクセス拒否）。"
+                    " 別のアプリケーションが同じポートを使用中か、"
+                    " ファイアウォール / ウイルス対策がブロックしている可能性があります。"
+                    " タスクマネージャーで該当ポートを使用しているプロセスを確認し、"
+                    " 止められる場合は終了するか、接続設定の待受ポートを"
+                    " 5000 など空いている番号に変更してください（VTV 側も同じポートに合わせる）。"
+                    f"（詳細: {exc}）"
+                ) from exc
             raise ProtocolError(
                 f"疑似 PLC を起動できません"
                 f"（0.0.0.0:{self.settings.port}）: {exc}。"

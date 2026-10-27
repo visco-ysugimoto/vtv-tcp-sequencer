@@ -14,6 +14,7 @@ from .models import (
     ProtocolSettings,
     SequenceStep,
 )
+from .field_network import FieldNetworkClient
 from .plc_link import PlcLinkClient
 from .protocol import (
     CommandResult,
@@ -47,9 +48,13 @@ class LoopBreak(RuntimeError):
     pass
 
 
-def create_client(settings: ProtocolSettings) -> VtvTcpClient | PlcLinkClient:
+def create_client(
+    settings: ProtocolSettings,
+) -> VtvTcpClient | PlcLinkClient | FieldNetworkClient:
     if settings.transport == "plclink":
         return PlcLinkClient(settings)
+    if settings.transport == "field_network":
+        return FieldNetworkClient(settings)
     return VtvTcpClient(settings)
 
 
@@ -116,11 +121,13 @@ class SequenceEngine:
         definition = self.catalog[code]
         transport = self.client.settings.transport
 
-        if transport == "plclink":
+        if transport == "plclink" or transport == "field_network":
             from .plc_link.commands import format_plclink_display, resolve_spec
 
             spec = resolve_spec(code)
             display = format_plclink_display(spec, step.arguments)
+            if transport == "field_network":
+                display = display.replace("PLCLINK#", "FN#")
             await self.on_event(
                 {
                     "type": "tx",

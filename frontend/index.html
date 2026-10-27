@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>VTV Network Sequencer</title>
-  <link rel="stylesheet" href="/style.css?v=20260803-3">
+  <link rel="stylesheet" href="/style.css?v=20260805-fn">
 </head>
 <body>
   <header class="app-header">
@@ -89,7 +89,7 @@
       </div>
       <div class="monitor-tabs">
         <button class="monitor-tab active" data-monitor-tab="log">通信ログ</button>
-        <button id="watch-tab-button" class="monitor-tab" data-monitor-tab="watch">D/M監視</button>
+        <button id="watch-tab-button" class="monitor-tab" data-monitor-tab="watch">監視</button>
       </div>
       <div class="monitor-panes">
         <div id="monitor-log-panel" class="monitor-content">
@@ -139,13 +139,13 @@
   </main>
 
   <dialog id="settings-dialog">
-    <form method="dialog" id="settings-form">
+    <form id="settings-form" novalidate>
       <div class="dialog-heading">
         <div>
           <p class="eyebrow">CONNECTION</p>
           <h2>接続・プロトコル設定</h2>
         </div>
-        <button value="cancel" class="close-button" aria-label="閉じる">×</button>
+        <button type="button" id="settings-close-button" class="close-button" aria-label="閉じる">×</button>
       </div>
       <div class="form-section">
         <h3>通信方式</h3>
@@ -154,6 +154,7 @@
             <select id="transport">
               <option value="tcp">TCP（Network I/O）</option>
               <option value="plclink">PLCLINK（MC 3E 疑似 PLC）</option>
+              <option value="field_network">Field Network（EtherNet/IP）</option>
             </select>
           </label>
         </div>
@@ -220,11 +221,51 @@
         <p class="export-note">結果データ領域は D/M監視に常時表示されます（先頭から監視表示ワード数まで）。実数は固定小数点（整数×10^桁数）で書き込まれるため、監視の「結果データ」表記を VTV モニタに合わせて切り替えてください。</p>
         <p class="export-note">VTV の「環境設定 → PLCLINK」と同一の値にしてください。接続テストは VTV からの接続待ちになります。</p>
       </div>
+      <div id="field-network-settings" class="form-section hidden">
+        <h3>Field Network（EtherNet/IP）</h3>
+        <div class="form-grid two">
+          <label class="file-button-label">EDS インポート
+            <input id="eds-import-input" type="file" accept=".eds,.EDS,text/plain">
+          </label>
+          <div id="eds-import-status" class="export-note">VTV で作成した EDS を読み込み、サイズ／RPI／パスを反映します。</div>
+        </div>
+        <div class="form-grid three">
+          <label>入力サイズ（byte）<input id="fn-input-size" type="number" min="4" max="1444" step="2" value="612"></label>
+          <label>出力サイズ（byte）<input id="fn-output-size" type="number" min="4" max="1444" step="2" value="136"></label>
+          <label>RPI（μs）<input id="fn-rpi-us" type="number" min="2000" max="1000000" step="1000" value="10000"></label>
+          <label>ESI ポート数<select id="fn-esi-ports">
+            <option value="0">なし</option><option value="32" selected>32</option>
+            <option value="64">64</option><option value="96">96</option><option value="128">128</option>
+          </select></label>
+          <label>ESO ポート数<select id="fn-eso-ports">
+            <option value="0">なし</option><option value="32" selected>32</option>
+            <option value="64">64</option><option value="96">96</option><option value="128">128</option>
+          </select></label>
+          <label>O→T ヘッダ<select id="fn-o-to-t-header">
+            <option value="4">4 byte (Run/Idle)</option>
+            <option value="0">なし</option>
+          </select></label>
+          <label>コマンドサイズ（ワード）<input id="fn-command-size" type="number" min="4" max="512" step="2" value="64"></label>
+          <label>レスポンスサイズ（ワード）<input id="fn-response-size" type="number" min="4" max="512" step="2" value="64"></label>
+          <label>結果データサイズ（ワード）<input id="fn-result-size" type="number" min="0" max="1024" step="2" value="238"></label>
+          <label>監視表示ワード数<input id="fn-result-watch-words" type="number" min="0" max="512" step="2" value="64"></label>
+          <label>小数点以下桁数<input id="fn-result-decimals" type="number" min="0" max="9" value="3"></label>
+          <label>バイトオーダー<select id="fn-byte-order">
+            <option value="high_low">上位→下位</option>
+            <option value="low_high">下位→上位</option>
+          </select></label>
+          <label>文字エンコード<select id="fn-encoding"><option value="cp932">SJIS</option><option value="utf-8">UTF-8</option></select></label>
+        </div>
+        <label>接続パス（HEX）<input id="fn-connection-path" value="20 04 24 01 2C 14 2C 0A"></label>
+        <p id="fn-layout-hint" class="export-note">割付サイズは EDS の入出力サイズと一致させる必要があります。</p>
+        <p class="export-note">アプリが EtherNet/IP Scanner として VTV（Adapter）へ接続します。ポートは通常 44818。PLCLINK とは併用できません。</p>
+      </div>
       <div id="connection-test-result" class="test-result"></div>
       <div class="dialog-actions">
         <button id="start-softplc-button" type="button" class="button secondary hidden">疑似PLC待受開始</button>
+        <button id="fn-connect-button" type="button" class="button secondary hidden">Field Network 接続</button>
         <button id="test-button" type="button" class="button secondary">接続テスト</button>
-        <button id="apply-settings" value="default" class="button primary">設定を保存</button>
+        <button id="apply-settings" type="submit" class="button primary">設定を保存</button>
       </div>
     </form>
   </dialog>
@@ -259,6 +300,6 @@
     </form>
   </dialog>
 
-  <script src="/app.js?v=20260803-2" defer></script>
+  <script src="/app.js?v=20261027-vtv" defer></script>
 </body>
 </html>

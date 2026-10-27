@@ -17,6 +17,10 @@ const state = {
     result_data_enabled: false, result_data_address: 512, result_data_size: 2048,
     result_data_watch_words: 64, result_data_decimals: 3,
     notify_area_enabled: false, notify_address: 2560,
+    fn_esi_ports: 32, fn_eso_ports: 32,
+    fn_input_size: 612, fn_output_size: 136, fn_rpi_us: 10000,
+    fn_connection_path: "20 04 24 01 2C 14 2C 0A",
+    fn_o_to_t_header_bytes: 4, fn_eds_name: "",
   },
   socket: null,
   running: false,
@@ -68,7 +72,12 @@ function bindEvents() {
       addControl(button.dataset.control, state.steps)
     );
   });
-  $("#settings-button").addEventListener("click", () => $("#settings-dialog").showModal());
+  $("#settings-button").addEventListener("click", () => openSettingsDialog());
+  $("#settings-close-button")?.addEventListener("click", () => closeSettingsDialog());
+  $("#settings-dialog")?.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    closeSettingsDialog();
+  });
   $("#settings-form").addEventListener("submit", saveSettings);
   $("#transport").addEventListener("change", syncTransportUi);
   $("#plo-address").addEventListener("input", updateBusyAddressHint);
@@ -102,6 +111,16 @@ function bindEvents() {
   $("#watch-interval")?.addEventListener("change", onWatchIntervalChanged);
   $("#test-button").addEventListener("click", testConnection);
   $("#start-softplc-button")?.addEventListener("click", startSoftPlc);
+  $("#fn-connect-button")?.addEventListener("click", connectFieldNetwork);
+  $("#eds-import-input")?.addEventListener("change", onEdsImport);
+  ["fn-esi-ports", "fn-eso-ports", "fn-command-size", "fn-response-size", "fn-result-size",
+    "fn-input-size", "fn-output-size", "fn-result-watch-words"].forEach((id) => {
+    $(`#${id}`)?.addEventListener("change", () => {
+      updateFnLayoutHint();
+      refreshMappedWatchItems();
+      renderWatchList();
+    });
+  });
   for (const id of ["header-timeout", "timeout"]) {
     $(`#${id}`)?.addEventListener("change", onTimeoutChanged);
   }
@@ -186,15 +205,20 @@ function scheduleNextWatchPoll(elapsedMs = 0) {
 function updateWatchNote() {
   const note = $("#watch-note");
   if (!note) return;
-  const isPlc = ($("#transport")?.value || state.settings.transport) === "plclink";
-  if (!isPlc) {
-    note.textContent = "PLCLINK 接続時に D/M 監視が利用できます。";
+  const transport = $("#transport")?.value || state.settings.transport;
+  if (transport === "plclink") {
+    note.textContent =
+      `接続設定のコマンド／レスポンス／PLO から自動生成。`
+      + `更新周期 ${readWatchIntervalMs()} ms（HTTP 取得時間を除く）。`;
     return;
   }
-  note.textContent =
-    `接続設定のコマンド／レスポンス／PLO から自動生成。`
-    + `更新周期 ${readWatchIntervalMs()} ms（HTTP 取得時間を除く。`
-    + `1 ms は不可、実効周期は取得処理時間以上になります）。`;
+  if (transport === "field_network") {
+    note.textContent =
+      `Assem10/20 の割付から自動生成（IN=入力 / OUT=出力ワードまたはビット）。`
+      + `更新周期 ${readWatchIntervalMs()} ms。`;
+    return;
+  }
+  note.textContent = "PLCLINK / Field Network 接続時に監視が利用できます。";
 }
 
 function restoreResultDataDisplayMode() {
@@ -272,6 +296,9 @@ function selectMonitorTab(tab) {
 }
 
 function buildMappedWatchItems(settings) {
+  if (settings.transport === "field_network") {
+    return buildFnMappedWatchItems(settings);
+  }
   const command = Number(settings.command_address) || 0;
   const response = Number(settings.response_address) || 0;
   const plo = Number(settings.plo_address) || 0;
@@ -328,12 +355,76 @@ function buildMappedWatchItems(settings) {
   return items;
 }
 
+function buildFnMappedWatchItems(settings) {
+  const esiPorts = Number(settings.fn_esi_ports) || 0;
+  const esoPorts = Number(settings.fn_eso_ports) || 0;
+  const commandWords = Number(settings.command_size) || 64;
+  const responseWords = Number(settings.response_size) || 64;
+  const resultWords = Number(settings.result_data_size) || 0;
+  const esiWords = Math.floor(esiPorts / 16);
+  const esoWords = Math.floor(esoPorts / 16);
+  const cmd = 2 + esiWords;
+  const rsp = 2 + esoWords + resultWords;
+  const resultWord = 2 + esoWords;
+  const esoByte = 4;
+  const esiByte = 4;
+  const items = [
+    { id: "fn-auto", label: "自動運転中", group: "ステータス", device: "IN", address: 0, format: "bit" },
+    { id: "fn-busy", label: "BUSY", group: "ステータス", device: "IN", address: 1, format: "bit", busy: true },
+    { id: "fn-result-valid", label: "結果信号有効", group: "ステータス", device: "IN", address: 2, format: "bit" },
+    { id: "fn-error", label: "エラー", group: "ステータス", device: "IN", address: 3, format: "bit" },
+    { id: "cmd-trigger", label: "トリガ", group: "コマンド領域", device: "OUT", address: cmd, format: "int32" },
+    { id: "cmd-code", label: "コマンドコード", group: "コマンド領域", device: "OUT", address: cmd + 2, format: "int32" },
+    { id: "rsp-result", label: "実行結果", group: "レスポンス領域", device: "IN", address: rsp, format: "int32" },
+    { id: "rsp-error", label: "エラーコード", group: "レスポンス領域", device: "IN", address: rsp + 2, format: "int32" },
+    { id: "rsp-echo", label: "コマンドエコー", group: "レスポンス領域", device: "IN", address: rsp + 4, format: "int32" },
+    { id: "rsp-param-size", label: "パラメータ総サイズ", group: "レスポンス領域", device: "IN", address: rsp + 6, format: "int32" },
+  ];
+  let watchWords = Math.min(resultWords, Number(settings.result_data_watch_words) || 64);
+  watchWords -= watchWords % 2;
+  for (let offset = 0; offset < watchWords; offset += 2) {
+    items.push({
+      id: `result-data-${offset}`,
+      label: `+${String(offset).padStart(4, "0")}`,
+      group: "結果データ",
+      device: "IN",
+      address: resultWord + offset,
+      format: "int32",
+      decimals: Number(settings.result_data_decimals) || 3,
+      valueKind: "result_data",
+    });
+  }
+  for (let port = 1; port <= esoPorts; port += 1) {
+    items.push({
+      id: `eso-port-${port}`,
+      label: `ESO-${port}`,
+      group: "ESO出力",
+      device: "IN",
+      address: esoByte * 8 + (port - 1),
+      format: "bit",
+    });
+  }
+  const esiShow = Math.min(esiPorts, 32);
+  for (let port = 1; port <= esiShow; port += 1) {
+    items.push({
+      id: `esi-port-${port}`,
+      label: `ESI-${port}`,
+      group: "ESI入力",
+      device: "OUT",
+      address: esiByte * 8 + (port - 1),
+      format: "bit",
+    });
+  }
+  return items;
+}
+
 function refreshMappedWatchItems() {
   const settings = {
     ...state.settings,
     ...(($("#transport") && readSettingsForm()) || {}),
   };
-  state.watchItems = buildMappedWatchItems(settings.transport === "plclink" ? settings : state.settings);
+  const watchable = settings.transport === "plclink" || settings.transport === "field_network";
+  state.watchItems = buildMappedWatchItems(watchable ? settings : state.settings);
   const keep = new Set(state.watchItems.map((item) => item.id));
   for (const id of Object.keys(state.watchValues)) {
     if (!keep.has(id)) delete state.watchValues[id];
@@ -366,7 +457,7 @@ function renderWatchList(changed = new Set()) {
       const valueClass = watchValueClass(snapshot, item, changed.has(item.id));
       return `<div class="watch-map-row${item.busy ? " busy" : ""}">
         <span class="watch-map-label">${escapeHtml(item.label)}</span>
-        <span class="watch-map-address">${item.device}${item.address}</span>
+        <span class="watch-map-address">${formatWatchAddress(item)}</span>
         <div class="watch-value ${valueClass}" data-watch-value="${item.id}">${escapeHtml(value)}</div>
       </div>`;
     }).join("");
@@ -461,10 +552,18 @@ function setWatchStatus(text, status = "") {
   element.className = `watch-status ${status}`.trim();
 }
 
+function formatWatchAddress(item) {
+  if (item.device === "IN" || item.device === "OUT") {
+    if (item.format === "bit") return `${item.device} bit${item.address}`;
+    return `${item.device} W${item.address}`;
+  }
+  return `${item.device}${item.address}`;
+}
+
 function startWatch() {
   const settings = readSettingsForm();
-  if (settings.transport !== "plclink") {
-    setWatchStatus("PLCLINKを選択してください", "error");
+  if (settings.transport !== "plclink" && settings.transport !== "field_network") {
+    setWatchStatus("PLCLINK / Field Network を選択してください", "error");
     return;
   }
   refreshMappedWatchItems();
@@ -496,8 +595,12 @@ function stopWatch(resetValues = false) {
 async function pollWatchValues() {
   if (!state.watchRunning) return;
   const started = performance.now();
+  const transport = state.settings.transport;
+  const endpoint = transport === "field_network"
+    ? "/api/field-network/memory/read"
+    : "/api/plclink/memory/read";
   try {
-    const response = await fetch("/api/plclink/memory/read", {
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -538,8 +641,9 @@ async function pollWatchValues() {
 
 function renderPalette() {
   const query = $("#command-search")?.value.trim().toLowerCase() || "";
-  const isPlc = ($("#transport")?.value || state.settings.transport) === "plclink";
-  const available = state.catalog.filter((item) => !isPlc || item.plclink_supported);
+  const transport = $("#transport")?.value || state.settings.transport;
+  const isMapped = transport === "plclink" || transport === "field_network";
+  const available = state.catalog.filter((item) => !isMapped || item.plclink_supported);
   const filtered = available.filter((item) =>
     `${item.code} ${item.name} ${item.description} ${item.tool_name || ""}`.toLowerCase().includes(query)
   );
@@ -549,9 +653,9 @@ function renderPalette() {
       <h4>${escapeHtml(group.label)}<span>${group.items.length}</span></h4>
       ${group.items.map((item) => `
         <button class="palette-card palette-command" data-code="${item.code}">
-          <span class="command-code">${isPlc ? `${item.plclink_code}：` : item.code}</span>
+          <span class="command-code">${isMapped ? `${item.plclink_code}：` : item.code}</span>
           <span class="command-name">${escapeHtml(item.name)}</span>
-          ${isPlc ? '<small class="plclink-code">PLCLINKコマンド</small>' : ""}
+          ${isMapped ? `<small class="plclink-code">${transport === "field_network" ? "FNコマンド" : "PLCLINKコマンド"}</small>` : ""}
         </button>`).join("")}
     </section>`).join("");
   document.querySelectorAll(".palette-command").forEach((button) => {
@@ -602,20 +706,22 @@ function stepHtml(step, nested = false) {
   const isCompact = state.viewMode === "compact";
   if (step.type === "command") {
     const def = state.catalog.find((item) => item.code === step.command);
-    const isPlc = ($("#transport")?.value || state.settings.transport) === "plclink";
-    const unsupported = isPlc && !def.plclink_supported;
+    const transport = $("#transport")?.value || state.settings.transport;
+    const isMapped = transport === "plclink" || transport === "field_network";
+    const unsupported = isMapped && !def.plclink_supported;
+    const modeLabel = transport === "field_network" ? "FNコマンド" : "PLCLINKコマンド";
     const fields = (def.arguments || []).map((arg) => argumentField(step, arg)).join("");
     const raw = def.raw_arguments ? `
       <label>引数文字列<input data-field="raw" value="${escapeHtml(step.arguments.raw || "")}" placeholder="別資料の構文に従って入力"></label>` : "";
     const compactSummary = commandCompactSummary(step, def);
-    const displayCode = isPlc && def.plclink_code ? `${def.plclink_code}：` : def.code;
+    const displayCode = isMapped && def.plclink_code ? `${def.plclink_code}：` : def.code;
     return `<article class="step-card generated-step${unsupported ? " unsupported-step" : ""}" data-id="${step.id}">
-      ${stepHeader(step, `<strong>${displayCode}</strong>${escapeHtml(def.name)}${isPlc ? '<small class="plclink-code">PLCLINKコマンド</small>' : ""}${def.tool_name ? `<small class="tool-badge">${escapeHtml(def.tool_id)} ${escapeHtml(def.tool_name)}</small>` : ""}`, nested)}
+      ${stepHeader(step, `<strong>${displayCode}</strong>${escapeHtml(def.name)}${isMapped ? `<small class="plclink-code">${modeLabel}</small>` : ""}${def.tool_name ? `<small class="tool-badge">${escapeHtml(def.tool_id)} ${escapeHtml(def.tool_name)}</small>` : ""}`, nested)}
       ${isCompact
     ? (compactSummary ? `<div class="step-compact-row">${compactSummary}</div>` : "")
     : `<div class="step-body">${fields}${raw}
-        ${unsupported ? `<p class="step-warning">${escapeHtml(def.plclink_reason || "PLCLINKでは使用できません")}</p>` : ""}
-        <p class="step-description">${escapeHtml(def.description || "")}${!isPlc && def.example ? `　例: ${escapeHtml(def.example)}` : ""}</p>
+        ${unsupported ? `<p class="step-warning">${escapeHtml(def.plclink_reason || "この通信方式では使用できません")}</p>` : ""}
+        <p class="step-description">${escapeHtml(def.description || "")}${!isMapped && def.example ? `　例: ${escapeHtml(def.example)}` : ""}</p>
       </div>`}
     </article>`;
   }
@@ -954,10 +1060,13 @@ function readSettingsForm() {
   const transport = $("#transport").value;
   const encoding = transport === "plclink"
     ? $("#plclink-encoding").value
-    : $("#encoding").value;
+    : transport === "field_network"
+      ? ($("#fn-encoding")?.value || "cp932")
+      : $("#encoding").value;
   const lineDigits = transport === "plclink"
     ? Number($("#plclink-line-digits").value)
     : Number($("#line-digits").value);
+  const isFn = transport === "field_network";
   return {
     transport,
     host: $("#host").value.trim(),
@@ -973,49 +1082,111 @@ function readSettingsForm() {
     encoding,
     line_number_digits: lineDigits,
     command_address: Number($("#command-address").value),
-    command_size: Number($("#command-size").value),
+    command_size: isFn
+      ? Number($("#fn-command-size")?.value)
+      : Number($("#command-size").value),
     response_address: Number($("#response-address").value),
-    response_size: Number($("#response-size").value),
+    response_size: isFn
+      ? Number($("#fn-response-size")?.value)
+      : Number($("#response-size").value),
     plo_address: Number($("#plo-address").value),
     plo_port_count: Number($("#plo-port-count").value),
     busy_port: Number($("#busy-port").value),
-    byte_order: $("#byte-order").value,
+    byte_order: isFn
+      ? ($("#fn-byte-order")?.value || "high_low")
+      : $("#byte-order").value,
     result_data_enabled: $("#result-data-enabled").checked,
     result_data_address: Number($("#result-data-address").value),
-    result_data_size: Number($("#result-data-size").value),
-    result_data_watch_words: Number($("#result-data-watch-words").value),
-    result_data_decimals: Number($("#result-data-decimals").value),
+    result_data_size: isFn
+      ? Number($("#fn-result-size")?.value)
+      : Number($("#result-data-size").value),
+    result_data_watch_words: isFn
+      ? Number($("#fn-result-watch-words")?.value)
+      : Number($("#result-data-watch-words").value),
+    result_data_decimals: isFn
+      ? Number($("#fn-result-decimals")?.value)
+      : Number($("#result-data-decimals").value),
     notify_area_enabled: $("#notify-area-enabled").checked,
     notify_address: Number($("#notify-address").value),
+    fn_esi_ports: Number($("#fn-esi-ports")?.value || 0),
+    fn_eso_ports: Number($("#fn-eso-ports")?.value || 0),
+    fn_input_size: Number($("#fn-input-size")?.value || 612),
+    fn_output_size: Number($("#fn-output-size")?.value || 132),
+    fn_rpi_us: Number($("#fn-rpi-us")?.value || 10000),
+    fn_connection_path: ($("#fn-connection-path")?.value || "20 04 24 01 2C 14 2C 0A").trim(),
+    fn_o_to_t_header_bytes: Number($("#fn-o-to-t-header")?.value || 4),
+    fn_eds_name: state.settings.fn_eds_name || "",
   };
 }
 
+function openSettingsDialog() {
+  const dialog = $("#settings-dialog");
+  if (!dialog) return;
+  applySettingsToForm();
+  syncTransportUi();
+  if (typeof dialog.showModal === "function") dialog.showModal();
+  else dialog.setAttribute("open", "");
+}
+
+function closeSettingsDialog() {
+  const dialog = $("#settings-dialog");
+  if (!dialog) return;
+  if (typeof dialog.close === "function" && dialog.open) dialog.close();
+  else dialog.removeAttribute("open");
+}
+
+async function syncPlcLinkPortFromServer() {
+  try {
+    const response = await fetch("/api/plclink/status");
+    if (!response.ok) return;
+    const data = await response.json();
+    if (data.status !== "listening" || !data.bind) return;
+    const port = Number(String(data.bind).split(":").pop());
+    if (!port) return;
+    state.settings.port = port;
+    localStorage.setItem("vtv-settings", JSON.stringify(state.settings));
+  } catch (_) {}
+}
+
 async function saveSettings(event) {
-  if (event.submitter?.value === "cancel") return;
-  // method=dialog だと保存完了前に閉じるため、適用完了まで止める
   event.preventDefault();
-  state.settings = readSettingsForm();
-  localStorage.setItem("vtv-settings", JSON.stringify(state.settings));
-  refreshMappedWatchItems();
-  renderWatchList();
+  try {
+    state.settings = readSettingsForm();
+    localStorage.setItem("vtv-settings", JSON.stringify(state.settings));
+    refreshMappedWatchItems();
+    renderWatchList();
+  } catch (error) {
+    console.error(error);
+  } finally {
+    closeSettingsDialog();
+  }
+  void applySavedConnectionSettings();
+}
+
+async function applySavedConnectionSettings() {
   const resultEl = $("#connection-test-result");
-  // PLCLINK は設定保存で接続テストし直さない（再起動すると VTV が切れる）。
   if (state.settings.transport === "plclink") {
     const data = await startSoftPlc({ updateBadge: true });
-    if (!data) return;
+    if (!data) {
+      await syncPlcLinkPortFromServer();
+      refreshConnectionBadge();
+      return;
+    }
     if (resultEl) {
       resultEl.className = "test-result success";
       resultEl.textContent =
         `${resultEl.textContent}\n設定を保存しました（既存の VTV 接続は維持します）。`;
     }
-    $("#settings-dialog").close();
     return;
   }
-  const ok = await verifyConnectionSettings({
+  if (state.settings.transport === "field_network") {
+    await connectFieldNetwork();
+    return;
+  }
+  await verifyConnectionSettings({
     showMessage: true,
     resultEl,
   });
-  if (ok) $("#settings-dialog").close();
 }
 
 function restoreSettings() {
@@ -1062,9 +1233,28 @@ function applySettingsToForm() {
   $("#result-data-decimals").value = s.result_data_decimals ?? 3;
   $("#notify-area-enabled").checked = !!s.notify_area_enabled;
   $("#notify-address").value = s.notify_address ?? 2560;
+  if ($("#fn-input-size")) {
+    $("#fn-input-size").value = s.fn_input_size ?? 612;
+    $("#fn-output-size").value = s.fn_output_size ?? 132;
+    $("#fn-rpi-us").value = s.fn_rpi_us ?? 10000;
+    $("#fn-esi-ports").value = String(s.fn_esi_ports ?? 0);
+    $("#fn-eso-ports").value = String(s.fn_eso_ports ?? 0);
+    $("#fn-o-to-t-header").value = String(s.fn_o_to_t_header_bytes ?? 4);
+    $("#fn-command-size").value = s.command_size ?? 64;
+    $("#fn-response-size").value = s.response_size ?? 64;
+    $("#fn-result-size").value = s.transport === "field_network"
+      ? (s.result_data_size ?? 240)
+      : (s.result_data_size ?? 240);
+    $("#fn-result-watch-words").value = s.result_data_watch_words ?? 64;
+    $("#fn-result-decimals").value = s.result_data_decimals ?? 3;
+    $("#fn-byte-order").value = s.byte_order || "high_low";
+    $("#fn-encoding").value = s.encoding || "cp932";
+    $("#fn-connection-path").value = s.fn_connection_path || "20 04 24 01 2C 14 2C 0A";
+  }
   syncTransportUi();
   syncResultDataUi();
   updateBusyAddressHint();
+  updateFnLayoutHint();
   restoreResultDataDisplayMode();
 }
 
@@ -1073,36 +1263,63 @@ let lastTransport = null;
 function syncTransportUi() {
   const transport = $("#transport").value;
   const isPlc = transport === "plclink";
-  const switchedFromTcp = lastTransport === "tcp" && isPlc;
-  const switchedFromPlc = lastTransport === "plclink" && !isPlc;
-  $("#tcp-settings").classList.toggle("hidden", isPlc);
+  const isFn = transport === "field_network";
+  const isMapped = isPlc || isFn;
+  const prev = lastTransport;
+
+  $("#tcp-settings").classList.toggle("hidden", isMapped);
   $("#plclink-settings").classList.toggle("hidden", !isPlc);
+  $("#field-network-settings")?.classList.toggle("hidden", !isFn);
+
   const hint = $("#transport-hint");
   if (isPlc) {
     $("#host-label-text").textContent = "待受アドレス";
     $("#host").placeholder = "0.0.0.0";
-    // TCP の装置 IP が残ると混乱するため、切替時は待受用にリセットする
-    if (!$("#host").value || switchedFromTcp) $("#host").value = "0.0.0.0";
-    if (Number($("#port").value) === 55555 || switchedFromTcp) $("#port").value = 5000;
+    if (!$("#host").value || prev === "tcp" || prev === "field_network") {
+      $("#host").value = "0.0.0.0";
+    }
+    if ([55555, 44818].includes(Number($("#port").value)) || prev !== "plclink") {
+      $("#port").value = 5000;
+    }
     $("#port-label-text").textContent = "待受ポート";
     hint.textContent =
       "アプリが疑似 PLC（MC 3E）として全 NIC で待ち受けます。"
       + " 先に「疑似PLC待受開始」を押し、VTV 側の接続先を"
-      + " この PC の LAN IP（例: 192.168.0.100）:待受ポート にしてください。"
-      + " 装置 IP（例: 192.168.0.10）ではありません。";
+      + " この PC の LAN IP:待受ポート にしてください。";
+  } else if (isFn) {
+    $("#host-label-text").textContent = "装置 IP";
+    $("#host").placeholder = "192.168.0.10";
+    if ($("#host").value === "0.0.0.0" || prev === "plclink") $("#host").value = "";
+    if ([5000, 55555].includes(Number($("#port").value)) || prev !== "field_network") {
+      $("#port").value = 44818;
+    }
+    $("#port-label-text").textContent = "EIP ポート";
+    hint.textContent =
+      "アプリが EtherNet/IP Scanner として VTV（Adapter）へ接続します。"
+      + " 接続先は VTV 本体の IP（LAN1/LAN2、ポート 44818）。"
+      + " VTV で「フィールドネットワーク（通常）を有効にする」を ON にし、"
+      + " 作成した EDS を両方にインポートしてサイズを一致させてください。";
+    if (prev !== null && prev !== "field_network") {
+      applyFieldNetworkDefaultsToForm();
+    }
+    updateFnLayoutHint();
   } else {
     $("#host-label-text").textContent = "装置 IP";
     $("#host").placeholder = "192.168.0.10";
-    if ($("#host").value === "0.0.0.0" || switchedFromPlc) $("#host").value = "";
-    if (Number($("#port").value) === 5000 || switchedFromPlc) $("#port").value = 55555;
+    if ($("#host").value === "0.0.0.0" || prev === "plclink") $("#host").value = "";
+    if ([5000, 44818].includes(Number($("#port").value)) || prev !== "tcp") {
+      $("#port").value = 55555;
+    }
     $("#port-label-text").textContent = "ポート";
     hint.textContent = "装置の Network I/O（TCP）へクライアント接続します。";
   }
+
   $("#start-softplc-button")?.classList.toggle("hidden", !isPlc);
+  $("#fn-connect-button")?.classList.toggle("hidden", !isFn);
   lastTransport = transport;
-  $("#watch-tab-button").disabled = !isPlc;
+  $("#watch-tab-button").disabled = !isMapped;
   updateWatchNote();
-  if (!isPlc) {
+  if (!isMapped) {
     stopWatch(true);
     selectMonitorTab("log");
   } else {
@@ -1112,6 +1329,130 @@ function syncTransportUi() {
   applyLayoutMode();
   renderPalette();
   renderSequence();
+}
+
+function applyFieldNetworkDefaultsToForm() {
+  if (!$("#fn-input-size")) return;
+  $("#fn-input-size").value = 612;
+  $("#fn-output-size").value = 136;
+  $("#fn-rpi-us").value = 10000;
+  $("#fn-esi-ports").value = "32";
+  $("#fn-eso-ports").value = "32";
+  $("#fn-command-size").value = 64;
+  $("#fn-response-size").value = 64;
+  $("#fn-result-size").value = 238;
+  $("#fn-result-watch-words").value = 64;
+  $("#fn-connection-path").value = "20 04 24 01 2C 14 2C 0A";
+  $("#fn-o-to-t-header").value = "4";
+}
+
+function updateFnLayoutHint() {
+  const hint = $("#fn-layout-hint");
+  if (!hint) return;
+  const esi = Number($("#fn-esi-ports")?.value) || 0;
+  const eso = Number($("#fn-eso-ports")?.value) || 0;
+  const cmd = Number($("#fn-command-size")?.value) || 0;
+  const rsp = Number($("#fn-response-size")?.value) || 0;
+  const result = Number($("#fn-result-size")?.value) || 0;
+  const inSize = Number($("#fn-input-size")?.value) || 0;
+  const outSize = Number($("#fn-output-size")?.value) || 0;
+  const esiW = Math.floor(esi / 16);
+  const esoW = Math.floor(eso / 16);
+  const calcIn = (2 + esoW + result + rsp) * 2;
+  const calcOut = (2 + esiW + cmd) * 2;
+  const okIn = calcIn === inSize;
+  const okOut = calcOut === outSize;
+  hint.textContent =
+    `割付計算: 入力 ${calcIn} byte / 出力 ${calcOut} byte`
+    + `（EDS: 入力 ${inSize} / 出力 ${outSize}）`
+    + (okIn && okOut ? " — 一致" : " — 不一致。ESI/ESO・語数または EDS を調整してください");
+  hint.classList.toggle("error-note", !(okIn && okOut));
+}
+
+async function onEdsImport(event) {
+  const input = event.target;
+  const file = input.files?.[0];
+  const status = $("#eds-import-status");
+  if (!file) return;
+  const body = new FormData();
+  body.append("file", file);
+  if (status) status.textContent = "EDS を解析中…";
+  try {
+    const response = await fetch("/api/field-network/eds/import", {
+      method: "POST",
+      body,
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "EDS を読み込めません");
+    const s = data.suggested || {};
+    if (s.fn_input_size != null) $("#fn-input-size").value = s.fn_input_size;
+    if (s.fn_output_size != null) $("#fn-output-size").value = s.fn_output_size;
+    if (s.fn_rpi_us != null) $("#fn-rpi-us").value = s.fn_rpi_us;
+    if (s.fn_connection_path) $("#fn-connection-path").value = s.fn_connection_path;
+    if (s.fn_o_to_t_header_bytes != null) $("#fn-o-to-t-header").value = s.fn_o_to_t_header_bytes;
+    if (s.command_size != null) $("#fn-command-size").value = s.command_size;
+    if (s.response_size != null) $("#fn-response-size").value = s.response_size;
+    if (s.result_data_size != null) $("#fn-result-size").value = s.result_data_size;
+    if (s.fn_esi_ports != null) $("#fn-esi-ports").value = String(s.fn_esi_ports);
+    if (s.fn_eso_ports != null) $("#fn-eso-ports").value = String(s.fn_eso_ports);
+    if (s.port != null) $("#port").value = s.port;
+    updateFnLayoutHint();
+    refreshMappedWatchItems();
+    renderWatchList();
+    const name = data.eds?.catalog || data.eds?.product_name || file.name;
+    const warnings = (data.eds?.warnings || []).join(" / ");
+    if (status) {
+      status.textContent =
+        `取り込み完了: ${name}`
+        + `（IN ${s.fn_input_size} / OUT ${s.fn_output_size}`
+        + ` / ESI ${s.fn_esi_ports ?? "-"} / ESO ${s.fn_eso_ports ?? "-"}`
+        + ` / CMD ${s.command_size ?? "-"} / RPI ${s.fn_rpi_us}μs）`
+        + (warnings ? ` ※${warnings}` : "");
+    }
+  } catch (error) {
+    if (status) status.textContent = error.message;
+  } finally {
+    input.value = "";
+  }
+}
+
+async function connectFieldNetwork() {
+  const settings = readSettingsForm();
+  const resultEl = $("#connection-test-result");
+  if (settings.transport !== "field_network") {
+    resultEl.className = "test-result error";
+    resultEl.textContent = "Field Network モードで実行してください。";
+    return null;
+  }
+  if (!settings.host) {
+    resultEl.className = "test-result error";
+    resultEl.textContent = "装置 IP を入力してください。";
+    return null;
+  }
+  resultEl.className = "test-result";
+  resultEl.textContent = "EtherNet/IP 接続中…";
+  try {
+    const response = await fetch("/api/field-network/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "接続できません");
+    resultEl.className = "test-result success";
+    resultEl.textContent = data.message || "接続しました";
+    markConnectionVerified(true, settings);
+    state.settings = settings;
+    localStorage.setItem("vtv-settings", JSON.stringify(settings));
+    refreshConnectionBadge();
+    return data;
+  } catch (error) {
+    resultEl.className = "test-result error";
+    resultEl.textContent = error.message;
+    markConnectionVerified(false, settings);
+    refreshConnectionBadge();
+    return null;
+  }
 }
 
 function updateBusyAddressHint() {
@@ -1151,6 +1492,12 @@ function settingsKey(settings) {
     settings.result_data_decimals ?? 3,
     settings.notify_area_enabled ? 1 : 0,
     settings.notify_address ?? 2560,
+    settings.fn_input_size ?? 612,
+    settings.fn_output_size ?? 132,
+    settings.fn_rpi_us ?? 10000,
+    settings.fn_esi_ports ?? 0,
+    settings.fn_eso_ports ?? 0,
+    settings.fn_connection_path || "",
   ].join(":");
 }
 
@@ -1191,6 +1538,14 @@ function refreshConnectionBadge() {
     }
     if (settingsMatch) {
       setConnection("connecting");
+      return;
+    }
+    setConnection("disconnected");
+    return;
+  }
+  if (state.settings.transport === "field_network") {
+    if (settingsMatch) {
+      setConnection("connected");
       return;
     }
     setConnection("disconnected");
@@ -1328,7 +1683,7 @@ async function testConnection() {
 function runSequence() {
   state.settings = readSettingsForm();
   if (!state.settings.host) {
-    $("#settings-dialog").showModal();
+    openSettingsDialog();
     $("#connection-test-result").className = "test-result error";
     $("#connection-test-result").textContent = state.settings.transport === "plclink"
       ? "待受アドレスを入力してください。"
@@ -1336,7 +1691,7 @@ function runSequence() {
     return;
   }
   if (!state.steps.length) { alert("実行するカードを追加してください。"); return; }
-  if (state.settings.transport === "plclink") {
+  if (state.settings.transport === "plclink" || state.settings.transport === "field_network") {
     const unsupported = findUnsupportedPlcLinkCommand(state.steps);
     if (unsupported) {
       alert(`${unsupported.command}: ${unsupported.reason}`);

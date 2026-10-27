@@ -1,0 +1,148 @@
+[File]
+        DescText = "VTV-9000";
+        CreateDate = 04-26-2023;
+        CreateTime = 00:00:00;
+        ModDate = 08-05-2026;
+        ModTime = 11:07:45;
+        Revision = 1.0;
+        HomeURL = "https://www.visco-tech.com/";
+
+[Device]
+        VendCode = 1724;
+        VendName = "ViSCO Technologies Corporation";
+        ProdType = 43;
+        ProdTypeStr = "Generic Device";
+        ProdCode = 826;
+        MajRev = 1;
+        MinRev = 1;
+        ProdName = "VTV-9000 Series";
+        Catalog = "VTV-9000";
+        Icon = "VTV9000.ico";
+        IconContents =;
+
+[Device Classification]
+        Class1 = EtherNetIP;
+
+[Params]
+        Param1 =
+                0,                      $ reserved, shall equal 0
+                ,,                      $ Link Path Size, Link Path
+                0x0000,                 $ Descriptor
+                0xC7,                   $ Data Type
+                2,                      $ Data Size in bytes
+                "Input Size",           $ name
+                "Bytes",                $ units
+                "Input Size",           $ help string
+                4,1444,612,            $ min, max, default data values
+                ,,,,                    $ mult, div, base, offset scaling
+                ,,,,                    $ mult, div, base, offset links
+                ;                       $ decimal places
+        Param2 =
+                0,                      $ reserved, shall equal 0
+                ,,                      $ Link Path Size, Link Path
+                0x0000,                 $ Descriptor
+                0xC7,                   $ Data Type
+                2,                      $ Data Size in bytes
+                "Output Size",          $ name
+                "Bytes",                $ units
+                "Output Size",          $ help string
+                4,1444,132,            $ min, max, default data values
+                ,,,,                    $ mult, div, base, offset scaling
+                ,,,,                    $ mult, div, base, offset links
+                ;                       $ decimal places
+        Param3 =
+                0,                      $ reserved, shall equal 0
+                ,,                      $ Link Path Size, Link Path
+                0x0000,                 $ Descriptor
+                0xC1,                   $ Data Type
+                1,                      $ Data Size in bytes
+                "UserDefined",          $ name
+                "",                     $ units
+                "UserDefined",          $ help string
+                0,1,0,                  $ min, max, default data values
+                ,,,,                    $ mult, div, base, offset scaling
+                ,,,,                    $ mult, div, base, offset links
+                ;                       $ decimal places
+        Param4 =
+                0,                      $ reserved, shall equal 0
+                ,,                      $ Link Path Size, Link Path
+                0x0000,                 $ Descriptor
+                0xC8,                   $ Data Type
+                4,                      $ Data Size in bytes
+                "RPI",                  $ name
+                "",                     $ units
+                "RPI",                  $ help string
+                2000,1000000,10000,            $ min, max, default data values
+                ,,,,                    $ mult, div, base, offset scaling
+                ,,,,                    $ mult, div, base, offset links
+                ;                       $ decimal places
+
+[Assembly]
+        Assem10 =
+                "input format",
+                ,
+                612,
+                0x0000,
+                ,,
+                4896,Param3;            $ User Defined
+        Assem20 =
+                "output format",
+                ,
+                132,
+                0x0000,
+                ,,
+                1056,Param3;             $ User Defined
+
+[Connection Manager]
+        Object_Name = "Connection Manager Object";
+        Object_Class_Code = 0x06;
+        Connection1 =
+                0x04010002,             $ trigger & transport
+                                        $  0-15  = supported transport classes (class 1)
+                                        $  16 = cyclic (1 = supported)
+                                        $  17 = change of state (0 = not supported)
+                                        $  18 = on demand (0 = not supported)
+                                        $  19-23 = reserved (must be zero)
+                                        $  24-27 = exclusive owner
+                                        $  28-30 = reserved (must be zero)
+                                        $  31 = client 0 (don't care for classes 0 and 1)
+                0x44640405,             $ connection parameters
+                                        $  0 = O=>T fixed (1 = supported)
+                                        $  1 = O=>T variable (0 = not supported)
+                                        $  2 = T=>O fixed (1 = supported)
+                                        $  3 = T=>O variable (0 = not supported)
+                                        $  4-7 = reserved (must be zero)
+                                        $  8-10 = O=>T header (4 byte run/idle)
+                                        $  11	= reserved (must be zero)
+                                        $  12-14 = T=>O header  (0 byte heartbeat)
+                                        $  15	= reserved (must be zero)
+                                        $  16-19 = O=>T connection type (point-to-point)
+                                        $  20-23 = T=>O connection type (point-to-point)
+                                        $  24-27 = O=>T priority (scheduled)
+                                        $  28-31 = T=>O priority (scheduled)
+                Param4,Param2,Assem20,   $ O=>T RPI,Size,Format
+                Param4,Param1,Assem10,   $ T=>O RPI,Size,Format
+                ,,                      $ config part 1 (not used)
+                ,,                      $ config part 2 (not used)
+                "Consume Data From/Produce Data To",    $ connection name
+                "",                     $ Help string
+                "20 04 24 01 2C 14 2C 0A";    $ outputs only path
+
+
+[Port]
+        Object_Name = "Port Object";
+        Object_Class_Code = 0xF4;
+        Port1 =
+                TCP,
+                "EtherNet/IP port",
+                "20 F5 24 01",
+                1,
+                0x00,
+                ;
+
+[Capacity]
+        MaxIOConnections = 32;
+        MaxMsgConnections = 0;
+        MaxConsumersPerMcast = 32;
+        TSpec1 = TxRx, 4, 400;
+        TSpec2 = TxRx, 496, 400;

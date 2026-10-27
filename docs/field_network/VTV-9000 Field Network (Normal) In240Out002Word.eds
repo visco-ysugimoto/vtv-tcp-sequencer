@@ -1,0 +1,222 @@
+[File]
+        DescText = "VTV-9000 Field Network (Normal) In240Out002Word";
+        CreateDate = 04-26-2023;
+        CreateTime = 00:00:00;
+        ModDate = 08-05-2026;
+        ModTime = 11:07:25;
+        Revision = 1.0;
+        HomeURL = "https://www.visco-tech.com/";
+
+[Device]
+        VendCode = 1724;
+        VendName = "ViSCO Technologies";
+        ProdType = 43;
+        ProdTypeStr = "Generic Device";
+        ProdCode = 752;
+        MajRev = 1;
+        MinRev = 1;
+        ProdName = "VTV-9000 Field Network (Normal)";
+        Catalog = "VTV-9000 Field Network (Normal) In240Out002Word";
+        Icon = "VTV9000.ico";
+        IconContents =
+                "AAABAAMAICAQAAAAAADoAgAANgAAABAQEAAAAAAAKAEAAB4DAAAgIAAAAAAA"
+                "AKgIAABGBAAAKAAAACAAAABAAAAAAQAEAAAAAACAAgAAAAAAAAAAAAAAAAAA"
+                "AAAAAAAAAAAAAIAAAIAAAACAgACAAAAAgACAAICAAADAwMAAgICAAAAA/wAA"
+                "/wAAAP//AP8AAAD/AP8A//8AAP///wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/wAAAA/wAA"
+                "AP8AAAAAAAAP/wAAAP8AAAD/8AAAAAAAD/8AAAD/AAAA//AAAAAAAP8P8AAA"
+                "D/AAD/D/AAAAAAD/D/AAAA/wAA/w/wAAAAAA/wD/AAAP8AAP8A/wAAAAAP8A"
+                "/wAAD/AAD/AP8AAAAAD/AA/wAA/wAA/wAP8AAAAP8AAP8A//////AAD/AAAA"
+                "D/AAAP8P/////wAAD/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAP//////"
+                "////////////////////////////////////////////////////+fh4//D4"
+                "eH/weHg/8Hh4P+A8MB/gPDAf4BwwD+AcMA/hDACHwQABh8OAAcPjyAPn////"
+                "////////////////////////////////////////////KAAAABAAAAAgAAAA"
+                "AQAEAAAAAADAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAIAAAACAgACA"
+                "AAAAgACAAICAAADAwMAAgICAAAAA/wAA/wAAAP//AP8AAAD/AP8A//8AAP//"
+                "/wAAAAAAAAAAAAAAAAAAAAAAAAAADEAAAAAAAAzMREAAAAAMzMxEREAADMzM"
+                "zERERAAMzPzM/0//AAzP/8z0RETwDM/PzPRERPAMT89E/E//AAz8zPz/z0QA"
+                "DPzM/JnPxAAP/Mz/mcz/8AAMzMzMzAAAAAAMzMwAAAAAAAAMxAAAAP//AAD+"
+                "PwAA+B8AAOAHAADAAwAAgAEAAIABAACAAQAAgAEAAIABAACAAQAAgAEAAIAB"
+                "AADgBwAA+A8AAP4/AAAoAAAAIAAAAEAAAAABAAgAAAAAAIAEAAAAAAAAAAAA"
+                "AAAAAAAAAAAAAAAAAAAAgAAAgAAAAICAAIAAAACAAIAAgIAAAMDAwADA3MAA"
+                "8MqmAAQEBAAICAgADAwMABEREQAWFhYAHBwcACIiIgApKSkAVVVVAE1NTQBC"
+                "QkIAOTk5AIB8/wBQUP8AkwDWAP/szADG1u8A1ufnAJCprQAAADMAAABmAAAA"
+                "mQAAAMwAADMAAAAzMwAAM2YAADOZAAAzzAAAM/8AAGYAAABmMwAAZmYAAGaZ"
+                "AABmzAAAZv8AAJkAAACZMwAAmWYAAJmZAACZzAAAmf8AAMwAAADMMwAAzGYA"
+                "AMyZAADMzAAAzP8AAP9mAAD/mQAA/8wAMwAAADMAMwAzAGYAMwCZADMAzAAz"
+                "AP8AMzMAADMzMwAzM2YAMzOZADMzzAAzM/8AM2YAADNmMwAzZmYAM2aZADNm"
+                "zAAzZv8AM5kAADOZMwAzmWYAM5mZADOZzAAzmf8AM8wAADPMMwAzzGYAM8yZ"
+                "ADPMzAAzzP8AM/8zADP/ZgAz/5kAM//MADP//wBmAAAAZgAzAGYAZgBmAJkA"
+                "ZgDMAGYA/wBmMwAAZjMzAGYzZgBmM5kAZjPMAGYz/wBmZgAAZmYzAGZmZgBm"
+                "ZpkAZmbMAGaZAABmmTMAZplmAGaZmQBmmcwAZpn/AGbMAABmzDMAZsyZAGbM"
+                "zABmzP8AZv8AAGb/MwBm/5kAZv/MAMwA/wD/AMwAmZkAAJkzmQCZAJkAmQDM"
+                "AJkAAACZMzMAmQBmAJkzzACZAP8AmWYAAJlmMwCZM2YAmWaZAJlmzACZM/8A"
+                "mZkzAJmZZgCZmZkAmZnMAJmZ/wCZzAAAmcwzAGbMZgCZzJkAmczMAJnM/wCZ"
+                "/wAAmf8zAJnMZgCZ/5kAmf/MAJn//wDMAAAAmQAzAMwAZgDMAJkAzADMAJkz"
+                "AADMMzMAzDNmAMwzmQDMM8wAzDP/AMxmAADMZjMAmWZmAMxmmQDMZswAmWb/"
+                "AMyZAADMmTMAzJlmAMyZmQDMmcwAzJn/AMzMAADMzDMAzMxmAMzMmQDMzMwA"
+                "zMz/AMz/AADM/zMAmf9mAMz/mQDM/8wAzP//AMwAMwD/AGYA/wCZAMwzAAD/"
+                "MzMA/zNmAP8zmQD/M8wA/zP/AP9mAAD/ZjMAzGZmAP9mmQD/ZswAzGb/AP+Z"
+                "AAD/mTMA/5lmAP+ZmQD/mcwA/5n/AP/MAAD/zDMA/8xmAP/MmQD/zMwA/8z/"
+                "AP//MwDM/2YA//+ZAP//zABmZv8AZv9mAGb//wD/ZmYA/2b/AP//ZgAhAKUA"
+                "X19fAHd3dwCGhoYAlpaWAMvLywCysrIA19fXAN3d3QDj4+MA6urqAPHx8QD4"
+                "+PgA8Pv/AKSgoACAgIAAAAD/AAD/AAAA//8A/wAAAP8A/wD//wAA////ABU8"
+                "PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw86l9fX19fX19fX19fX19f"
+                "X19fX19fX19fX19fX19fX1+uoqKixMTEoqKioqKioqKioqKioqKioqKioqKi"
+                "oqKiX7XExMTExMTExMTExMTExMTExMTExMTExMTExMTExMQEtcTExMTExMTE"
+                "xMTExMT8//zE/P/8xPz//MT8//zExIW1xMTExMTExMTExMTExP/E/8T/xP/E"
+                "/8T/xP/E/8TEhbXExMTExMTExMTExMTE/Pz/xP/E/8T/xP/E/8T/xMSFtcTE"
+                "xMTExMTExMTExMT8///E/8T/xP/E/8T/xP/ExIW1xMTExMTExMTExMTExP/E"
+                "/8T/xP/E/8T/xP/E/8TEhbXExMTExMTExMTExMSn/8T/xP/E/8T/xP/E/8T/"
+                "xMSFtcTExMTEBMTExMTExM/8//yi/P/8ovz//MT8//zExIW1xMTExAQEPDw8"
+                "PDw8PGY8PDw8PDw8PDw8PDw8PMTEhbXExMQEPDw8/K9mPM/W1jw8p/88POb/"
+                "ZjyG/8k8xMShtcTExDyFz6+vz7XW1tbW0NDQ/+bm5v/Jycn/yTzExKHWxMTE"
+                "p6+vr6+1tdbWCQnQ0P+1/+bm/8nJ/8n/PMTEodbExMSor6+vr7W11tYJCdDQ"
+                "/7X/5ub/ycn/yf88xMSh1sTExKivr6+vtbXW1gkJ0ND/1v/m5v/Jyf/J/zzE"
+                "xKHWxMTEqK+vtbUJz9bWCQnQ0P/W/+bm/8nJ/8n/PMTEodbExMSotdbW1qjP"
+                "Cdbd3dbW/9b/5v///+b/yf88xMSh1sTExKjW1tenz8/m5rW15ubP0MnJyebI"
+                "yMjmyTzExKHWxMTEqNbQ5ubm5ubm5ubJyc/myMjIycjIyObJPMTEodbExMTP"
+                "19Dm5ubm5ubm5snJ5ubIyMjJyMjI5sk8xMSh1sTExM/X3d3m1ubm5tbW5ubm"
+                "5sjIyObIyMjmyTzExKHWxMTEzwnd3d3W5tbW3d3W1tbX5ubm1ubJycnJPMTE"
+                "odbExMTP3d3d3fPm1tbd3dDQ1tbm5ubQycnJyck8xMSh1sTExM/d3d3dGdfW"
+                "1t3d0NDW1ubm5tDJycnJyTzExKHWxMTEz93d3d0Z1tbW3d3Q0NbW5ubm0MnJ"
+                "ycnJPMTEodbExMTP3d3d3RnW1tbd3dDQ1tbm5ubQycnJyck8xMSh1sTExMTP"
+                "Cd3d3ajW1tbdr9DQ0Kfm5uanp8nJyQTExKHWxMTExMTExMTWqMTExM/ExKev"
+                "xMTExKfExMSnxMTEodanp6enp6enp6enp6enp6enp6enp6enp6enp6enp6fE"
+                "1qioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKcAAAAAAAAAAAAAAAAA"
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
+
+[Device Classification]
+        Class1 = EtherNetIP;
+
+[Params]
+        Param1 =
+                0,                      $ reserved, shall equal 0
+                ,,                      $ Link Path Size, Link Path
+                0x0000,                 $ Descriptor
+                0xC7,                   $ Data Type
+                2,                      $ Data Size in bytes
+                "Input Size",           $ name
+                "Bytes",                $ units
+                "Input Size",           $ help string
+                480,480,480,            $ min, max, default data values
+                ,,,,                    $ mult, div, base, offset scaling
+                ,,,,                    $ mult, div, base, offset links
+                ;                       $ decimal places
+        Param2 =
+                0,                      $ reserved, shall equal 0
+                ,,                      $ Link Path Size, Link Path
+                0x0000,                 $ Descriptor
+                0xC7,                   $ Data Type
+                2,                      $ Data Size in bytes
+                "Output Size",          $ name
+                "Bytes",                $ units
+                "Output Size",          $ help string
+                4,4,4,            $ min, max, default data values
+                ,,,,                    $ mult, div, base, offset scaling
+                ,,,,                    $ mult, div, base, offset links
+                ;                       $ decimal places
+        Param3 =
+                0,                      $ reserved, shall equal 0
+                ,,                      $ Link Path Size, Link Path
+                0x0000,                 $ Descriptor
+                0xC1,                   $ Data Type
+                1,                      $ Data Size in bytes
+                "UserDefined",          $ name
+                "",                     $ units
+                "UserDefined",          $ help string
+                0,1,0,                  $ min, max, default data values
+                ,,,,                    $ mult, div, base, offset scaling
+                ,,,,                    $ mult, div, base, offset links
+                ;                       $ decimal places
+        Param4 =
+                0,                      $ reserved, shall equal 0
+                ,,                      $ Link Path Size, Link Path
+                0x0000,                 $ Descriptor
+                0xC8,                   $ Data Type
+                4,                      $ Data Size in bytes
+                "RPI",                  $ name
+                "",                     $ units
+                "RPI",                  $ help string
+                2000,1000000,10000,            $ min, max, default data values
+                ,,,,                    $ mult, div, base, offset scaling
+                ,,,,                    $ mult, div, base, offset links
+                ;                       $ decimal places
+
+[Assembly]
+        Assem10 =
+                "input format",
+                ,
+                480,
+                0x0000,
+                ,,
+                3840,Param3;            $ User Defined
+        Assem20 =
+                "output format",
+                ,
+                4,
+                0x0000,
+                ,,
+                32,Param3;             $ User Defined
+
+[Connection Manager]
+        Object_Name = "Connection Manager Object";
+        Object_Class_Code = 0x06;
+        Connection1 =
+                0x04010002,             $ trigger & transport
+                                        $  0-15  = supported transport classes (class 1)
+                                        $  16 = cyclic (1 = supported)
+                                        $  17 = change of state (0 = not supported)
+                                        $  18 = on demand (0 = not supported)
+                                        $  19-23 = reserved (must be zero)
+                                        $  24-27 = exclusive owner
+                                        $  28-30 = reserved (must be zero)
+                                        $  31 = client 0 (don't care for classes 0 and 1)
+                0x44640405,             $ connection parameters
+                                        $  0 = O=>T fixed (1 = supported)
+                                        $  1 = O=>T variable (0 = not supported)
+                                        $  2 = T=>O fixed (1 = supported)
+                                        $  3 = T=>O variable (0 = not supported)
+                                        $  4-7 = reserved (must be zero)
+                                        $  8-10 = O=>T header (4 byte run/idle)
+                                        $  11	= reserved (must be zero)
+                                        $  12-14 = T=>O header  (0 byte heartbeat)
+                                        $  15	= reserved (must be zero)
+                                        $  16-19 = O=>T connection type (point-to-point)
+                                        $  20-23 = T=>O connection type (point-to-point)
+                                        $  24-27 = O=>T priority (scheduled)
+                                        $  28-31 = T=>O priority (scheduled)
+                Param4,Param2,Assem20,   $ O=>T RPI,Size,Format
+                Param4,Param1,Assem10,   $ T=>O RPI,Size,Format
+                ,,                      $ config part 1 (not used)
+                ,,                      $ config part 2 (not used)
+                "Consume Data From/Produce Data To",    $ connection name
+                "",                     $ Help string
+                "20 04 24 01 2C 14 2C 0A";    $ outputs only path
+
+
+[Port]
+        Object_Name = "Port Object";
+        Object_Class_Code = 0xF4;
+        Port1 =
+                TCP,
+                "EtherNet/IP port",
+                "20 F5 24 01",
+                1,
+                0x00,
+                ;
+
+[Capacity]
+        MaxIOConnections = 32;
+        MaxMsgConnections = 0;
+        MaxConsumersPerMcast = 32;
+        TSpec1 = TxRx, 4, 400;
+        TSpec2 = TxRx, 496, 400;

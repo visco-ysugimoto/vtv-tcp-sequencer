@@ -44,7 +44,7 @@ def test_index_is_served() -> None:
     response = client.get("/")
     assert response.status_code == 200
     assert "VTV Network Sequencer" in response.text
-    assert "/app.js?v=20260803-2" in response.text
+    assert "/app.js?v=20261027-vtv" in response.text
     assert 'id="header-timeout"' in response.text
     assert "watch-toolbar" in response.text
     assert 'id="watch-interval"' in response.text
