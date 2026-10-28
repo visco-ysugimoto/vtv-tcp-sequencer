@@ -14,9 +14,10 @@ from ..plc_link.commands import (
 from ..protocol import CommandResult, ProtocolError
 from .eip_scanner import EipClass1Scanner
 from .layout import (
-    STATUS_BIT_BUSY,
     AssemblyLayout,
     build_layout,
+    describe_status_signal,
+    resolve_status_signal_bit,
     validate_layout_against_sizes,
 )
 
@@ -137,11 +138,22 @@ class FieldNetworkClient:
             word_index, [unsigned & 0xFFFF, (unsigned >> 16) & 0xFFFF]
         )
 
+    def _busy_signal(self):
+        signal = self.settings.find_status_signal(role="busy")
+        if signal is None:
+            raise ProtocolError("BUSY 役割のステータス信号が設定されていません")
+        return signal
+
     def _get_busy(self) -> int:
         data = self.scanner.buffers.read_input()
         if not data:
             return 0
-        return 1 if data[0] & (1 << STATUS_BIT_BUSY) else 0
+        signal = self._busy_signal()
+        bit = resolve_status_signal_bit(signal, self.layout)
+        byte_index = bit // 8
+        if byte_index < 0 or byte_index >= len(data):
+            return 0
+        return 1 if data[byte_index] & (1 << (bit % 8)) else 0
 
     async def send_command(
         self,
@@ -206,9 +218,10 @@ class FieldNetworkClient:
             if not self.scanner.is_connected:
                 raise ProtocolError("応答の途中で接続が切断されました")
             if asyncio.get_running_loop().time() >= deadline:
+                where = describe_status_signal(self._busy_signal())
                 raise ProtocolError(
                     f"{self.settings.timeout:g}秒以内に {label} を検出できません"
-                    "（ステータス byte0 bit1）"
+                    f"（{where}）"
                 )
             await asyncio.sleep(0.01)
 

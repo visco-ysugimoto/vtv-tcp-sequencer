@@ -264,8 +264,33 @@ def validate_layout_against_sizes(
         )
 
 
-# ステータス出力ビット（Assem10 byte0）
+# ステータス出力ビット（Assem10 byte0）— 既定割付
 STATUS_BIT_AUTO = 0
 STATUS_BIT_BUSY = 1
 STATUS_BIT_RESULT_VALID = 2
 STATUS_BIT_ERROR = 3
+
+
+def resolve_status_signal_bit(signal: object, layout: AssemblyLayout) -> int:
+    """StatusSignalMapping を Assem10 上の絶対 bit 番号へ解決する。"""
+    source = getattr(signal, "source", None)
+    if source == "status":
+        bit = getattr(signal, "bit", None)
+        if bit is None:
+            raise ProtocolError("ステータス領域割付には bit 番号が必要です")
+        return int(bit)
+    if source == "eso":
+        port = getattr(signal, "eso_port", None)
+        if port is None:
+            raise ProtocolError("ESO 割付にはポート番号が必要です")
+        return layout.eso_byte * 8 + (int(port) - 1)
+    raise ProtocolError(f"不明なステータス割付先です: {source}")
+
+
+def describe_status_signal(signal: object) -> str:
+    """ログ／エラー表示用の割付説明。"""
+    label = getattr(signal, "label", "") or getattr(signal, "id", "signal")
+    source = getattr(signal, "source", None)
+    if source == "eso":
+        return f"{label}（ESO-{getattr(signal, 'eso_port', '?')}）"
+    return f"{label}（status bit{getattr(signal, 'bit', '?')}）"

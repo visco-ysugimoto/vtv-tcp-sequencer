@@ -116,16 +116,18 @@
               <label class="watch-field">
                 <span class="watch-field-label">更新周期</span>
                 <span class="watch-field-control">
-                  <input id="watch-interval" type="number" min="10" max="10000" step="1" value="500"
-                    title="D/M 監視の更新間隔（ミリ秒）。下限 10 ms。HTTP 取得にかかる時間は別途加算されます。" aria-label="更新周期（ミリ秒）">
+                  <input id="watch-interval" type="number" min="1" max="10000" step="1" value="500"
+                    title="監視の更新間隔（ミリ秒）。下限 1 ms。HTTP 取得時間より短い場合は取得完了直後に次を開始します。" aria-label="更新周期（ミリ秒）">
                   <span class="watch-field-unit">ms</span>
                 </span>
+                <span id="watch-actual-period" class="watch-actual-period" title="ポーリング開始間隔の実測（平滑化）。括弧内は直近の HTTP 取得時間です。">実測 —</span>
               </label>
               <label class="watch-field">
                 <span class="watch-field-label">結果データ</span>
-                <select id="result-data-display-mode" title="VTV結果データモニタの表記に対応">
+                <select id="result-data-display-mode" title="VTV結果データ出力モニタの『出力値／データ』列に対応">
+                  <option value="dec" selected>整数 (Dec)</option>
                   <option value="fixed">固定小数点</option>
-                  <option value="dec">整数 (Dec)</option>
+                  <option value="float">浮動小数点 (double)</option>
                   <option value="hex">16進 (Hex)</option>
                 </select>
               </label>
@@ -258,6 +260,26 @@
         </div>
         <label>接続パス（HEX）<input id="fn-connection-path" value="20 04 24 01 2C 14 2C 0A"></label>
         <p id="fn-layout-hint" class="export-note">割付サイズは EDS の入出力サイズと一致させる必要があります。</p>
+        <h4 class="subsection-title">ステータス信号割付</h4>
+        <p class="export-note">監視表示とコマンドの BUSY 待ちに使います。割付先はステータス領域 bit、または ESO ポートです。role=busy はちょうど 1 つ必要です。</p>
+        <div class="status-signal-toolbar">
+          <button type="button" id="fn-status-add" class="button secondary">信号を追加</button>
+          <button type="button" id="fn-status-reset" class="button secondary">既定に戻す</button>
+        </div>
+        <div class="status-signal-table-wrap">
+          <table class="status-signal-table" id="fn-status-signal-table">
+            <thead>
+              <tr>
+                <th>信号名</th>
+                <th>割付先</th>
+                <th>bit / ESO</th>
+                <th>役割</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="fn-status-signal-body"></tbody>
+          </table>
+        </div>
         <p class="export-note">アプリが EtherNet/IP Scanner として VTV（Adapter）へ接続します。ポートは通常 44818。PLCLINK とは併用できません。</p>
       </div>
       <div id="connection-test-result" class="test-result"></div>

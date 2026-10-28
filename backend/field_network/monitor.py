@@ -7,12 +7,9 @@ from typing import Any, Literal
 from ..models import MemoryWatchItem, ProtocolSettings
 from ..plc_link.commands import ByteOrder, words_to_dword
 from .layout import (
-    STATUS_BIT_AUTO,
-    STATUS_BIT_BUSY,
-    STATUS_BIT_ERROR,
-    STATUS_BIT_RESULT_VALID,
     AssemblyLayout,
     build_layout,
+    resolve_status_signal_bit,
 )
 
 INVALID_DWORD = -(2**31)
@@ -31,117 +28,104 @@ def build_field_network_layout(settings: ProtocolSettings) -> AssemblyLayout:
 
 
 def build_mapped_watch_items(settings: ProtocolSettings) -> list[MemoryWatchItem]:
-    """接続設定からアセンブリ監視一覧を生成する。"""
+    """接続設定からアセンブリ監視一覧を生成する。
+
+    表示順は VTV 結果データモニタを優先（結果データ → レスポンス → コマンド）。
+    """
     layout = build_field_network_layout(settings)
     cmd = layout.command_word
     rsp = layout.response_word
-    items: list[MemoryWatchItem] = [
-        MemoryWatchItem(
-            id="fn-auto",
-            label="自動運転中",
-            group="ステータス",
-            device="IN",
-            address=STATUS_BIT_AUTO,
-            format="bit",
-        ),
-        MemoryWatchItem(
-            id="fn-busy",
-            label="BUSY",
-            group="ステータス",
-            device="IN",
-            address=STATUS_BIT_BUSY,
-            format="bit",
-        ),
-        MemoryWatchItem(
-            id="fn-result-valid",
-            label="結果信号有効",
-            group="ステータス",
-            device="IN",
-            address=STATUS_BIT_RESULT_VALID,
-            format="bit",
-        ),
-        MemoryWatchItem(
-            id="fn-error",
-            label="エラー",
-            group="ステータス",
-            device="IN",
-            address=STATUS_BIT_ERROR,
-            format="bit",
-        ),
-        MemoryWatchItem(
-            id="cmd-trigger",
-            label="トリガ",
-            group="コマンド領域",
-            device="OUT",
-            address=cmd,
-            format="int32",
-        ),
-        MemoryWatchItem(
-            id="cmd-code",
-            label="コマンドコード",
-            group="コマンド領域",
-            device="OUT",
-            address=cmd + 2,
-            format="int32",
-        ),
-        MemoryWatchItem(
-            id="rsp-result",
-            label="実行結果",
-            group="レスポンス領域",
-            device="IN",
-            address=rsp,
-            format="int32",
-        ),
-        MemoryWatchItem(
-            id="rsp-error",
-            label="エラーコード",
-            group="レスポンス領域",
-            device="IN",
-            address=rsp + 2,
-            format="int32",
-        ),
-        MemoryWatchItem(
-            id="rsp-echo",
-            label="コマンドエコー",
-            group="レスポンス領域",
-            device="IN",
-            address=rsp + 4,
-            format="int32",
-        ),
-        MemoryWatchItem(
-            id="rsp-param-size",
-            label="パラメータ総サイズ",
-            group="レスポンス領域",
-            device="IN",
-            address=rsp + 6,
-            format="int32",
-        ),
-    ]
+    result_base = layout.result_word
+    items: list[MemoryWatchItem] = []
+    for signal in settings.fn_status_signals:
+        bit = resolve_status_signal_bit(signal, layout)
+        items.append(
+            MemoryWatchItem(
+                id=f"fn-status-{signal.id}",
+                label=signal.label,
+                group="ステータス",
+                device="IN",
+                address=bit,
+                format="bit",
+            )
+        )
 
+    # 結果データ（VTV「結果データ出力モニタ」の相対アドレス）
     watch_words = min(settings.result_data_size, settings.result_data_watch_words)
     watch_words -= watch_words % 2
     for offset in range(0, watch_words, 2):
-        address = layout.result_word + offset
         items.append(
             MemoryWatchItem(
                 id=f"result-data-{offset}",
-                label=f"+{offset:04d}",
-                group="結果データ",
+                label=f"+{offset:05d}",
+                group="結果データ (Assem10)",
                 device="IN",
-                address=address,
+                address=result_base + offset,
                 format="int32",
                 decimals=settings.result_data_decimals,
             )
         )
 
+    items.extend(
+        [
+            MemoryWatchItem(
+                id="rsp-result",
+                label="実行結果 (+0000)",
+                group="レスポンス領域 (Assem10)",
+                device="IN",
+                address=rsp,
+                format="int32",
+            ),
+            MemoryWatchItem(
+                id="rsp-error",
+                label="エラーコード (+0002)",
+                group="レスポンス領域 (Assem10)",
+                device="IN",
+                address=rsp + 2,
+                format="int32",
+            ),
+            MemoryWatchItem(
+                id="rsp-echo",
+                label="コマンドエコー (+0004)",
+                group="レスポンス領域 (Assem10)",
+                device="IN",
+                address=rsp + 4,
+                format="int32",
+            ),
+            MemoryWatchItem(
+                id="rsp-param-size",
+                label="パラメータ総サイズ (+0006)",
+                group="レスポンス領域 (Assem10)",
+                device="IN",
+                address=rsp + 6,
+                format="int32",
+            ),
+            MemoryWatchItem(
+                id="cmd-trigger",
+                label="トリガ (+0000)",
+                group="コマンド領域 (Assem20)",
+                device="OUT",
+                address=cmd,
+                format="int32",
+            ),
+            MemoryWatchItem(
+                id="cmd-code",
+                label="コマンドコード (+0002)",
+                group="コマンド領域 (Assem20)",
+                device="OUT",
+                address=cmd + 2,
+                format="int32",
+            ),
+        ]
+    )
+
     for port in range(1, settings.fn_eso_ports + 1):
-        # ESO-1 = status(4bytes)*8 + (port-1) = bit 32 + port-1
         bit = layout.eso_byte * 8 + (port - 1)
         items.append(
             MemoryWatchItem(
                 id=f"eso-port-{port}",
                 label=f"ESO-{port}",
-                group="ESO出力",
+                group="ESO出力 (Assem10)",
                 device="IN",
                 address=bit,
                 format="bit",
@@ -154,7 +138,7 @@ def build_mapped_watch_items(settings: ProtocolSettings) -> list[MemoryWatchItem
             MemoryWatchItem(
                 id=f"esi-port-{port}",
                 label=f"ESI-{port}",
-                group="ESI入力",
+                group="ESI入力 (Assem20)",
                 device="OUT",
                 address=bit,
                 format="bit",

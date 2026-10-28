@@ -5,9 +5,13 @@ from pathlib import Path
 import pytest
 
 from backend.field_network.eds import parse_eds_file, parse_eds_text
-from backend.field_network.layout import build_layout, validate_layout_against_sizes
+from backend.field_network.layout import (
+    build_layout,
+    resolve_status_signal_bit,
+    validate_layout_against_sizes,
+)
 from backend.field_network.monitor import build_mapped_watch_items, read_assembly_items
-from backend.models import ProtocolSettings
+from backend.models import ProtocolSettings, StatusSignalMapping, default_fn_status_signals
 from backend.protocol import ProtocolError
 
 DOCS = Path(__file__).resolve().parents[1] / "docs" / "field_network"
@@ -138,8 +142,16 @@ def test_watch_items_and_read() -> None:
         fn_output_size=136,
     )
     items = build_mapped_watch_items(settings)
-    assert any(item.id == "fn-busy" for item in items)
-    assert any(item.group == "ESO出力" for item in items)
+    assert any(item.id == "fn-status-busy" for item in items)
+    assert any(item.group == "ESO出力 (Assem10)" for item in items)
+    assert any(item.group == "コマンド領域 (Assem20)" for item in items)
+    assert any(item.id.startswith("result-data-") for item in items)
+    # 結果データを先頭側に置き、VTV モニタと同じ相対オフセットで見えるようにする
+    result_ids = [i.id for i in items if i.id.startswith("result-data-")]
+    assert result_ids[0] == "result-data-0"
+    assert items.index(next(i for i in items if i.id == "result-data-0")) < items.index(
+        next(i for i in items if i.id == "cmd-trigger")
+    )
 
     input_data = bytearray(616)
     output_data = bytearray(132)
@@ -164,8 +176,85 @@ def test_watch_items_and_read() -> None:
             byte_order="high_low",
         )
     }
-    assert values["fn-busy"]["value"] == 1
+    assert values["fn-status-busy"]["value"] == 1
     assert values["rsp-result"]["value"] == 1
+
+
+def test_default_status_signals() -> None:
+    settings = ProtocolSettings(transport="field_network", host="192.168.0.10")
+    signals = settings.fn_status_signals
+    assert len(signals) == 4
+    assert settings.find_status_signal(role="busy") is not None
+    assert settings.find_status_signal(role="busy").bit == 1
+    layout = build_layout(
+        esi_ports=32,
+        eso_ports=32,
+        command_words=64,
+        response_words=64,
+        result_words=238,
+    )
+    busy = settings.find_status_signal(role="busy")
+    assert resolve_status_signal_bit(busy, layout) == 1
+
+
+def test_status_signal_busy_on_eso() -> None:
+    signals = default_fn_status_signals()
+    for item in signals:
+        if item.role == "busy":
+            item.source = "eso"
+            item.bit = None
+            item.eso_port = 3
+    settings = ProtocolSettings(
+        transport="field_network",
+        host="192.168.0.10",
+        fn_status_signals=signals,
+    )
+    layout = build_layout(
+        esi_ports=32,
+        eso_ports=32,
+        command_words=64,
+        response_words=64,
+        result_words=238,
+    )
+    busy = settings.find_status_signal(role="busy")
+    # eso_byte=4 → bit = 32 + (3-1) = 34
+    assert resolve_status_signal_bit(busy, layout) == 34
+    items = build_mapped_watch_items(settings)
+    busy_item = next(item for item in items if item.id == "fn-status-busy")
+    assert busy_item.address == 34
+    assert busy_item.label == "BUSY"
+
+    input_data = bytearray(612)
+    # set ESO-3: byte 4, bit 2
+    input_data[4] = 1 << 2
+    values = {
+        item["id"]: item
+        for item in read_assembly_items(
+            bytes(input_data),
+            bytes(136),
+            [busy_item],
+            encoding="cp932",
+            byte_order="high_low",
+        )
+    }
+    assert values["fn-status-busy"]["value"] == 1
+
+
+def test_status_signals_require_single_busy() -> None:
+    signals = [
+        StatusSignalMapping(
+            id="a", label="A", source="status", bit=0, role="none"
+        ),
+        StatusSignalMapping(
+            id="b", label="B", source="status", bit=1, role="none"
+        ),
+    ]
+    with pytest.raises(ValueError, match="busy"):
+        ProtocolSettings(
+            transport="field_network",
+            host="192.168.0.10",
+            fn_status_signals=signals,
+        )
 
 
 def test_parse_eds_text_minimal() -> None:

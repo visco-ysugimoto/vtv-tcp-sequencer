@@ -1,6 +1,13 @@
-const WATCH_INTERVAL_MIN_MS = 10;
+const WATCH_INTERVAL_MIN_MS = 1;
 const WATCH_INTERVAL_MAX_MS = 10_000;
 const WATCH_INTERVAL_DEFAULT_MS = 500;
+
+const DEFAULT_FN_STATUS_SIGNALS = [
+  { id: "auto", label: "自動運転中", source: "status", bit: 0, eso_port: null, role: "auto" },
+  { id: "busy", label: "BUSY", source: "status", bit: 1, eso_port: null, role: "busy" },
+  { id: "result_valid", label: "結果信号有効", source: "status", bit: 2, eso_port: null, role: "result_valid" },
+  { id: "error", label: "エラー", source: "status", bit: 3, eso_port: null, role: "error" },
+];
 
 const state = {
   catalog: [],
@@ -21,7 +28,10 @@ const state = {
     fn_input_size: 612, fn_output_size: 136, fn_rpi_us: 10000,
     fn_connection_path: "20 04 24 01 2C 14 2C 0A",
     fn_o_to_t_header_bytes: 4, fn_eds_name: "",
+    fn_status_signals: DEFAULT_FN_STATUS_SIGNALS.map((item) => ({ ...item })),
   },
+  statusSignalDraft: DEFAULT_FN_STATUS_SIGNALS.map((item) => ({ ...item })),
+  statusSignalSeq: 1,
   socket: null,
   running: false,
   nextId: 1,
@@ -36,6 +46,9 @@ const state = {
   watchRunning: false,
   watchTimer: null,
   watchIntervalMs: WATCH_INTERVAL_DEFAULT_MS,
+  watchLastCycleAt: 0,
+  watchActualMs: null,
+  watchFetchMs: null,
   softPlcPollTimer: null,
   softPlcClientCount: 0,
 };
@@ -117,9 +130,41 @@ function bindEvents() {
     "fn-input-size", "fn-output-size", "fn-result-watch-words"].forEach((id) => {
     $(`#${id}`)?.addEventListener("change", () => {
       updateFnLayoutHint();
+      if (id === "fn-eso-ports") renderStatusSignalTable();
       refreshMappedWatchItems();
       renderWatchList();
     });
+  });
+  $("#fn-status-add")?.addEventListener("click", () => {
+    syncStatusSignalDraftFromDom();
+    state.statusSignalDraft.push({
+      id: `custom-${state.statusSignalSeq++}`,
+      label: "カスタム信号",
+      source: "status",
+      bit: 4,
+      eso_port: null,
+      role: "none",
+    });
+    renderStatusSignalTable();
+  });
+  $("#fn-status-reset")?.addEventListener("click", () => {
+    state.statusSignalDraft = DEFAULT_FN_STATUS_SIGNALS.map((item) => ({ ...item }));
+    renderStatusSignalTable();
+  });
+  $("#fn-status-signal-body")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-status-delete]");
+    if (!button) return;
+    const index = Number(button.dataset.statusDelete);
+    syncStatusSignalDraftFromDom();
+    if (!Number.isFinite(index)) return;
+    state.statusSignalDraft.splice(index, 1);
+    renderStatusSignalTable();
+  });
+  $("#fn-status-signal-body")?.addEventListener("change", (event) => {
+    const row = event.target.closest("tr[data-status-index]");
+    if (!row) return;
+    syncStatusSignalDraftFromDom();
+    renderStatusSignalTable();
   });
   for (const id of ["header-timeout", "timeout"]) {
     $(`#${id}`)?.addEventListener("change", onTimeoutChanged);
@@ -202,6 +247,27 @@ function scheduleNextWatchPoll(elapsedMs = 0) {
   state.watchTimer = setTimeout(pollWatchValues, delay);
 }
 
+function resetWatchActualPeriod() {
+  state.watchLastCycleAt = 0;
+  state.watchActualMs = null;
+  state.watchFetchMs = null;
+  updateWatchActualPeriodDisplay();
+}
+
+function updateWatchActualPeriodDisplay() {
+  const el = $("#watch-actual-period");
+  if (!el) return;
+  if (!state.watchRunning || state.watchActualMs == null) {
+    el.textContent = "実測 —";
+    return;
+  }
+  const cycle = Math.max(1, Math.round(state.watchActualMs));
+  const fetchMs = state.watchFetchMs == null ? null : Math.max(0, Math.round(state.watchFetchMs));
+  el.textContent = fetchMs == null
+    ? `実測 ${cycle} ms`
+    : `実測 ${cycle} ms（取得 ${fetchMs} ms）`;
+}
+
 function updateWatchNote() {
   const note = $("#watch-note");
   if (!note) return;
@@ -214,8 +280,8 @@ function updateWatchNote() {
   }
   if (transport === "field_network") {
     note.textContent =
-      `Assem10/20 の割付から自動生成（IN=入力 / OUT=出力ワードまたはビット）。`
-      + `更新周期 ${readWatchIntervalMs()} ms。`;
+      `「結果データ」は VTV と同じく「出力値」(生DWORD) と「データ」(解釈値) を表示します。`
+      + `処理時間などの倍精度は表記を「浮動小数点」にしてください。更新周期 ${readWatchIntervalMs()} ms。`;
     return;
   }
   note.textContent = "PLCLINK / Field Network 接続時に監視が利用できます。";
@@ -226,10 +292,14 @@ function restoreResultDataDisplayMode() {
   if (!select) return;
   try {
     const saved = localStorage.getItem("vtv-result-data-display-mode");
-    if (saved === "fixed" || saved === "dec" || saved === "hex") {
+    if (saved === "fixed" || saved === "dec" || saved === "hex" || saved === "float") {
       select.value = saved;
+    } else {
+      select.value = "dec";
     }
-  } catch (_) {}
+  } catch (_) {
+    select.value = "dec";
+  }
 }
 
 function applyViewMode() {
@@ -355,12 +425,125 @@ function buildMappedWatchItems(settings) {
   return items;
 }
 
+function normalizeStatusSignals(raw) {
+  const list = Array.isArray(raw) && raw.length
+    ? raw
+    : DEFAULT_FN_STATUS_SIGNALS;
+  return list.map((item, index) => {
+    const source = item.source === "eso" ? "eso" : "status";
+    const role = ["busy", "auto", "result_valid", "error"].includes(item.role)
+      ? item.role
+      : "none";
+    return {
+      id: String(item.id || `signal-${index + 1}`).slice(0, 40),
+      label: String(item.label || item.id || `信号${index + 1}`).slice(0, 40),
+      source,
+      bit: source === "status" ? Number(item.bit ?? 0) : null,
+      eso_port: source === "eso" ? Number(item.eso_port ?? 1) : null,
+      role,
+    };
+  });
+}
+
+function resolveFnStatusBit(signal, esoByte = 4) {
+  if (signal.source === "eso") {
+    const port = Number(signal.eso_port) || 1;
+    return esoByte * 8 + (port - 1);
+  }
+  return Number(signal.bit) || 0;
+}
+
+function renderStatusSignalTable() {
+  const body = $("#fn-status-signal-body");
+  if (!body) return;
+  const rows = state.statusSignalDraft.length
+    ? state.statusSignalDraft
+    : DEFAULT_FN_STATUS_SIGNALS.map((item) => ({ ...item }));
+  body.innerHTML = rows.map((signal, index) => {
+    const source = signal.source === "eso" ? "eso" : "status";
+    const value = source === "eso"
+      ? (Number(signal.eso_port) || 1)
+      : (Number(signal.bit) || 0);
+    return `<tr data-status-index="${index}">
+      <td><input type="text" data-field="label" value="${escapeHtml(signal.label)}" maxlength="40"></td>
+      <td>
+        <select data-field="source">
+          <option value="status"${source === "status" ? " selected" : ""}>ステータス bit</option>
+          <option value="eso"${source === "eso" ? " selected" : ""}>ESO ポート</option>
+        </select>
+      </td>
+      <td><input type="number" data-field="index" min="0" max="128" step="1" value="${value}"></td>
+      <td>
+        <select data-field="role">
+          <option value="none"${signal.role === "none" ? " selected" : ""}>なし</option>
+          <option value="busy"${signal.role === "busy" ? " selected" : ""}>BUSY</option>
+          <option value="auto"${signal.role === "auto" ? " selected" : ""}>自動運転中</option>
+          <option value="result_valid"${signal.role === "result_valid" ? " selected" : ""}>結果信号有効</option>
+          <option value="error"${signal.role === "error" ? " selected" : ""}>エラー</option>
+        </select>
+      </td>
+      <td><button type="button" class="status-signal-delete" data-status-delete="${index}" title="削除">×</button></td>
+    </tr>`;
+  }).join("");
+}
+
+function syncStatusSignalDraftFromDom() {
+  const body = $("#fn-status-signal-body");
+  if (!body) return;
+  const next = [];
+  body.querySelectorAll("tr[data-status-index]").forEach((row, index) => {
+    const prev = state.statusSignalDraft[index] || {};
+    const label = row.querySelector('[data-field="label"]')?.value?.trim() || `信号${index + 1}`;
+    const source = row.querySelector('[data-field="source"]')?.value === "eso" ? "eso" : "status";
+    const role = row.querySelector('[data-field="role"]')?.value || "none";
+    const rawIndex = Number(row.querySelector('[data-field="index"]')?.value);
+    const id = prev.id || `custom-${state.statusSignalSeq++}`;
+    next.push({
+      id,
+      label,
+      source,
+      bit: source === "status" ? (Number.isFinite(rawIndex) ? rawIndex : 0) : null,
+      eso_port: source === "eso" ? (Number.isFinite(rawIndex) && rawIndex >= 1 ? rawIndex : 1) : null,
+      role: ["busy", "auto", "result_valid", "error", "none"].includes(role) ? role : "none",
+    });
+  });
+  state.statusSignalDraft = next;
+}
+
+function readStatusSignalsFromForm() {
+  syncStatusSignalDraftFromDom();
+  const signals = normalizeStatusSignals(state.statusSignalDraft);
+  const busyCount = signals.filter((item) => item.role === "busy").length;
+  if (busyCount !== 1) {
+    throw new Error(`ステータス信号の role=BUSY はちょうど 1 つ必要です（現在 ${busyCount} 件）`);
+  }
+  const esoPorts = Number($("#fn-eso-ports")?.value) || 0;
+  for (const signal of signals) {
+    if (signal.source === "eso") {
+      if (esoPorts <= 0) {
+        throw new Error(`信号「${signal.label}」: ESO ポート数が 0 のため ESO に割付できません`);
+      }
+      if (signal.eso_port > esoPorts) {
+        throw new Error(
+          `信号「${signal.label}」: ESO-${signal.eso_port} は設定ポート数 ${esoPorts} を超えています`
+        );
+      }
+    }
+  }
+  return signals;
+}
+
 function buildFnMappedWatchItems(settings) {
   const esiPorts = Number(settings.fn_esi_ports) || 0;
   const esoPorts = Number(settings.fn_eso_ports) || 0;
-  const commandWords = Number(settings.command_size) || 64;
   const responseWords = Number(settings.response_size) || 64;
-  const resultWords = Number(settings.result_data_size) || 0;
+  let resultWords = Number(settings.result_data_size) || 0;
+  // PLCLINK 既定 2048 が混入すると割付が壊れるため、Assem10 に収まるよう制限
+  const inputBytes = Number(settings.fn_input_size) || 612;
+  const maxResultWords = Math.max(0, Math.floor(inputBytes / 2) - 2 - Math.floor(esoPorts / 16) - responseWords);
+  if (resultWords > maxResultWords && maxResultWords >= 0) {
+    resultWords = maxResultWords;
+  }
   const esiWords = Math.floor(esiPorts / 16);
   const esoWords = Math.floor(esoPorts / 16);
   const cmd = 2 + esiWords;
@@ -368,37 +551,46 @@ function buildFnMappedWatchItems(settings) {
   const resultWord = 2 + esoWords;
   const esoByte = 4;
   const esiByte = 4;
-  const items = [
-    { id: "fn-auto", label: "自動運転中", group: "ステータス", device: "IN", address: 0, format: "bit" },
-    { id: "fn-busy", label: "BUSY", group: "ステータス", device: "IN", address: 1, format: "bit", busy: true },
-    { id: "fn-result-valid", label: "結果信号有効", group: "ステータス", device: "IN", address: 2, format: "bit" },
-    { id: "fn-error", label: "エラー", group: "ステータス", device: "IN", address: 3, format: "bit" },
-    { id: "cmd-trigger", label: "トリガ", group: "コマンド領域", device: "OUT", address: cmd, format: "int32" },
-    { id: "cmd-code", label: "コマンドコード", group: "コマンド領域", device: "OUT", address: cmd + 2, format: "int32" },
-    { id: "rsp-result", label: "実行結果", group: "レスポンス領域", device: "IN", address: rsp, format: "int32" },
-    { id: "rsp-error", label: "エラーコード", group: "レスポンス領域", device: "IN", address: rsp + 2, format: "int32" },
-    { id: "rsp-echo", label: "コマンドエコー", group: "レスポンス領域", device: "IN", address: rsp + 4, format: "int32" },
-    { id: "rsp-param-size", label: "パラメータ総サイズ", group: "レスポンス領域", device: "IN", address: rsp + 6, format: "int32" },
-  ];
-  let watchWords = Math.min(resultWords, Number(settings.result_data_watch_words) || 64);
+  const watchLimit = Number(settings.result_data_watch_words) || 64;
+  const statusSignals = normalizeStatusSignals(settings.fn_status_signals);
+  const items = statusSignals.map((signal) => ({
+    id: `fn-status-${signal.id}`,
+    label: signal.label,
+    group: "ステータス",
+    device: "IN",
+    address: resolveFnStatusBit(signal, esoByte),
+    format: "bit",
+    busy: signal.role === "busy",
+  }));
+  // VTV「結果データ出力モニタ」相当を先頭側に配置
+  let watchWords = Math.min(resultWords, watchLimit);
   watchWords -= watchWords % 2;
   for (let offset = 0; offset < watchWords; offset += 2) {
     items.push({
       id: `result-data-${offset}`,
-      label: `+${String(offset).padStart(4, "0")}`,
-      group: "結果データ",
+      label: `+${String(offset).padStart(5, "0")}`,
+      group: "結果データ (Assem10)",
       device: "IN",
       address: resultWord + offset,
+      relAddress: offset,
       format: "int32",
       decimals: Number(settings.result_data_decimals) || 3,
       valueKind: "result_data",
     });
   }
+  items.push(
+    { id: "rsp-result", label: "実行結果 (+0000)", group: "レスポンス領域 (Assem10)", device: "IN", address: rsp, format: "int32" },
+    { id: "rsp-error", label: "エラーコード (+0002)", group: "レスポンス領域 (Assem10)", device: "IN", address: rsp + 2, format: "int32" },
+    { id: "rsp-echo", label: "コマンドエコー (+0004)", group: "レスポンス領域 (Assem10)", device: "IN", address: rsp + 4, format: "int32" },
+    { id: "rsp-param-size", label: "パラメータ総サイズ (+0006)", group: "レスポンス領域 (Assem10)", device: "IN", address: rsp + 6, format: "int32" },
+    { id: "cmd-trigger", label: "トリガ (+0000)", group: "コマンド領域 (Assem20)", device: "OUT", address: cmd, format: "int32" },
+    { id: "cmd-code", label: "コマンドコード (+0002)", group: "コマンド領域 (Assem20)", device: "OUT", address: cmd + 2, format: "int32" },
+  );
   for (let port = 1; port <= esoPorts; port += 1) {
     items.push({
       id: `eso-port-${port}`,
       label: `ESO-${port}`,
-      group: "ESO出力",
+      group: "ESO出力 (Assem10)",
       device: "IN",
       address: esoByte * 8 + (port - 1),
       format: "bit",
@@ -409,7 +601,7 @@ function buildFnMappedWatchItems(settings) {
     items.push({
       id: `esi-port-${port}`,
       label: `ESI-${port}`,
-      group: "ESI入力",
+      group: "ESI入力 (Assem20)",
       device: "OUT",
       address: esiByte * 8 + (port - 1),
       format: "bit",
@@ -476,10 +668,13 @@ function renderWatchList(changed = new Set()) {
 
 function watchGroupTitle(name, items) {
   if (!items.length) return name;
-  if (name === "結果データ") {
-    const first = items[0].address;
-    const last = items[items.length - 1].address + 1;
-    return `${name}（D${first}–D${last}）`;
+  if (name.startsWith("結果データ")) {
+    const first = typeof items[0].relAddress === "number" ? items[0].relAddress : items[0].address;
+    const lastItem = items[items.length - 1];
+    const last = typeof lastItem.relAddress === "number"
+      ? lastItem.relAddress + 1
+      : lastItem.address + 1;
+    return `${name}（+${String(first).padStart(5, "0")}–+${String(last).padStart(5, "0")}）`;
   }
   if (name === "結果通知エリア") {
     return `${name}（D${items[0].address}–D${items[0].address + 7}）`;
@@ -512,16 +707,80 @@ function formatWatchValue(value, item) {
   return String(value);
 }
 
+/** VTV 結果データ「No Data」センチネル (0x7FFFFFFE) */
+const RESULT_NO_DATA = 2147483646;
+
 function formatResultDataValue(value, item) {
-  const decimals = Number(item.decimals ?? $("#result-data-decimals")?.value ?? 3);
-  const mode = $("#result-data-display-mode")?.value || "fixed";
-  const unsigned = value >>> 0;
-  const hex = `0x${unsigned.toString(16).toUpperCase().padStart(8, "0")}`;
-  if (mode === "hex") return hex;
-  if (mode === "dec") return String(value);
-  // 固定小数点: VTV「データ」列相当。出力値(整数)も併記。
-  const scaled = value / (10 ** decimals);
-  return `${scaled.toFixed(decimals)}  (出力値 ${value})`;
+  const decimals = Number(
+    item.decimals ?? $("#fn-result-decimals")?.value ?? $("#result-data-decimals")?.value ?? 3,
+  );
+  const mode = $("#result-data-display-mode")?.value || "dec";
+  const raw = value | 0;
+  const unsigned = raw >>> 0;
+  const outputText = mode === "hex"
+    ? `0x${unsigned.toString(16).toUpperCase().padStart(8, "0")}`
+    : String(raw);
+
+  // 直前が double の下位ワードなら VTV 同様「>」
+  if (mode === "float" && isResultFloatContinuation(item)) {
+    return `出力値 ${outputText}\nデータ >`;
+  }
+
+  let dataText;
+  if (raw === RESULT_NO_DATA) {
+    dataText = "No Data";
+  } else if (mode === "hex") {
+    dataText = outputText;
+  } else if (mode === "fixed") {
+    dataText = (raw / (10 ** decimals)).toFixed(decimals);
+  } else if (mode === "float") {
+    const paired = readResultFloatPair(item);
+    dataText = paired == null ? String(raw) : formatFloatData(paired);
+  } else {
+    // Dec: VTV と同様、整数項目は出力値＝データ
+    dataText = String(raw);
+  }
+
+  // VTV モニタ列順: 出力値 → データ
+  return `出力値 ${outputText}\nデータ ${dataText}`;
+}
+
+function readResultFloatPair(item) {
+  if (typeof item.relAddress !== "number") return null;
+  const current = state.watchValues[item.id];
+  const next = state.watchValues[`result-data-${item.relAddress + 2}`];
+  if (!current || current.valid === false || typeof current.value !== "number") return null;
+  if (!next || next.valid === false || typeof next.value !== "number") return null;
+  if (current.value === RESULT_NO_DATA || next.value === RESULT_NO_DATA) return null;
+  // LE double: 低位 dword = 当ワード, 高位 dword = 次ワード（VTV 倍精度）
+  const buffer = new ArrayBuffer(8);
+  const view = new DataView(buffer);
+  view.setInt32(0, current.value | 0, true);
+  view.setInt32(4, next.value | 0, true);
+  const f = view.getFloat64(0, true);
+  if (!Number.isFinite(f)) return null;
+  const abs = Math.abs(f);
+  // 整数ペアの誤検知（サブノーマル等）を除外。処理時間 ~62 などは通す。
+  if (abs < 1e-6 || abs > 1e15) return null;
+  return f;
+}
+
+function isResultFloatContinuation(item) {
+  if (typeof item.relAddress !== "number" || item.relAddress < 2) return false;
+  const prev = state.watchItems.find(
+    (candidate) => candidate.id === `result-data-${item.relAddress - 2}`,
+  );
+  if (!prev) return false;
+  const mode = $("#result-data-display-mode")?.value || "dec";
+  if (mode !== "float") return false;
+  return readResultFloatPair(prev) != null;
+}
+
+function formatFloatData(value) {
+  const abs = Math.abs(value);
+  if (abs !== 0 && (abs < 1e-4 || abs >= 1e7)) return value.toExponential(6);
+  // VTV 表示に近い桁（余分な 0 は削る）
+  return String(parseFloat(value.toPrecision(12)));
 }
 
 function watchValueClass(snapshot, item, changed) {
@@ -555,7 +814,11 @@ function setWatchStatus(text, status = "") {
 function formatWatchAddress(item) {
   if (item.device === "IN" || item.device === "OUT") {
     if (item.format === "bit") return `${item.device} bit${item.address}`;
-    return `${item.device} W${item.address}`;
+    // 結果データは VTV Rel. と同じ領域先頭からの相対オフセットを優先表示
+    if (typeof item.relAddress === "number") {
+      return `+${String(item.relAddress).padStart(5, "0")}`;
+    }
+    return `${item.device} +${String(item.address).padStart(4, "0")}`;
   }
   return `${item.device}${item.address}`;
 }
@@ -573,6 +836,7 @@ function startWatch() {
     return;
   }
   state.watchRunning = true;
+  resetWatchActualPeriod();
   $("#start-watch-button").disabled = true;
   $("#stop-watch-button").disabled = false;
   setWatchStatus("監視中", "running");
@@ -583,6 +847,7 @@ function stopWatch(resetValues = false) {
   state.watchRunning = false;
   clearTimeout(state.watchTimer);
   state.watchTimer = null;
+  resetWatchActualPeriod();
   if (resetValues) {
     state.watchValues = {};
     renderWatchList();
@@ -595,7 +860,16 @@ function stopWatch(resetValues = false) {
 async function pollWatchValues() {
   if (!state.watchRunning) return;
   const started = performance.now();
-  const transport = state.settings.transport;
+  if (state.watchLastCycleAt > 0) {
+    const cycleMs = started - state.watchLastCycleAt;
+    state.watchActualMs = state.watchActualMs == null
+      ? cycleMs
+      : (state.watchActualMs * 0.7) + (cycleMs * 0.3);
+  }
+  state.watchLastCycleAt = started;
+
+  const liveSettings = ($("#transport") && readSettingsForm()) || state.settings;
+  const transport = liveSettings.transport || state.settings.transport;
   const endpoint = transport === "field_network"
     ? "/api/field-network/memory/read"
     : "/api/plclink/memory/read";
@@ -635,7 +909,12 @@ async function pollWatchValues() {
     updateWatchValueDisplays();
     setWatchStatus(`再接続待ち: ${error.message}`, "error");
   } finally {
-    scheduleNextWatchPoll(performance.now() - started);
+    const fetchMs = performance.now() - started;
+    state.watchFetchMs = state.watchFetchMs == null
+      ? fetchMs
+      : (state.watchFetchMs * 0.7) + (fetchMs * 0.3);
+    updateWatchActualPeriodDisplay();
+    scheduleNextWatchPoll(fetchMs);
   }
 }
 
@@ -1098,7 +1377,11 @@ function readSettingsForm() {
     result_data_enabled: $("#result-data-enabled").checked,
     result_data_address: Number($("#result-data-address").value),
     result_data_size: isFn
-      ? Number($("#fn-result-size")?.value)
+      ? (() => {
+          const n = Number($("#fn-result-size")?.value);
+          // Assem10 に収まる範囲（異常な PLCLINK 残存値を除外）
+          return Number.isFinite(n) && n >= 0 && n <= 512 ? n : 238;
+        })()
       : Number($("#result-data-size").value),
     result_data_watch_words: isFn
       ? Number($("#fn-result-watch-words")?.value)
@@ -1116,6 +1399,9 @@ function readSettingsForm() {
     fn_connection_path: ($("#fn-connection-path")?.value || "20 04 24 01 2C 14 2C 0A").trim(),
     fn_o_to_t_header_bytes: Number($("#fn-o-to-t-header")?.value || 4),
     fn_eds_name: state.settings.fn_eds_name || "",
+    fn_status_signals: isFn
+      ? readStatusSignalsFromForm()
+      : normalizeStatusSignals(state.settings.fn_status_signals),
   };
 }
 
@@ -1155,12 +1441,18 @@ async function saveSettings(event) {
     localStorage.setItem("vtv-settings", JSON.stringify(state.settings));
     refreshMappedWatchItems();
     renderWatchList();
+    closeSettingsDialog();
+    void applySavedConnectionSettings();
   } catch (error) {
     console.error(error);
-  } finally {
-    closeSettingsDialog();
+    const resultEl = $("#connection-test-result");
+    if (resultEl) {
+      resultEl.className = "test-result error";
+      resultEl.textContent = error.message || String(error);
+    } else {
+      alert(error.message || String(error));
+    }
   }
-  void applySavedConnectionSettings();
 }
 
 async function applySavedConnectionSettings() {
@@ -1198,6 +1490,10 @@ function restoreSettings() {
     }
     delete saved.busy_address;
     state.settings = { ...state.settings, ...saved };
+    state.settings.fn_status_signals = normalizeStatusSignals(
+      state.settings.fn_status_signals,
+    );
+    state.statusSignalDraft = state.settings.fn_status_signals.map((item) => ({ ...item }));
   } catch (_) {}
 }
 
@@ -1242,15 +1538,22 @@ function applySettingsToForm() {
     $("#fn-o-to-t-header").value = String(s.fn_o_to_t_header_bytes ?? 4);
     $("#fn-command-size").value = s.command_size ?? 64;
     $("#fn-response-size").value = s.response_size ?? 64;
-    $("#fn-result-size").value = s.transport === "field_network"
-      ? (s.result_data_size ?? 240)
-      : (s.result_data_size ?? 240);
+    {
+      // PLCLINK の 2048 などが残っていると Assem10 割付が壊れる
+      let fnResult = Number(s.result_data_size);
+      if (!Number.isFinite(fnResult) || fnResult <= 0 || fnResult > 512) {
+        fnResult = 238;
+      }
+      $("#fn-result-size").value = fnResult;
+    }
     $("#fn-result-watch-words").value = s.result_data_watch_words ?? 64;
     $("#fn-result-decimals").value = s.result_data_decimals ?? 3;
     $("#fn-byte-order").value = s.byte_order || "high_low";
     $("#fn-encoding").value = s.encoding || "cp932";
     $("#fn-connection-path").value = s.fn_connection_path || "20 04 24 01 2C 14 2C 0A";
   }
+  state.statusSignalDraft = normalizeStatusSignals(s.fn_status_signals);
+  renderStatusSignalTable();
   syncTransportUi();
   syncResultDataUi();
   updateBusyAddressHint();
@@ -1344,6 +1647,8 @@ function applyFieldNetworkDefaultsToForm() {
   $("#fn-result-watch-words").value = 64;
   $("#fn-connection-path").value = "20 04 24 01 2C 14 2C 0A";
   $("#fn-o-to-t-header").value = "4";
+  state.statusSignalDraft = DEFAULT_FN_STATUS_SIGNALS.map((item) => ({ ...item }));
+  renderStatusSignalTable();
 }
 
 function updateFnLayoutHint() {
@@ -1444,6 +1749,8 @@ async function connectFieldNetwork() {
     markConnectionVerified(true, settings);
     state.settings = settings;
     localStorage.setItem("vtv-settings", JSON.stringify(settings));
+    refreshMappedWatchItems();
+    renderWatchList();
     refreshConnectionBadge();
     return data;
   } catch (error) {
@@ -1656,6 +1963,10 @@ async function verifyConnectionSettings({ showMessage = false, resultEl = null }
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || "接続できません");
     markConnectionVerified(true, settings);
+    state.settings = settings;
+    localStorage.setItem("vtv-settings", JSON.stringify(settings));
+    refreshMappedWatchItems();
+    renderWatchList();
     setConnection("connected");
     if (showMessage && resultEl) {
       resultEl.className = "test-result success";

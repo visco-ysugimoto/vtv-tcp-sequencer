@@ -4,6 +4,52 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
+StatusSignalSource = Literal["status", "eso"]
+StatusSignalRole = Literal["none", "busy", "auto", "result_valid", "error"]
+
+
+class StatusSignalMapping(BaseModel):
+    """Field Network ステータス信号の監視／BUSY 判定用割付。"""
+
+    id: str = Field(min_length=1, max_length=40)
+    label: str = Field(min_length=1, max_length=40)
+    source: StatusSignalSource = "status"
+    bit: int | None = Field(default=None, ge=0, le=2047)
+    eso_port: int | None = Field(default=None, ge=1, le=128)
+    role: StatusSignalRole = "none"
+
+    @model_validator(mode="after")
+    def validate_source_fields(self) -> StatusSignalMapping:
+        if self.source == "status":
+            if self.bit is None:
+                raise ValueError(f"信号「{self.label}」: ステータス領域には bit が必要です")
+        elif self.source == "eso":
+            if self.eso_port is None:
+                raise ValueError(f"信号「{self.label}」: ESO 割付にはポート番号が必要です")
+        return self
+
+
+def default_fn_status_signals() -> list[StatusSignalMapping]:
+    """VTV 既定のステータス出力領域割付。"""
+    return [
+        StatusSignalMapping(
+            id="auto", label="自動運転中", source="status", bit=0, role="auto"
+        ),
+        StatusSignalMapping(
+            id="busy", label="BUSY", source="status", bit=1, role="busy"
+        ),
+        StatusSignalMapping(
+            id="result_valid",
+            label="結果信号有効",
+            source="status",
+            bit=2,
+            role="result_valid",
+        ),
+        StatusSignalMapping(
+            id="error", label="エラー", source="status", bit=3, role="error"
+        ),
+    ]
+
 
 class ProtocolSettings(BaseModel):
     transport: Literal["tcp", "plclink", "field_network"] = "tcp"
@@ -48,6 +94,9 @@ class ProtocolSettings(BaseModel):
     fn_connection_path: str = "20 04 24 01 2C 14 2C 0A"
     fn_o_to_t_header_bytes: Literal[0, 4] = 4
     fn_eds_name: str = ""
+    fn_status_signals: list[StatusSignalMapping] = Field(
+        default_factory=default_fn_status_signals
+    )
 
     @computed_field
     @property
@@ -83,6 +132,10 @@ class ProtocolSettings(BaseModel):
             values.setdefault("fn_eso_ports", 32)
             values.setdefault("command_size", 64)
             values.setdefault("response_size", 64)
+            if not values.get("fn_status_signals"):
+                values["fn_status_signals"] = [
+                    item.model_dump() for item in default_fn_status_signals()
+                ]
         return values
 
     @model_validator(mode="after")
@@ -124,6 +177,7 @@ class ProtocolSettings(BaseModel):
                 )
             except ProtocolError as exc:
                 raise ValueError(str(exc)) from exc
+            self._validate_fn_status_signals(layout)
             return self
 
         if self.busy_port > self.plo_port_count:
@@ -177,6 +231,51 @@ class ProtocolSettings(BaseModel):
                         f"{left_name}と{right_name}が重複しています"
                     )
         return self
+
+    def _validate_fn_status_signals(self, layout: object) -> None:
+        from .field_network.layout import resolve_status_signal_bit
+
+        signals = self.fn_status_signals
+        if not signals:
+            raise ValueError("ステータス信号割付が空です")
+        ids = [item.id for item in signals]
+        if len(ids) != len(set(ids)):
+            raise ValueError("ステータス信号の id が重複しています")
+        busy_count = sum(1 for item in signals if item.role == "busy")
+        if busy_count != 1:
+            raise ValueError(
+                "ステータス信号のうち role=busy はちょうど 1 つ必要です"
+                f"（現在 {busy_count} 件）"
+            )
+        max_bit = self.fn_input_size * 8 - 1
+        for item in signals:
+            if item.source == "eso":
+                if self.fn_eso_ports <= 0:
+                    raise ValueError(
+                        f"信号「{item.label}」: ESO ポート数が 0 のため ESO に割付できません"
+                    )
+                assert item.eso_port is not None
+                if item.eso_port > self.fn_eso_ports:
+                    raise ValueError(
+                        f"信号「{item.label}」: ESO-{item.eso_port} は"
+                        f"設定ポート数 {self.fn_eso_ports} を超えています"
+                    )
+            bit = resolve_status_signal_bit(item, layout)  # type: ignore[arg-type]
+            if bit < 0 or bit > max_bit:
+                raise ValueError(
+                    f"信号「{item.label}」: bit {bit} が Assem10 範囲外です"
+                    f"（0–{max_bit}）"
+                )
+
+    def find_status_signal(
+        self, *, role: StatusSignalRole | None = None, signal_id: str | None = None
+    ) -> StatusSignalMapping | None:
+        for item in self.fn_status_signals:
+            if role is not None and item.role == role:
+                return item
+            if signal_id is not None and item.id == signal_id:
+                return item
+        return None
 
 
 def _ranges_overlap(start_a: int, end_a: int, start_b: int, end_b: int) -> bool:
