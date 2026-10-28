@@ -4,18 +4,19 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
-StatusSignalSource = Literal["status", "eso"]
+StatusSignalSource = Literal["status", "eso", "plo"]
 StatusSignalRole = Literal["none", "busy", "auto", "result_valid", "error"]
 
 
 class StatusSignalMapping(BaseModel):
-    """Field Network ステータス信号の監視／BUSY 判定用割付。"""
+    """ステータス信号の監視／BUSY 判定用割付（FN / PLCLINK 共通）。"""
 
     id: str = Field(min_length=1, max_length=40)
     label: str = Field(min_length=1, max_length=40)
     source: StatusSignalSource = "status"
     bit: int | None = Field(default=None, ge=0, le=2047)
     eso_port: int | None = Field(default=None, ge=1, le=128)
+    plo_port: int | None = Field(default=None, ge=1, le=256)
     role: StatusSignalRole = "none"
 
     @model_validator(mode="after")
@@ -26,11 +27,14 @@ class StatusSignalMapping(BaseModel):
         elif self.source == "eso":
             if self.eso_port is None:
                 raise ValueError(f"信号「{self.label}」: ESO 割付にはポート番号が必要です")
+        elif self.source == "plo":
+            if self.plo_port is None:
+                raise ValueError(f"信号「{self.label}」: PLO 割付にはポート番号が必要です")
         return self
 
 
 def default_fn_status_signals() -> list[StatusSignalMapping]:
-    """VTV 既定のステータス出力領域割付。"""
+    """VTV 既定のステータス出力領域割付（Field Network）。"""
     return [
         StatusSignalMapping(
             id="auto", label="自動運転中", source="status", bit=0, role="auto"
@@ -47,6 +51,22 @@ def default_fn_status_signals() -> list[StatusSignalMapping]:
         ),
         StatusSignalMapping(
             id="error", label="エラー", source="status", bit=3, role="error"
+        ),
+    ]
+
+
+def default_plclink_status_signals(
+    *, busy_port: int = 1
+) -> list[StatusSignalMapping]:
+    """VTV 既定に近い PLCLINK ステータス信号割付（PLO ポート）。"""
+    port = max(1, min(256, int(busy_port) or 1))
+    return [
+        StatusSignalMapping(
+            id="busy",
+            label="BUSY",
+            source="plo",
+            plo_port=port,
+            role="busy",
         ),
     ]
 
@@ -97,6 +117,7 @@ class ProtocolSettings(BaseModel):
     fn_status_signals: list[StatusSignalMapping] = Field(
         default_factory=default_fn_status_signals
     )
+    plclink_status_signals: list[StatusSignalMapping] = Field(default_factory=list)
 
     @computed_field
     @property
@@ -122,6 +143,12 @@ class ProtocolSettings(BaseModel):
             values["plo_address"] = values["busy_address"]
             values.setdefault("busy_port", 1)
         values.pop("busy_address", None)
+        busy_port = int(values.get("busy_port") or 1)
+        if not values.get("plclink_status_signals"):
+            values["plclink_status_signals"] = [
+                item.model_dump()
+                for item in default_plclink_status_signals(busy_port=busy_port)
+            ]
         if values.get("transport") == "field_network":
             values.setdefault("port", 44818)
             # VTV 典型設定: ESI/ESO 32, コマンド64, 結果238, レスポンス64
@@ -180,6 +207,7 @@ class ProtocolSettings(BaseModel):
             self._validate_fn_status_signals(layout)
             return self
 
+        self._validate_plclink_status_signals()
         if self.busy_port > self.plo_port_count:
             raise ValueError(
                 "BUSYポート番号は仮想出力ポート数以下にしてください"
@@ -249,6 +277,10 @@ class ProtocolSettings(BaseModel):
             )
         max_bit = self.fn_input_size * 8 - 1
         for item in signals:
+            if item.source == "plo":
+                raise ValueError(
+                    f"信号「{item.label}」: Field Network では PLO 割付は使えません"
+                )
             if item.source == "eso":
                 if self.fn_eso_ports <= 0:
                     raise ValueError(
@@ -267,10 +299,43 @@ class ProtocolSettings(BaseModel):
                     f"（0–{max_bit}）"
                 )
 
+    def _validate_plclink_status_signals(self) -> None:
+        signals = self.plclink_status_signals
+        if not signals:
+            raise ValueError("PLCLINK ステータス信号割付が空です")
+        ids = [item.id for item in signals]
+        if len(ids) != len(set(ids)):
+            raise ValueError("ステータス信号の id が重複しています")
+        busy_count = sum(1 for item in signals if item.role == "busy")
+        if busy_count != 1:
+            raise ValueError(
+                "ステータス信号のうち role=busy はちょうど 1 つ必要です"
+                f"（現在 {busy_count} 件）"
+            )
+        for item in signals:
+            if item.source != "plo":
+                raise ValueError(
+                    f"信号「{item.label}」: PLCLINK では割付先を PLO ポートにしてください"
+                )
+            assert item.plo_port is not None
+            if item.plo_port > self.plo_port_count:
+                raise ValueError(
+                    f"信号「{item.label}」: PLO-{item.plo_port} は"
+                    f"仮想出力ポート数 {self.plo_port_count} を超えています"
+                )
+        busy = next(item for item in signals if item.role == "busy")
+        assert busy.plo_port is not None
+        self.busy_port = busy.plo_port
+
     def find_status_signal(
         self, *, role: StatusSignalRole | None = None, signal_id: str | None = None
     ) -> StatusSignalMapping | None:
-        for item in self.fn_status_signals:
+        signals = (
+            self.fn_status_signals
+            if self.transport == "field_network"
+            else self.plclink_status_signals
+        )
+        for item in signals:
             if role is not None and item.role == role:
                 return item
             if signal_id is not None and item.id == signal_id:

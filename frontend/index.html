@@ -90,6 +90,7 @@
       <div class="monitor-tabs">
         <button class="monitor-tab active" data-monitor-tab="log">通信ログ</button>
         <button id="watch-tab-button" class="monitor-tab" data-monitor-tab="watch">監視</button>
+        <button id="timing-tab-button" class="monitor-tab" data-monitor-tab="timing" disabled>タイミング</button>
       </div>
       <div class="monitor-panes">
         <div id="monitor-log-panel" class="monitor-content">
@@ -135,6 +136,60 @@
           </div>
           <div id="watch-list" class="watch-list"></div>
           <p id="watch-note" class="watch-note">接続設定のコマンド／レスポンス／PLO割付から自動生成します。</p>
+        </div>
+        <div id="monitor-timing-panel" class="monitor-content hidden">
+          <div class="monitor-toolbar watch-toolbar timing-toolbar">
+            <div class="watch-toolbar-row watch-toolbar-main">
+              <span id="timing-status" class="watch-status">監視開始後に記録します</span>
+              <div class="watch-toolbar-actions">
+                <button id="timing-zoom-in-button" class="icon-button" title="時間軸を拡大（ホイール上でも可）">拡大</button>
+                <button id="timing-zoom-out-button" class="icon-button" title="時間軸を縮小（ホイール下でも可）">縮小</button>
+                <button id="timing-zoom-reset-button" class="icon-button" title="表示幅をリセットし最新へ追従">リセット</button>
+                <button id="timing-measure-clear-button" class="icon-button" title="測定カーソルを消去">測定クリア</button>
+                <button id="timing-clear-button" class="icon-button" title="波形を消去">消去</button>
+                <button id="start-timing-button" class="icon-button">開始</button>
+                <button id="stop-timing-button" class="icon-button" disabled>停止</button>
+              </div>
+            </div>
+            <div class="watch-toolbar-row watch-toolbar-settings">
+              <label class="watch-field">
+                <span class="watch-field-label">表示幅</span>
+                <span class="watch-field-control">
+                  <select id="timing-window-ms" aria-label="タイミング表示幅">
+                    <option value="100">0.1 秒</option>
+                    <option value="200">0.2 秒</option>
+                    <option value="500">0.5 秒</option>
+                    <option value="1000">1 秒</option>
+                    <option value="2000">2 秒</option>
+                    <option value="5000" selected>5 秒</option>
+                    <option value="10000">10 秒</option>
+                    <option value="30000">30 秒</option>
+                    <option value="60000">60 秒</option>
+                  </select>
+                </span>
+                <span id="timing-view-span" class="watch-actual-period">表示 5.0 s</span>
+              </label>
+              <div class="watch-field">
+                <span class="watch-field-label">ポーリング</span>
+                <span id="timing-actual-period" class="watch-actual-period"
+                  title="ポーリング開始間隔の実測（平滑化）。括弧内は直近の HTTP 取得時間です。">実測 —</span>
+                <span id="timing-sample-info" class="watch-actual-period">サンプル —</span>
+              </div>
+            </div>
+            <div id="timing-measure-info" class="timing-measure-info">
+              クリックでカーソル A/B（Δt と信号長）。ドラッグでパン。ホイールで拡大／縮小。
+            </div>
+          </div>
+          <div class="timing-layout">
+            <aside class="timing-channel-panel">
+              <div class="timing-channel-title">信号選択（bit）</div>
+              <div id="timing-channel-list" class="timing-channel-list"></div>
+            </aside>
+            <div class="timing-chart-wrap">
+              <canvas id="timing-chart" width="800" height="320" aria-label="タイミングチャート"></canvas>
+            </div>
+          </div>
+          <p class="watch-note">クリックで測定、ホイールで時間軸ズーム。記録は監視ポールと同期します。</p>
         </div>
       </div>
     </aside>
@@ -199,13 +254,32 @@
           <label>レスポンスサイズ（ワード）<input id="response-size" type="number" min="8" max="256" step="2" value="64"></label>
           <label>仮想出力(PLO)先頭 M<input id="plo-address" type="number" min="0" max="65535" value="1024"></label>
           <label>仮想出力ポート数<input id="plo-port-count" type="number" min="1" max="256" value="32"></label>
-          <label>BUSY ポート番号<input id="busy-port" type="number" min="1" max="256" value="1"></label>
+          <input id="busy-port" type="hidden" value="1">
           <label>バイトオーダー<select id="byte-order">
             <option value="high_low">上位→下位</option>
             <option value="low_high">下位→上位</option>
           </select></label>
           <label>文字エンコード<select id="plclink-encoding"><option value="cp932">SJIS</option><option value="utf-8">UTF-8</option></select></label>
           <label>行番号の桁数<select id="plclink-line-digits"><option value="2">2 (01–99)</option><option value="3">3 (001–999)</option></select></label>
+        </div>
+        <h4 class="subsection-title">ステータス信号割付</h4>
+        <p class="export-note">監視表示とコマンドの BUSY 待ちに使います。割付先は仮想出力(PLO)ポートです。role=BUSY はちょうど 1 つ必要です。</p>
+        <div class="status-signal-toolbar">
+          <button type="button" id="plclink-status-add" class="button secondary">信号を追加</button>
+          <button type="button" id="plclink-status-reset" class="button secondary">既定に戻す</button>
+        </div>
+        <div class="status-signal-table-wrap">
+          <table class="status-signal-table" id="plclink-status-signal-table">
+            <thead>
+              <tr>
+                <th>信号名</th>
+                <th>PLO ポート</th>
+                <th>役割</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="plclink-status-signal-body"></tbody>
+          </table>
         </div>
         <p id="busy-address-hint" class="export-note">BUSY 実アドレス: M1024（PLO先頭 + ポート番号 - 1）。VTV の「ステータス信号」割付と一致させてください。</p>
         <h3 class="subsection-title">結果データ出力</h3>

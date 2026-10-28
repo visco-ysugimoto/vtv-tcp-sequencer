@@ -58,7 +58,42 @@ def test_busy_address_from_plo_port() -> None:
         plo_address=1024,
         busy_port=5,
     )
+    assert settings.busy_port == 5
     assert settings.busy_address == 1028
+    assert settings.plclink_status_signals[0].plo_port == 5
+
+
+def test_plclink_status_signals_drive_busy_and_watch() -> None:
+    from backend.models import StatusSignalMapping
+
+    settings = ProtocolSettings(
+        transport="plclink",
+        host="0.0.0.0",
+        plo_address=1024,
+        plo_port_count=16,
+        plclink_status_signals=[
+            StatusSignalMapping(
+                id="auto", label="自動運転中", source="plo", plo_port=3, role="auto"
+            ),
+            StatusSignalMapping(
+                id="busy", label="BUSY", source="plo", plo_port=7, role="busy"
+            ),
+            StatusSignalMapping(
+                id="error", label="エラー", source="plo", plo_port=4, role="error"
+            ),
+        ],
+    )
+    assert settings.busy_port == 7
+    assert settings.busy_address == 1030
+    items = build_mapped_watch_items(settings)
+    assert [item for item in items if item.group == "ステータス"] == []
+    plo = [item for item in items if item.group == "PLO出力"]
+    assert len(plo) == 16
+    by_id = {item.id: item for item in plo}
+    assert by_id["plo-port-3"].label == "自動運転中 (Port 3)"
+    assert by_id["plo-port-7"].label == "BUSY (Port 7)"
+    assert by_id["plo-port-4"].label == "エラー (Port 4)"
+    assert by_id["plo-port-1"].label == "Port 1"
 
 
 def test_build_mapped_watch_items() -> None:
@@ -97,6 +132,7 @@ def test_build_mapped_watch_items() -> None:
         "result-data-6",
     ]
     assert by_id["result-data-0"].address == 512
+    assert [item.id for item in items if item.group == "ステータス"] == []
     assert [item.id for item in items if item.group == "PLO出力"] == [
         "plo-port-1",
         "plo-port-2",

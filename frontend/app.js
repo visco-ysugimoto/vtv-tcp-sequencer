@@ -3,11 +3,18 @@ const WATCH_INTERVAL_MAX_MS = 10_000;
 const WATCH_INTERVAL_DEFAULT_MS = 500;
 
 const DEFAULT_FN_STATUS_SIGNALS = [
-  { id: "auto", label: "自動運転中", source: "status", bit: 0, eso_port: null, role: "auto" },
-  { id: "busy", label: "BUSY", source: "status", bit: 1, eso_port: null, role: "busy" },
-  { id: "result_valid", label: "結果信号有効", source: "status", bit: 2, eso_port: null, role: "result_valid" },
-  { id: "error", label: "エラー", source: "status", bit: 3, eso_port: null, role: "error" },
+  { id: "auto", label: "自動運転中", source: "status", bit: 0, eso_port: null, plo_port: null, role: "auto" },
+  { id: "busy", label: "BUSY", source: "status", bit: 1, eso_port: null, plo_port: null, role: "busy" },
+  { id: "result_valid", label: "結果信号有効", source: "status", bit: 2, eso_port: null, plo_port: null, role: "result_valid" },
+  { id: "error", label: "エラー", source: "status", bit: 3, eso_port: null, plo_port: null, role: "error" },
 ];
+
+function defaultPlcLinkStatusSignals(busyPort = 1) {
+  const port = Math.max(1, Math.min(256, Number(busyPort) || 1));
+  return [
+    { id: "busy", label: "BUSY", source: "plo", bit: null, eso_port: null, plo_port: port, role: "busy" },
+  ];
+}
 
 const state = {
   catalog: [],
@@ -29,8 +36,10 @@ const state = {
     fn_connection_path: "20 04 24 01 2C 14 2C 0A",
     fn_o_to_t_header_bytes: 4, fn_eds_name: "",
     fn_status_signals: DEFAULT_FN_STATUS_SIGNALS.map((item) => ({ ...item })),
+    plclink_status_signals: defaultPlcLinkStatusSignals(1),
   },
   statusSignalDraft: DEFAULT_FN_STATUS_SIGNALS.map((item) => ({ ...item })),
+  plclinkStatusSignalDraft: defaultPlcLinkStatusSignals(1),
   statusSignalSeq: 1,
   socket: null,
   running: false,
@@ -49,6 +58,20 @@ const state = {
   watchLastCycleAt: 0,
   watchActualMs: null,
   watchFetchMs: null,
+  timingSelectedIds: [],
+  timingNeedsDefaultChannels: true,
+  timingSamples: [],
+  timingWindowMs: 5000,
+  timingPanMs: 0,
+  timingZoomMinMs: 20,
+  timingZoomMaxMs: 60000,
+  timingMaxSamples: 20000,
+  timingColors: ["#3dd6c6", "#6ea8fe", "#f0b429", "#f07178", "#c3a6ff", "#7ddea2", "#ff9f68", "#8fd3ff"],
+  timingCursorA: null,
+  timingCursorB: null,
+  timingPulse: null,
+  timingChartGeom: null,
+  timingPointer: null,
   softPlcPollTimer: null,
   softPlcClientCount: 0,
 };
@@ -64,9 +87,11 @@ async function initialize() {
   restoreViewMode();
   restoreResultDataDisplayMode();
   restoreWatchInterval();
+  restoreTimingPreferences();
   restoreLayoutMode();
   applySettingsToForm();
   applyWatchIntervalToForm();
+  applyTimingPreferencesToForm();
   refreshMappedWatchItems();
   const response = await fetch("/api/catalog");
   state.catalog = await response.json();
@@ -74,6 +99,7 @@ async function initialize() {
   renderPalette();
   renderSequence();
   renderWatchList();
+  renderTimingChannelList();
   bindEvents();
   startSoftPlcStatusPoll();
 }
@@ -94,22 +120,28 @@ function bindEvents() {
   $("#settings-form").addEventListener("submit", saveSettings);
   $("#transport").addEventListener("change", syncTransportUi);
   $("#plo-address").addEventListener("input", updateBusyAddressHint);
-  $("#plo-port-count").addEventListener("input", updateBusyAddressHint);
+  $("#plo-port-count").addEventListener("input", () => {
+    updateBusyAddressHint();
+    renderPlcLinkStatusSignalTable();
+  });
   $("#busy-port").addEventListener("input", updateBusyAddressHint);
   $("#result-data-enabled").addEventListener("change", () => {
     syncResultDataUi();
     refreshMappedWatchItems();
     renderWatchList();
+    renderTimingChannelList();
   });
   $("#notify-area-enabled").addEventListener("change", () => {
     syncResultDataUi();
     refreshMappedWatchItems();
     renderWatchList();
+    renderTimingChannelList();
   });
   ["result-data-address", "result-data-size", "result-data-watch-words", "notify-address"].forEach((id) => {
     $(`#${id}`)?.addEventListener("change", () => {
       refreshMappedWatchItems();
       renderWatchList();
+      renderTimingChannelList();
     });
   });
   $("#result-data-decimals")?.addEventListener("change", () => {
@@ -133,6 +165,7 @@ function bindEvents() {
       if (id === "fn-eso-ports") renderStatusSignalTable();
       refreshMappedWatchItems();
       renderWatchList();
+      renderTimingChannelList();
     });
   });
   $("#fn-status-add")?.addEventListener("click", () => {
@@ -143,28 +176,112 @@ function bindEvents() {
       source: "status",
       bit: 4,
       eso_port: null,
+      plo_port: null,
       role: "none",
     });
     renderStatusSignalTable();
+    refreshMappedWatchItems();
+    renderWatchList();
+    renderTimingChannelList();
   });
   $("#fn-status-reset")?.addEventListener("click", () => {
     state.statusSignalDraft = DEFAULT_FN_STATUS_SIGNALS.map((item) => ({ ...item }));
     renderStatusSignalTable();
+    refreshMappedWatchItems();
+    renderWatchList();
+    renderTimingChannelList();
   });
   $("#fn-status-signal-body")?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-status-delete]");
-    if (!button) return;
+    if (!button || button.disabled) return;
     const index = Number(button.dataset.statusDelete);
     syncStatusSignalDraftFromDom();
-    if (!Number.isFinite(index)) return;
+    if (!Number.isFinite(index) || state.statusSignalDraft.length <= 1) return;
     state.statusSignalDraft.splice(index, 1);
+    state.statusSignalDraft = ensureExactlyOneBusy(state.statusSignalDraft);
     renderStatusSignalTable();
+    refreshMappedWatchItems();
+    renderWatchList();
+    renderTimingChannelList();
   });
   $("#fn-status-signal-body")?.addEventListener("change", (event) => {
     const row = event.target.closest("tr[data-status-index]");
     if (!row) return;
+    const index = Number(row.dataset.statusIndex);
+    const prevId = state.statusSignalDraft[index]?.id;
+    const roleValue = event.target.dataset.field === "role" ? event.target.value : null;
     syncStatusSignalDraftFromDom();
+    state.statusSignalDraft = ensureExactlyOneBusy(
+      state.statusSignalDraft,
+      roleValue === "busy" ? prevId : null,
+    );
     renderStatusSignalTable();
+    refreshMappedWatchItems();
+    renderWatchList();
+    renderTimingChannelList();
+  });
+  $("#plclink-status-add")?.addEventListener("click", () => {
+    syncPlcLinkStatusSignalDraftFromDom();
+    const used = new Set(
+      state.plclinkStatusSignalDraft.map((item) => Number(item.plo_port) || 0),
+    );
+    let nextPort = 1;
+    const maxPort = Math.max(1, Number($("#plo-port-count")?.value) || 32);
+    while (used.has(nextPort) && nextPort <= maxPort) nextPort += 1;
+    state.plclinkStatusSignalDraft.push({
+      id: `custom-${state.statusSignalSeq++}`,
+      label: "カスタム信号",
+      source: "plo",
+      bit: null,
+      eso_port: null,
+      plo_port: Math.min(nextPort, maxPort),
+      role: "none",
+    });
+    renderPlcLinkStatusSignalTable();
+    updateBusyAddressHint();
+    refreshMappedWatchItems();
+    renderWatchList();
+    renderTimingChannelList();
+  });
+  $("#plclink-status-reset")?.addEventListener("click", () => {
+    const busyPort = Number($("#busy-port")?.value) || 1;
+    state.plclinkStatusSignalDraft = defaultPlcLinkStatusSignals(busyPort);
+    renderPlcLinkStatusSignalTable();
+    updateBusyAddressHint();
+    refreshMappedWatchItems();
+    renderWatchList();
+    renderTimingChannelList();
+  });
+  $("#plclink-status-signal-body")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-plclink-status-delete]");
+    if (!button || button.disabled) return;
+    const index = Number(button.dataset.plclinkStatusDelete);
+    syncPlcLinkStatusSignalDraftFromDom();
+    if (!Number.isFinite(index) || state.plclinkStatusSignalDraft.length <= 1) return;
+    state.plclinkStatusSignalDraft.splice(index, 1);
+    state.plclinkStatusSignalDraft = ensureExactlyOneBusy(state.plclinkStatusSignalDraft);
+    renderPlcLinkStatusSignalTable();
+    updateBusyAddressHint();
+    refreshMappedWatchItems();
+    renderWatchList();
+    renderTimingChannelList();
+  });
+  $("#plclink-status-signal-body")?.addEventListener("change", (event) => {
+    const row = event.target.closest("tr[data-plclink-status-index]");
+    if (!row) return;
+    const index = Number(row.dataset.plclinkStatusIndex);
+    const prevId = state.plclinkStatusSignalDraft[index]?.id;
+    const roleValue = event.target.dataset.field === "role" ? event.target.value : null;
+    syncPlcLinkStatusSignalDraftFromDom();
+    state.plclinkStatusSignalDraft = ensureExactlyOneBusy(
+      state.plclinkStatusSignalDraft,
+      roleValue === "busy" ? prevId : null,
+    );
+    renderPlcLinkStatusSignalTable();
+    updateBusyAddressHint();
+    refreshMappedWatchItems();
+    renderWatchList();
+    renderTimingChannelList();
   });
   for (const id of ["header-timeout", "timeout"]) {
     $(`#${id}`)?.addEventListener("change", onTimeoutChanged);
@@ -195,10 +312,44 @@ function bindEvents() {
   $("#refresh-map-button").addEventListener("click", () => {
     refreshMappedWatchItems();
     renderWatchList();
+    renderTimingChannelList();
     setWatchStatus("一覧を再生成しました");
   });
   $("#start-watch-button").addEventListener("click", startWatch);
   $("#stop-watch-button").addEventListener("click", () => stopWatch(false));
+  $("#start-timing-button")?.addEventListener("click", startWatch);
+  $("#stop-timing-button")?.addEventListener("click", () => stopWatch(false));
+  $("#timing-clear-button")?.addEventListener("click", clearTimingSamples);
+  $("#timing-measure-clear-button")?.addEventListener("click", clearTimingMeasure);
+  $("#timing-zoom-in-button")?.addEventListener("click", () => zoomTimingWindow(0.7));
+  $("#timing-zoom-out-button")?.addEventListener("click", () => zoomTimingWindow(1.4));
+  $("#timing-zoom-reset-button")?.addEventListener("click", resetTimingView);
+  $("#timing-window-ms")?.addEventListener("change", () => {
+    state.timingWindowMs = clampTimingWindowMs(Number($("#timing-window-ms").value) || 5000);
+    state.timingPanMs = 0;
+    localStorage.setItem("vtv-timing-window-ms", String(state.timingWindowMs));
+    syncTimingWindowSelect();
+    updateTimingViewSpan();
+    drawTimingChart();
+  });
+  $("#timing-channel-list")?.addEventListener("change", (event) => {
+    const input = event.target.closest('input[type="checkbox"][data-timing-id]');
+    if (!input) return;
+    const id = input.dataset.timingId;
+    const selected = new Set(state.timingSelectedIds);
+    if (input.checked) selected.add(id);
+    else selected.delete(id);
+    state.timingSelectedIds = [...selected];
+    state.timingNeedsDefaultChannels = false;
+    localStorage.setItem("vtv-timing-channels", JSON.stringify(state.timingSelectedIds));
+    drawTimingChart();
+  });
+  bindTimingChartInteractions();
+  window.addEventListener("resize", () => {
+    if (!$("#monitor-timing-panel")?.classList.contains("hidden")) {
+      drawTimingChart();
+    }
+  });
   bindDragDropEvents();
 }
 
@@ -217,6 +368,68 @@ function restoreWatchInterval() {
       state.watchIntervalMs = clampWatchIntervalMs(saved);
     }
   } catch (_) {}
+}
+
+function restoreTimingPreferences() {
+  try {
+    const raw = localStorage.getItem("vtv-timing-channels");
+    if (raw == null) {
+      state.timingNeedsDefaultChannels = true;
+    } else {
+      const channels = JSON.parse(raw);
+      if (Array.isArray(channels)) {
+        state.timingSelectedIds = channels.filter((id) => typeof id === "string");
+        state.timingNeedsDefaultChannels = false;
+      }
+    }
+  } catch (_) {}
+  try {
+    const windowMs = Number(localStorage.getItem("vtv-timing-window-ms"));
+    if (Number.isFinite(windowMs)) {
+      state.timingWindowMs = clampTimingWindowMs(windowMs);
+    }
+  } catch (_) {}
+}
+
+function applyTimingPreferencesToForm() {
+  syncTimingWindowSelect();
+  updateTimingViewSpan();
+  updateTimingMeasureInfo();
+}
+
+function clampTimingWindowMs(value) {
+  if (!Number.isFinite(value)) return 5000;
+  return Math.min(state.timingZoomMaxMs, Math.max(state.timingZoomMinMs, value));
+}
+
+function syncTimingWindowSelect() {
+  const select = $("#timing-window-ms");
+  if (!select) return;
+  const value = String(Math.round(state.timingWindowMs));
+  const options = [...select.options].map((opt) => opt.value);
+  if (options.includes(value)) select.value = value;
+  else {
+    // 近いプリセットを選択表示（実際の表示幅は state を優先）
+    let best = options[0];
+    let bestDiff = Infinity;
+    for (const opt of options) {
+      const diff = Math.abs(Number(opt) - state.timingWindowMs);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        best = opt;
+      }
+    }
+    select.value = best;
+  }
+}
+
+function updateTimingViewSpan() {
+  const el = $("#timing-view-span");
+  if (!el) return;
+  const ms = state.timingWindowMs;
+  const live = state.timingPanMs <= 0.5;
+  const span = ms >= 1000 ? `${(ms / 1000).toFixed(ms >= 10000 ? 0 : 1)} s` : `${Math.round(ms)} ms`;
+  el.textContent = live ? `表示 ${span}` : `表示 ${span}（過去）`;
 }
 
 function applyWatchIntervalToForm() {
@@ -254,18 +467,21 @@ function resetWatchActualPeriod() {
   updateWatchActualPeriodDisplay();
 }
 
-function updateWatchActualPeriodDisplay() {
-  const el = $("#watch-actual-period");
-  if (!el) return;
-  if (!state.watchRunning || state.watchActualMs == null) {
-    el.textContent = "実測 —";
-    return;
-  }
+function formatWatchActualPeriodText() {
+  if (!state.watchRunning || state.watchActualMs == null) return "実測 —";
   const cycle = Math.max(1, Math.round(state.watchActualMs));
   const fetchMs = state.watchFetchMs == null ? null : Math.max(0, Math.round(state.watchFetchMs));
-  el.textContent = fetchMs == null
+  return fetchMs == null
     ? `実測 ${cycle} ms`
     : `実測 ${cycle} ms（取得 ${fetchMs} ms）`;
+}
+
+function updateWatchActualPeriodDisplay() {
+  const text = formatWatchActualPeriodText();
+  const watchEl = $("#watch-actual-period");
+  if (watchEl) watchEl.textContent = text;
+  const timingEl = $("#timing-actual-period");
+  if (timingEl) timingEl.textContent = text;
 }
 
 function updateWatchNote() {
@@ -331,7 +547,7 @@ function applyLayoutMode() {
   const focused = state.layoutMode === "monitor";
   const watchEnabled = !$("#watch-tab-button")?.disabled;
   document.body.classList.toggle("layout-monitor-focus", focused);
-  // 拡大時は監視を全幅優先（ログは通常画面のタブで確認）
+  // 拡大時は監視 / タイミングを全幅優先（ログは通常画面のタブで確認）
   document.body.classList.toggle("layout-monitor-split", false);
   const headerBtn = $("#layout-mode-button");
   const panelBtn = $("#layout-mode-monitor-button");
@@ -343,7 +559,15 @@ function applyLayoutMode() {
     panelBtn.textContent = focused ? "通常へ" : "拡大";
     panelBtn.title = focused ? "シーケンス編集画面に戻る" : "モニター専用表示に切替";
   }
-  if (focused && watchEnabled) selectMonitorTab("watch");
+  if (focused && watchEnabled) {
+    const active = document.querySelector("[data-monitor-tab].active")?.dataset?.monitorTab;
+    selectMonitorTab(active === "timing" ? "timing" : "watch");
+  }
+  if (focused) {
+    requestAnimationFrame(() => {
+      if (!$("#monitor-timing-panel")?.classList.contains("hidden")) drawTimingChart();
+    });
+  }
 }
 
 function setLayoutMode(mode) {
@@ -357,12 +581,17 @@ function toggleLayoutMode() {
 }
 
 function selectMonitorTab(tab) {
-  if (tab === "watch" && $("#watch-tab-button").disabled) return;
+  if ((tab === "watch" || tab === "timing") && $("#watch-tab-button").disabled) return;
   document.querySelectorAll("[data-monitor-tab]").forEach((button) => {
     button.classList.toggle("active", button.dataset.monitorTab === tab);
   });
   $("#monitor-log-panel").classList.toggle("hidden", tab !== "log");
   $("#monitor-watch-panel").classList.toggle("hidden", tab !== "watch");
+  $("#monitor-timing-panel")?.classList.toggle("hidden", tab !== "timing");
+  if (tab === "timing") {
+    renderTimingChannelList();
+    requestAnimationFrame(() => drawTimingChart());
+  }
 }
 
 function buildMappedWatchItems(settings) {
@@ -411,10 +640,21 @@ function buildMappedWatchItems(settings) {
       { id: "notify-data-size", label: "結果データサイズ", group: "結果通知エリア", device: "D", address: notify + 6, format: "int32" },
     );
   }
+  // ステータス割付は PLO 一覧のラベルに反映（同一ポートの二重表示を避ける）
+  const statusSignals = normalizePlcLinkStatusSignals(
+    settings.plclink_status_signals,
+    busyPort,
+  );
+  const portLabels = {};
+  for (const signal of statusSignals) {
+    const port = Number(signal.plo_port) || 1;
+    if (portLabels[port] && signal.role !== "busy") continue;
+    portLabels[port] = `${signal.label} (Port ${port})`;
+  }
   for (let port = 1; port <= portCount; port += 1) {
     items.push({
       id: `plo-port-${port}`,
-      label: port === busyPort ? `BUSY (Port ${port})` : `Port ${port}`,
+      label: portLabels[port] || `Port ${port}`,
       group: "PLO出力",
       device: "M",
       address: plo + port - 1,
@@ -440,6 +680,28 @@ function normalizeStatusSignals(raw) {
       source,
       bit: source === "status" ? Number(item.bit ?? 0) : null,
       eso_port: source === "eso" ? Number(item.eso_port ?? 1) : null,
+      plo_port: null,
+      role,
+    };
+  });
+}
+
+function normalizePlcLinkStatusSignals(raw, busyPort = 1) {
+  const list = Array.isArray(raw) && raw.length
+    ? raw
+    : defaultPlcLinkStatusSignals(busyPort);
+  return list.map((item, index) => {
+    const role = ["busy", "auto", "result_valid", "error"].includes(item.role)
+      ? item.role
+      : "none";
+    const port = Number(item.plo_port ?? item.bit ?? busyPort);
+    return {
+      id: String(item.id || `signal-${index + 1}`).slice(0, 40),
+      label: String(item.label || item.id || `信号${index + 1}`).slice(0, 40),
+      source: "plo",
+      bit: null,
+      eso_port: null,
+      plo_port: Number.isFinite(port) && port >= 1 ? port : 1,
       role,
     };
   });
@@ -453,17 +715,72 @@ function resolveFnStatusBit(signal, esoByte = 4) {
   return Number(signal.bit) || 0;
 }
 
+function statusRoleOptionsHtml(signal, signals) {
+  const busyCount = signals.filter((item) => item.role === "busy").length;
+  const soleBusy = signal.role === "busy" && busyCount === 1;
+  const soleSignal = signals.length <= 1;
+  const lockBusy = soleBusy || soleSignal;
+  const option = (value, label) => {
+    const selected = signal.role === value ? " selected" : "";
+    // BUSY は必ず 1 つ残す。唯一の BUSY / 唯一の信号からは外さない
+    const disabled = lockBusy && value !== "busy" ? " disabled" : "";
+    return `<option value="${value}"${selected}${disabled}>${label}</option>`;
+  };
+  return [
+    option("none", "なし"),
+    option("busy", "BUSY"),
+    option("auto", "自動運転中"),
+    option("result_valid", "結果信号有効"),
+    option("error", "エラー"),
+  ].join("");
+}
+
+function ensureExactlyOneBusy(signals, preferredBusyId = null) {
+  if (!signals.length) return signals;
+  const busyIndexes = signals
+    .map((item, index) => (item.role === "busy" ? index : -1))
+    .filter((index) => index >= 0);
+  if (busyIndexes.length === 0) {
+    const preferred = preferredBusyId
+      ? signals.findIndex((item) => item.id === preferredBusyId)
+      : 0;
+    signals[preferred >= 0 ? preferred : 0].role = "busy";
+    return signals;
+  }
+  if (busyIndexes.length > 1) {
+    let keep = busyIndexes[0];
+    if (preferredBusyId) {
+      const preferred = signals.findIndex(
+        (item) => item.id === preferredBusyId && item.role === "busy",
+      );
+      if (preferred >= 0) keep = preferred;
+    } else {
+      keep = busyIndexes[busyIndexes.length - 1];
+    }
+    signals.forEach((item, index) => {
+      if (index !== keep && item.role === "busy") item.role = "none";
+    });
+  }
+  return signals;
+}
+
 function renderStatusSignalTable() {
   const body = $("#fn-status-signal-body");
   if (!body) return;
-  const rows = state.statusSignalDraft.length
-    ? state.statusSignalDraft
-    : DEFAULT_FN_STATUS_SIGNALS.map((item) => ({ ...item }));
+  state.statusSignalDraft = ensureExactlyOneBusy(
+    state.statusSignalDraft.length
+      ? state.statusSignalDraft
+      : DEFAULT_FN_STATUS_SIGNALS.map((item) => ({ ...item })),
+  );
+  const rows = state.statusSignalDraft;
+  const canDelete = rows.length > 1;
   body.innerHTML = rows.map((signal, index) => {
     const source = signal.source === "eso" ? "eso" : "status";
     const value = source === "eso"
       ? (Number(signal.eso_port) || 1)
       : (Number(signal.bit) || 0);
+    const deleteDisabled = canDelete ? "" : " disabled";
+    const deleteTitle = canDelete ? "削除" : "BUSY 用に最低 1 信号必要";
     return `<tr data-status-index="${index}">
       <td><input type="text" data-field="label" value="${escapeHtml(signal.label)}" maxlength="40"></td>
       <td>
@@ -474,17 +791,38 @@ function renderStatusSignalTable() {
       </td>
       <td><input type="number" data-field="index" min="0" max="128" step="1" value="${value}"></td>
       <td>
-        <select data-field="role">
-          <option value="none"${signal.role === "none" ? " selected" : ""}>なし</option>
-          <option value="busy"${signal.role === "busy" ? " selected" : ""}>BUSY</option>
-          <option value="auto"${signal.role === "auto" ? " selected" : ""}>自動運転中</option>
-          <option value="result_valid"${signal.role === "result_valid" ? " selected" : ""}>結果信号有効</option>
-          <option value="error"${signal.role === "error" ? " selected" : ""}>エラー</option>
-        </select>
+        <select data-field="role">${statusRoleOptionsHtml(signal, rows)}</select>
       </td>
-      <td><button type="button" class="status-signal-delete" data-status-delete="${index}" title="削除">×</button></td>
+      <td><button type="button" class="status-signal-delete" data-status-delete="${index}" title="${deleteTitle}"${deleteDisabled}>×</button></td>
     </tr>`;
   }).join("");
+}
+
+function renderPlcLinkStatusSignalTable() {
+  const body = $("#plclink-status-signal-body");
+  if (!body) return;
+  state.plclinkStatusSignalDraft = ensureExactlyOneBusy(
+    state.plclinkStatusSignalDraft.length
+      ? state.plclinkStatusSignalDraft
+      : defaultPlcLinkStatusSignals(Number($("#busy-port")?.value) || 1),
+  );
+  const rows = state.plclinkStatusSignalDraft;
+  const maxPort = Math.max(1, Number($("#plo-port-count")?.value) || 32);
+  const canDelete = rows.length > 1;
+  body.innerHTML = rows.map((signal, index) => {
+    const port = Number(signal.plo_port) || 1;
+    const deleteDisabled = canDelete ? "" : " disabled";
+    const deleteTitle = canDelete ? "削除" : "BUSY 用に最低 1 信号必要";
+    return `<tr data-plclink-status-index="${index}">
+      <td><input type="text" data-field="label" value="${escapeHtml(signal.label)}" maxlength="40"></td>
+      <td><input type="number" data-field="plo-port" min="1" max="${maxPort}" step="1" value="${port}"></td>
+      <td>
+        <select data-field="role">${statusRoleOptionsHtml(signal, rows)}</select>
+      </td>
+      <td><button type="button" class="status-signal-delete" data-plclink-status-delete="${index}" title="${deleteTitle}"${deleteDisabled}>×</button></td>
+    </tr>`;
+  }).join("");
+  syncBusyPortFromPlcLinkDraft();
 }
 
 function syncStatusSignalDraftFromDom() {
@@ -504,10 +842,44 @@ function syncStatusSignalDraftFromDom() {
       source,
       bit: source === "status" ? (Number.isFinite(rawIndex) ? rawIndex : 0) : null,
       eso_port: source === "eso" ? (Number.isFinite(rawIndex) && rawIndex >= 1 ? rawIndex : 1) : null,
+      plo_port: null,
       role: ["busy", "auto", "result_valid", "error", "none"].includes(role) ? role : "none",
     });
   });
-  state.statusSignalDraft = next;
+  state.statusSignalDraft = ensureExactlyOneBusy(next);
+}
+
+function syncPlcLinkStatusSignalDraftFromDom() {
+  const body = $("#plclink-status-signal-body");
+  if (!body) return;
+  const next = [];
+  const maxPort = Math.max(1, Number($("#plo-port-count")?.value) || 32);
+  body.querySelectorAll("tr[data-plclink-status-index]").forEach((row, index) => {
+    const prev = state.plclinkStatusSignalDraft[index] || {};
+    const label = row.querySelector('[data-field="label"]')?.value?.trim() || `信号${index + 1}`;
+    const role = row.querySelector('[data-field="role"]')?.value || "none";
+    const rawPort = Number(row.querySelector('[data-field="plo-port"]')?.value);
+    const id = prev.id || `custom-${state.statusSignalSeq++}`;
+    const port = Number.isFinite(rawPort) && rawPort >= 1 ? Math.min(rawPort, maxPort) : 1;
+    next.push({
+      id,
+      label,
+      source: "plo",
+      bit: null,
+      eso_port: null,
+      plo_port: port,
+      role: ["busy", "auto", "result_valid", "error", "none"].includes(role) ? role : "none",
+    });
+  });
+  state.plclinkStatusSignalDraft = ensureExactlyOneBusy(next);
+  syncBusyPortFromPlcLinkDraft();
+}
+
+function syncBusyPortFromPlcLinkDraft() {
+  const busy = state.plclinkStatusSignalDraft.find((item) => item.role === "busy");
+  if (busy && $("#busy-port")) {
+    $("#busy-port").value = String(Number(busy.plo_port) || 1);
+  }
 }
 
 function readStatusSignalsFromForm() {
@@ -528,6 +900,27 @@ function readStatusSignalsFromForm() {
           `信号「${signal.label}」: ESO-${signal.eso_port} は設定ポート数 ${esoPorts} を超えています`
         );
       }
+    }
+  }
+  return signals;
+}
+
+function readPlcLinkStatusSignalsFromForm() {
+  syncPlcLinkStatusSignalDraftFromDom();
+  const signals = normalizePlcLinkStatusSignals(
+    state.plclinkStatusSignalDraft,
+    Number($("#busy-port")?.value) || 1,
+  );
+  const busyCount = signals.filter((item) => item.role === "busy").length;
+  if (busyCount !== 1) {
+    throw new Error(`ステータス信号の role=BUSY はちょうど 1 つ必要です（現在 ${busyCount} 件）`);
+  }
+  const portCount = Math.max(1, Number($("#plo-port-count")?.value) || 32);
+  for (const signal of signals) {
+    if (signal.plo_port > portCount) {
+      throw new Error(
+        `信号「${signal.label}」: PLO-${signal.plo_port} は仮想出力ポート数 ${portCount} を超えています`
+      );
     }
   }
   return signals;
@@ -839,7 +1232,10 @@ function startWatch() {
   resetWatchActualPeriod();
   $("#start-watch-button").disabled = true;
   $("#stop-watch-button").disabled = false;
+  $("#start-timing-button") && ($("#start-timing-button").disabled = true);
+  $("#stop-timing-button") && ($("#stop-timing-button").disabled = false);
   setWatchStatus("監視中", "running");
+  setTimingStatus("記録中", "running");
   pollWatchValues();
 }
 
@@ -851,10 +1247,14 @@ function stopWatch(resetValues = false) {
   if (resetValues) {
     state.watchValues = {};
     renderWatchList();
+    clearTimingSamples();
   }
   $("#start-watch-button").disabled = false;
   $("#stop-watch-button").disabled = true;
+  $("#start-timing-button") && ($("#start-timing-button").disabled = false);
+  $("#stop-timing-button") && ($("#stop-timing-button").disabled = true);
   setWatchStatus("停止中");
+  setTimingStatus(state.timingSamples.length ? "停止（波形は保持）" : "監視開始後に記録します");
 }
 
 async function pollWatchValues() {
@@ -904,10 +1304,12 @@ async function pollWatchValues() {
     state.watchValues = nextValues;
     setWatchStatus("監視中", "running");
     updateWatchValueDisplays(changed);
+    recordTimingSample(started, nextValues);
   } catch (error) {
     state.watchValues = {};
     updateWatchValueDisplays();
     setWatchStatus(`再接続待ち: ${error.message}`, "error");
+    setTimingStatus(`再接続待ち: ${error.message}`, "error");
   } finally {
     const fetchMs = performance.now() - started;
     state.watchFetchMs = state.watchFetchMs == null
@@ -916,6 +1318,509 @@ async function pollWatchValues() {
     updateWatchActualPeriodDisplay();
     scheduleNextWatchPoll(fetchMs);
   }
+}
+
+function timingBitItems() {
+  return state.watchItems.filter((item) => item.format === "bit");
+}
+
+function setTimingStatus(text, status = "") {
+  const element = $("#timing-status");
+  if (!element) return;
+  element.textContent = text;
+  element.className = `watch-status ${status}`.trim();
+}
+
+function updateTimingSampleInfo() {
+  const element = $("#timing-sample-info");
+  if (!element) return;
+  const count = state.timingSamples.length;
+  if (!count) {
+    element.textContent = "サンプル —";
+    return;
+  }
+  const spanMs = state.timingSamples[count - 1].t - state.timingSamples[0].t;
+  element.textContent = `サンプル ${count}（${(spanMs / 1000).toFixed(1)} s）`;
+}
+
+function formatTimingDuration(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return "—";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  if (ms < 10000) return `${(ms / 1000).toFixed(3)} s`;
+  return `${(ms / 1000).toFixed(2)} s`;
+}
+
+function clearTimingMeasure() {
+  state.timingCursorA = null;
+  state.timingCursorB = null;
+  state.timingPulse = null;
+  updateTimingMeasureInfo();
+  drawTimingChart();
+}
+
+function clearTimingSamples() {
+  state.timingSamples = [];
+  clearTimingMeasure();
+  updateTimingSampleInfo();
+  drawTimingChart();
+}
+
+function resetTimingView() {
+  state.timingWindowMs = Number($("#timing-window-ms")?.value) || 5000;
+  state.timingWindowMs = clampTimingWindowMs(state.timingWindowMs);
+  state.timingPanMs = 0;
+  syncTimingWindowSelect();
+  updateTimingViewSpan();
+  drawTimingChart();
+}
+
+function timingLatestT() {
+  if (state.timingSamples.length) return state.timingSamples[state.timingSamples.length - 1].t;
+  return performance.now();
+}
+
+function timingViewRange() {
+  const windowMs = clampTimingWindowMs(state.timingWindowMs);
+  const latest = timingLatestT();
+  const pan = Math.max(0, state.timingPanMs || 0);
+  const tEnd = latest - pan;
+  const tStart = tEnd - windowMs;
+  return { tStart, tEnd, windowMs, latest, live: pan <= 0.5 };
+}
+
+function zoomTimingWindow(factor, anchorT = null) {
+  const before = timingViewRange();
+  const anchor = anchorT == null ? (before.tStart + before.tEnd) / 2 : anchorT;
+  const ratio = before.windowMs <= 0 ? 0.5 : (anchor - before.tStart) / before.windowMs;
+  const nextWindow = clampTimingWindowMs(before.windowMs * factor);
+  const nextStart = anchor - ratio * nextWindow;
+  const nextEnd = nextStart + nextWindow;
+  state.timingWindowMs = nextWindow;
+  state.timingPanMs = Math.max(0, before.latest - nextEnd);
+  localStorage.setItem("vtv-timing-window-ms", String(Math.round(nextWindow)));
+  syncTimingWindowSelect();
+  updateTimingViewSpan();
+  drawTimingChart();
+}
+
+function updateTimingMeasureInfo() {
+  const el = $("#timing-measure-info");
+  if (!el) return;
+  const parts = [];
+  if (state.timingCursorA != null) {
+    parts.push(`A=${formatTimingDuration(timingLatestT() - state.timingCursorA)}前`);
+  }
+  if (state.timingCursorA != null && state.timingCursorB != null) {
+    const dt = Math.abs(state.timingCursorB - state.timingCursorA);
+    parts.push(`Δt ${formatTimingDuration(dt)}`);
+  } else if (state.timingCursorA != null && state.timingCursorB == null) {
+    parts.push("B をクリックで区間測定");
+  }
+  if (state.timingPulse) {
+    const pulse = state.timingPulse;
+    const label = state.watchItems.find((item) => item.id === pulse.id)?.label || pulse.id;
+    parts.push(
+      `${label} ${pulse.value ? "ON" : "OFF"} ${formatTimingDuration(pulse.tEnd - pulse.tStart)}`,
+    );
+  }
+  if (!parts.length) {
+    el.textContent = "クリックでカーソル A/B（Δt と信号長）。ドラッグでパン。ホイールで拡大／縮小。";
+    return;
+  }
+  el.textContent = parts.join(" ｜ ");
+}
+
+function renderTimingChannelList() {
+  const list = $("#timing-channel-list");
+  if (!list) return;
+  const bits = timingBitItems();
+  const available = new Set(bits.map((item) => item.id));
+  state.timingSelectedIds = state.timingSelectedIds.filter((id) => available.has(id));
+  if (!bits.length) {
+    list.innerHTML = '<div class="watch-empty">bit 信号がありません</div>';
+    return;
+  }
+  if (!state.timingSelectedIds.length && state.timingNeedsDefaultChannels) {
+    state.timingSelectedIds = bits.slice(0, Math.min(4, bits.length)).map((item) => item.id);
+    state.timingNeedsDefaultChannels = false;
+    localStorage.setItem("vtv-timing-channels", JSON.stringify(state.timingSelectedIds));
+  }
+  list.innerHTML = bits.map((item, index) => {
+    const checked = state.timingSelectedIds.includes(item.id) ? " checked" : "";
+    const color = state.timingColors[index % state.timingColors.length];
+    return `<label class="timing-channel-item">
+      <input type="checkbox" data-timing-id="${escapeHtml(item.id)}"${checked}>
+      <span class="timing-channel-label">
+        <span style="color:${color}">●</span> ${escapeHtml(item.label)}
+        <span class="timing-channel-addr">${escapeHtml(formatWatchAddress(item))}</span>
+      </span>
+    </label>`;
+  }).join("");
+}
+
+function bitValueFromSnapshot(snapshot) {
+  if (!snapshot || snapshot.valid === false) return null;
+  return snapshot.value ? 1 : 0;
+}
+
+function recordTimingSample(t, values) {
+  const bits = {};
+  for (const item of timingBitItems()) {
+    bits[item.id] = bitValueFromSnapshot(values[item.id]);
+  }
+  if (!Object.keys(bits).length) {
+    updateTimingSampleInfo();
+    return;
+  }
+  state.timingSamples.push({ t, bits });
+  const { windowMs } = timingViewRange();
+  const keepFrom = t - Math.max(windowMs * 4, (state.timingPanMs || 0) + windowMs * 2, 60000);
+  while (state.timingSamples.length > state.timingMaxSamples) state.timingSamples.shift();
+  while (state.timingSamples.length && state.timingSamples[0].t < keepFrom) {
+    state.timingSamples.shift();
+  }
+  updateTimingSampleInfo();
+  updateTimingViewSpan();
+  if (state.watchRunning) setTimingStatus("記録中", "running");
+  if (!$("#monitor-timing-panel")?.classList.contains("hidden")) {
+    drawTimingChart();
+  }
+}
+
+function timingChannelPoints(itemId, tStart, tEnd) {
+  const points = [];
+  for (const sample of state.timingSamples) {
+    if (sample.t < tStart - 50) continue;
+    if (sample.t > tEnd + 50) break;
+    const v = sample.bits[itemId];
+    if (v == null) continue;
+    points.push({ t: sample.t, v });
+  }
+  return points;
+}
+
+function findTimingPulseAt(itemId, t) {
+  if (!state.timingSamples.length) return null;
+  let idx = -1;
+  for (let i = 0; i < state.timingSamples.length; i += 1) {
+    const v = state.timingSamples[i].bits[itemId];
+    if (v == null) continue;
+    if (state.timingSamples[i].t <= t) idx = i;
+    else break;
+  }
+  if (idx < 0) return null;
+  const value = state.timingSamples[idx].bits[itemId];
+  let startIdx = idx;
+  while (startIdx > 0) {
+    const prev = state.timingSamples[startIdx - 1].bits[itemId];
+    if (prev == null || prev !== value) break;
+    startIdx -= 1;
+  }
+  let endIdx = idx;
+  while (endIdx < state.timingSamples.length - 1) {
+    const next = state.timingSamples[endIdx + 1].bits[itemId];
+    if (next == null || next !== value) break;
+    endIdx += 1;
+  }
+  const tStart = state.timingSamples[startIdx].t;
+  let tEnd;
+  if (endIdx < state.timingSamples.length - 1) {
+    // 次サンプルの時刻がエッジ
+    tEnd = state.timingSamples[endIdx + 1].t;
+  } else {
+    tEnd = timingLatestT();
+  }
+  return { id: itemId, value: value ? 1 : 0, tStart, tEnd };
+}
+
+function bindTimingChartInteractions() {
+  const canvas = $("#timing-chart");
+  if (!canvas || canvas.dataset.timingBound === "1") return;
+  canvas.dataset.timingBound = "1";
+  canvas.style.cursor = "crosshair";
+
+  const pointerPos = (event) => {
+    const rect = canvas.getBoundingClientRect();
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  };
+
+  canvas.addEventListener("wheel", (event) => {
+    if ($("#monitor-timing-panel")?.classList.contains("hidden")) return;
+    event.preventDefault();
+    const geom = state.timingChartGeom;
+    if (!geom) return;
+    const { x } = pointerPos(event);
+    const ratio = Math.min(1, Math.max(0, (x - geom.padL) / geom.chartW));
+    const anchorT = geom.tStart + ratio * geom.windowMs;
+    zoomTimingWindow(event.deltaY > 0 ? 1.25 : 0.8, anchorT);
+  }, { passive: false });
+
+  canvas.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    const { x, y } = pointerPos(event);
+    state.timingPointer = {
+      x,
+      y,
+      startX: x,
+      startY: y,
+      startPan: state.timingPanMs,
+      dragged: false,
+      pointerId: event.pointerId,
+    };
+    canvas.setPointerCapture(event.pointerId);
+  });
+
+  canvas.addEventListener("pointermove", (event) => {
+    const ptr = state.timingPointer;
+    if (!ptr || ptr.pointerId !== event.pointerId) return;
+    const geom = state.timingChartGeom;
+    if (!geom || geom.chartW <= 0) return;
+    const { x, y } = pointerPos(event);
+    const dx = x - ptr.startX;
+    const dy = y - ptr.startY;
+    if (!ptr.dragged && Math.hypot(dx, dy) > 4) ptr.dragged = true;
+    if (!ptr.dragged) return;
+    const dt = (-dx / geom.chartW) * geom.windowMs;
+    state.timingPanMs = Math.max(0, ptr.startPan + dt);
+    ptr.x = x;
+    ptr.y = y;
+    updateTimingViewSpan();
+    drawTimingChart();
+  });
+
+  const endPointer = (event) => {
+    const ptr = state.timingPointer;
+    if (!ptr || ptr.pointerId !== event.pointerId) return;
+    const geom = state.timingChartGeom;
+    const { x, y } = pointerPos(event);
+    if (!ptr.dragged && geom && geom.chartW > 0) {
+      const t = geom.tStart + ((x - geom.padL) / geom.chartW) * geom.windowMs;
+      const clampedT = Math.min(geom.tEnd, Math.max(geom.tStart, t));
+      if (state.timingCursorA == null || (state.timingCursorA != null && state.timingCursorB != null)) {
+        state.timingCursorA = clampedT;
+        state.timingCursorB = null;
+      } else {
+        state.timingCursorB = clampedT;
+      }
+      const lane = geom.lanes.find((item) => y >= item.top && y <= item.bottom);
+      if (lane) {
+        state.timingPulse = findTimingPulseAt(lane.id, clampedT);
+      } else if (state.timingSelectedIds[0]) {
+        state.timingPulse = findTimingPulseAt(state.timingSelectedIds[0], clampedT);
+      }
+      updateTimingMeasureInfo();
+      drawTimingChart();
+    }
+    state.timingPointer = null;
+  };
+  canvas.addEventListener("pointerup", endPointer);
+  canvas.addEventListener("pointercancel", () => { state.timingPointer = null; });
+}
+
+function drawTimingChart() {
+  const canvas = $("#timing-chart");
+  if (!canvas) return;
+  const wrap = canvas.parentElement;
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = Math.max(1, wrap?.clientWidth || canvas.clientWidth || 800);
+  const cssH = Math.max(1, wrap?.clientHeight || canvas.clientHeight || 320);
+  if (canvas.width !== Math.floor(cssW * dpr) || canvas.height !== Math.floor(cssH * dpr)) {
+    canvas.width = Math.floor(cssW * dpr);
+    canvas.height = Math.floor(cssH * dpr);
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+  ctx.fillStyle = "#0f1724";
+  ctx.fillRect(0, 0, cssW, cssH);
+
+  const selected = state.timingSelectedIds
+    .map((id) => state.watchItems.find((item) => item.id === id))
+    .filter(Boolean);
+  const padL = 8;
+  const padR = 12;
+  const padT = 10;
+  const padB = 28;
+  const chartW = cssW - padL - padR;
+  const chartH = cssH - padT - padB;
+  const { tStart, tEnd, windowMs, live } = timingViewRange();
+  const lanes = [];
+
+  state.timingChartGeom = {
+    padL, padR, padT, padB, chartW, chartH, cssW, cssH, tStart, tEnd, windowMs, lanes,
+  };
+
+  if (!selected.length) {
+    ctx.fillStyle = "#68758d";
+    ctx.font = "12px sans-serif";
+    ctx.fillText("左の一覧から比較したい bit 信号を選択してください", padL + 8, padT + 24);
+    return;
+  }
+
+  const laneH = chartH / selected.length;
+  const bitItems = timingBitItems();
+  const xOf = (t) => padL + ((t - tStart) / windowMs) * chartW;
+
+  // 時間グリッド（おおよそ 5〜8 本）
+  const niceSteps = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 30000, 60000];
+  let step = niceSteps[0];
+  for (const candidate of niceSteps) {
+    if (windowMs / candidate <= 8) {
+      step = candidate;
+      break;
+    }
+    step = candidate;
+  }
+  ctx.strokeStyle = "#1e2a3d";
+  ctx.lineWidth = 1;
+  const firstTick = Math.ceil(tStart / step) * step;
+  for (let tick = firstTick; tick <= tEnd + 0.1; tick += step) {
+    const x = xOf(tick);
+    ctx.beginPath();
+    ctx.moveTo(x, padT);
+    ctx.lineTo(x, padT + chartH);
+    ctx.stroke();
+    const age = tEnd - tick;
+    ctx.fillStyle = "#68758d";
+    ctx.font = "10px Consolas, monospace";
+    ctx.textAlign = "center";
+    const label = age <= 0.5
+      ? (live ? "0" : formatTimingDuration(0))
+      : `-${formatTimingDuration(age)}`;
+    ctx.fillText(label, x, cssH - 10);
+  }
+  ctx.textAlign = "left";
+
+  selected.forEach((item, index) => {
+    const top = padT + laneH * index;
+    const bottom = top + laneH;
+    const mid = top + laneH / 2;
+    const highY = top + laneH * 0.22;
+    const lowY = top + laneH * 0.78;
+    lanes.push({ id: item.id, top, bottom, highY, lowY });
+    const colorIndex = Math.max(0, bitItems.findIndex((b) => b.id === item.id));
+    const color = state.timingColors[colorIndex % state.timingColors.length];
+
+    if (index % 2 === 0) {
+      ctx.fillStyle = "rgba(255,255,255,0.02)";
+      ctx.fillRect(padL, top, chartW, laneH);
+    }
+    ctx.strokeStyle = "#243044";
+    ctx.beginPath();
+    ctx.moveTo(padL, bottom);
+    ctx.lineTo(padL + chartW, bottom);
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.font = "11px sans-serif";
+    ctx.fillText(item.label, padL + 6, top + 14);
+
+    ctx.strokeStyle = "#1a2536";
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(padL, highY);
+    ctx.lineTo(padL + chartW, highY);
+    ctx.moveTo(padL, lowY);
+    ctx.lineTo(padL + chartW, lowY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // 測定中のパルスを薄くハイライト
+    if (state.timingPulse && state.timingPulse.id === item.id) {
+      const px0 = Math.max(padL, xOf(state.timingPulse.tStart));
+      const px1 = Math.min(padL + chartW, xOf(state.timingPulse.tEnd));
+      if (px1 > px0) {
+        ctx.fillStyle = "rgba(240, 180, 41, 0.16)";
+        ctx.fillRect(px0, top + 2, px1 - px0, laneH - 4);
+      }
+    }
+
+    const points = timingChannelPoints(item.id, tStart, tEnd);
+    if (!points.length) {
+      ctx.fillStyle = "#4a5568";
+      ctx.font = "10px sans-serif";
+      ctx.fillText("データなし", padL + 6, mid + 4);
+      return;
+    }
+
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    let started = false;
+    let lastY = points[0].v ? highY : lowY;
+    for (let i = 0; i < points.length; i += 1) {
+      const p = points[i];
+      const x = xOf(Math.min(Math.max(p.t, tStart), tEnd));
+      const y = p.v ? highY : lowY;
+      if (!started) {
+        ctx.moveTo(Math.max(padL, x), y);
+        started = true;
+        lastY = y;
+        continue;
+      }
+      ctx.lineTo(x, lastY);
+      if (y !== lastY) ctx.lineTo(x, y);
+      lastY = y;
+    }
+    ctx.lineTo(Math.min(padL + chartW, xOf(Math.min(tEnd, points[points.length - 1].t))), lastY);
+    if (live && state.timingPanMs <= 0.5) ctx.lineTo(padL + chartW, lastY);
+    ctx.stroke();
+
+    if (live && state.timingPanMs <= 0.5) {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(padL + chartW - 4, lastY, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // 各信号の測定長（カーソル位置のパルス）
+    const pulse = state.timingCursorA != null || state.timingCursorB != null
+      ? findTimingPulseAt(item.id, state.timingCursorB ?? state.timingCursorA)
+      : null;
+    if (pulse) {
+      const label = `${pulse.value ? "ON" : "OFF"} ${formatTimingDuration(pulse.tEnd - pulse.tStart)}`;
+      ctx.fillStyle = "#d7e0ef";
+      ctx.font = "10px Consolas, monospace";
+      ctx.textAlign = "right";
+      ctx.fillText(label, padL + chartW - 8, top + 14);
+      ctx.textAlign = "left";
+    }
+  });
+
+  const drawCursor = (t, name, color) => {
+    if (t == null || t < tStart || t > tEnd) return;
+    const x = xOf(t);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.moveTo(x, padT);
+    ctx.lineTo(x, padT + chartH);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = color;
+    ctx.font = "10px sans-serif";
+    ctx.fillText(name, x + 4, padT + 12);
+  };
+  drawCursor(state.timingCursorA, "A", "#8fd3ff");
+  drawCursor(state.timingCursorB, "B", "#ff9f68");
+
+  if (state.timingCursorA != null && state.timingCursorB != null) {
+    const a = Math.min(state.timingCursorA, state.timingCursorB);
+    const b = Math.max(state.timingCursorA, state.timingCursorB);
+    const x0 = Math.max(padL, xOf(a));
+    const x1 = Math.min(padL + chartW, xOf(b));
+    if (x1 > x0) {
+      ctx.fillStyle = "rgba(143, 211, 255, 0.08)";
+      ctx.fillRect(x0, padT, x1 - x0, chartH);
+      ctx.fillStyle = "#8fd3ff";
+      ctx.font = "11px Consolas, monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(`Δt ${formatTimingDuration(b - a)}`, (x0 + x1) / 2, padT + chartH - 8);
+      ctx.textAlign = "left";
+    }
+  }
+
+  updateTimingMeasureInfo();
 }
 
 function renderPalette() {
@@ -1370,7 +2275,12 @@ function readSettingsForm() {
       : Number($("#response-size").value),
     plo_address: Number($("#plo-address").value),
     plo_port_count: Number($("#plo-port-count").value),
-    busy_port: Number($("#busy-port").value),
+    busy_port: (() => {
+      if (isFn) return Number($("#busy-port").value) || 1;
+      const signals = readPlcLinkStatusSignalsFromForm();
+      const busy = signals.find((item) => item.role === "busy");
+      return Number(busy?.plo_port) || 1;
+    })(),
     byte_order: isFn
       ? ($("#fn-byte-order")?.value || "high_low")
       : $("#byte-order").value,
@@ -1402,6 +2312,12 @@ function readSettingsForm() {
     fn_status_signals: isFn
       ? readStatusSignalsFromForm()
       : normalizeStatusSignals(state.settings.fn_status_signals),
+    plclink_status_signals: isFn
+      ? normalizePlcLinkStatusSignals(
+        state.settings.plclink_status_signals,
+        Number($("#busy-port")?.value) || 1,
+      )
+      : readPlcLinkStatusSignalsFromForm(),
   };
 }
 
@@ -1441,6 +2357,7 @@ async function saveSettings(event) {
     localStorage.setItem("vtv-settings", JSON.stringify(state.settings));
     refreshMappedWatchItems();
     renderWatchList();
+    renderTimingChannelList();
     closeSettingsDialog();
     void applySavedConnectionSettings();
   } catch (error) {
@@ -1493,7 +2410,14 @@ function restoreSettings() {
     state.settings.fn_status_signals = normalizeStatusSignals(
       state.settings.fn_status_signals,
     );
+    state.settings.plclink_status_signals = normalizePlcLinkStatusSignals(
+      state.settings.plclink_status_signals,
+      state.settings.busy_port ?? 1,
+    );
+    const busy = state.settings.plclink_status_signals.find((item) => item.role === "busy");
+    if (busy) state.settings.busy_port = Number(busy.plo_port) || 1;
     state.statusSignalDraft = state.settings.fn_status_signals.map((item) => ({ ...item }));
+    state.plclinkStatusSignalDraft = state.settings.plclink_status_signals.map((item) => ({ ...item }));
   } catch (_) {}
 }
 
@@ -1553,7 +2477,12 @@ function applySettingsToForm() {
     $("#fn-connection-path").value = s.fn_connection_path || "20 04 24 01 2C 14 2C 0A";
   }
   state.statusSignalDraft = normalizeStatusSignals(s.fn_status_signals);
+  state.plclinkStatusSignalDraft = normalizePlcLinkStatusSignals(
+    s.plclink_status_signals,
+    s.busy_port ?? 1,
+  );
   renderStatusSignalTable();
+  renderPlcLinkStatusSignalTable();
   syncTransportUi();
   syncResultDataUi();
   updateBusyAddressHint();
@@ -1621,6 +2550,7 @@ function syncTransportUi() {
   $("#fn-connect-button")?.classList.toggle("hidden", !isFn);
   lastTransport = transport;
   $("#watch-tab-button").disabled = !isMapped;
+  $("#timing-tab-button") && ($("#timing-tab-button").disabled = !isMapped);
   updateWatchNote();
   if (!isMapped) {
     stopWatch(true);
@@ -1628,6 +2558,7 @@ function syncTransportUi() {
   } else {
     refreshMappedWatchItems();
     renderWatchList();
+    renderTimingChannelList();
   }
   applyLayoutMode();
   renderPalette();
@@ -1765,12 +2696,18 @@ async function connectFieldNetwork() {
 function updateBusyAddressHint() {
   const hint = $("#busy-address-hint");
   if (!hint) return;
+  const body = $("#plclink-status-signal-body");
+  if (body?.querySelector("tr[data-plclink-status-index]")) {
+    syncPlcLinkStatusSignalDraftFromDom();
+  }
   const plo = Number($("#plo-address").value) || 0;
   const portCount = Number($("#plo-port-count")?.value) || 32;
-  const port = Number($("#busy-port").value) || 1;
+  const busySignal = state.plclinkStatusSignalDraft.find((item) => item.role === "busy");
+  const port = Number(busySignal?.plo_port) || Number($("#busy-port").value) || 1;
   const busy = plo + port - 1;
+  const count = state.plclinkStatusSignalDraft.length;
   hint.textContent = `BUSY 実アドレス: M${busy}（PLO先頭 M${plo} + Port ${port} - 1 / ポート数 ${portCount}）。`
-    + "VTV の「ステータス信号」割付と一致させてください。";
+    + `監視信号 ${count} 件。VTV の「ステータス信号」割付と一致させてください。`;
 }
 
 function syncResultDataUi() {

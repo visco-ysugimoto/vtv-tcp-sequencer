@@ -118,11 +118,17 @@ def build_mapped_watch_items(settings: ProtocolSettings) -> list[MemoryWatchItem
                 ),
             ]
         )
+    # ステータス割付は PLO 一覧のラベルに反映（同一ポートの二重表示を避ける）
+    port_labels: dict[int, str] = {}
+    for signal in settings.plclink_status_signals:
+        port = int(signal.plo_port or 1)
+        # 同じポートに複数割付がある場合は BUSY を優先、それ以外は先勝ち
+        if port in port_labels and signal.role != "busy":
+            continue
+        port_labels[port] = f"{signal.label} (Port {port})"
     for port in range(1, settings.plo_port_count + 1):
         address = settings.plo_address + port - 1
-        label = f"Port {port}"
-        if port == settings.busy_port:
-            label = f"BUSY (Port {port})"
+        label = port_labels.get(port) or f"Port {port}"
         items.append(
             MemoryWatchItem(
                 id=f"plo-port-{port}",
