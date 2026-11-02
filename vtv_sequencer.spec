@@ -31,6 +31,8 @@ hiddenimports = [
     "backend.network",
     "backend.paths",
     "backend.protocol",
+    "backend.local_io",
+    "backend.watch_stream",
     "backend.plc_link",
     "backend.plc_link.client",
     "backend.plc_link.commands",
@@ -38,6 +40,13 @@ hiddenimports = [
     "backend.plc_link.memory",
     "backend.plc_link.monitor",
     "backend.plc_link.server",
+    "backend.field_network",
+    "backend.field_network.buffers",
+    "backend.field_network.client",
+    "backend.field_network.eds",
+    "backend.field_network.eip_scanner",
+    "backend.field_network.layout",
+    "backend.field_network.monitor",
 ]
 
 for package in ("uvicorn", "fastapi", "starlette", "anyio", "pydantic"):
