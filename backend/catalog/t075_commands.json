@@ -15,5 +15,23 @@
       {"key": "line", "label": "行番号", "type": "integer", "digits": 2, "line_number": true, "min": 0, "max": 999},
       {"key": "identifier", "label": "分配識別子", "type": "string", "min_length": 1, "max_length": 255}
     ]
+  },
+  {
+    "code": "DDN",
+    "name": "アクティブタスク分配識別子設定(数値)",
+    "description": "分配処理ツールの分配識別子を数値で設定します。PLCLINK コマンド 75001 です。",
+    "syntax": "DDN[CC][RR][N]",
+    "category": "tool",
+    "tool_id": "T075",
+    "tool_name": "分配処理",
+    "response_timing": "after",
+    "has_result": false,
+    "tcp_supported": false,
+    "example": "DDN0105123",
+    "arguments": [
+      {"key": "camera", "label": "カメラ番号", "type": "integer", "digits": 2, "min": 0, "max": 8},
+      {"key": "line", "label": "行番号", "type": "integer", "digits": 2, "line_number": true, "min": 0, "max": 999},
+      {"key": "identifier", "label": "分配識別子", "type": "integer", "digits": 1, "variable_digits": true, "min": 1, "max": 99999999}
+    ]
   }
 ]

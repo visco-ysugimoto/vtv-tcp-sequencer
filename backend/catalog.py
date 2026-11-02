@@ -59,6 +59,9 @@ def format_command(
     rendered: list[str] = []
     for argument in definition.get("arguments", []):
         key = argument["key"]
+        if argument.get("mapped_only"):
+            # PLCLINK / Field Network 専用。TCP コマンド文字列には含めない。
+            continue
         required = not argument.get("optional") or _condition_matches(
             argument.get("required_if"), values
         )

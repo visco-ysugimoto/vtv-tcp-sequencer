@@ -9,10 +9,10 @@ def definition(code: str) -> dict:
 
 def test_catalog_has_system_and_tool_commands() -> None:
     catalog = load_catalog()
-    assert len(catalog) == 67
-    assert len({item["code"] for item in catalog}) == 67
+    assert len(catalog) == 68
+    assert len({item["code"] for item in catalog}) == 68
     assert sum(item["category"] == "system" for item in catalog) == 45
-    assert sum(item["category"] == "tool" for item in catalog) == 22
+    assert sum(item["category"] == "tool" for item in catalog) == 23
     assert {item["code"] for item in catalog} >= {"PLI", "ESI", "PIP"}
 
 
@@ -78,5 +78,8 @@ def test_was_formats_ocv_subcommands() -> None:
         "additional_blocks": "",
     }
     assert format_command(definition("WAS"), values) == (
+        "WAS0102,BL01,BF1,FG023,FC10,FS0123ABCabc,FM05BCDEabcde"
+    )
+    assert format_command(definition("WAS"), {**values, "multi": 1}) == (
         "WAS0102,BL01,BF1,FG023,FC10,FS0123ABCabc,FM05BCDEabcde"
     )

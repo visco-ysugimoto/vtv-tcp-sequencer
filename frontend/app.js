@@ -2593,15 +2593,52 @@ function drawTimingChart() {
   updateTimingMeasureInfo();
 }
 
+function transportOf() {
+  return $("#transport")?.value || state.settings.transport;
+}
+
+function isMappedTransport(transport = transportOf()) {
+  return transport === "plclink" || transport === "field_network";
+}
+
+function commandAvailable(item, transport = transportOf()) {
+  if (transport === "plclink") return !!item.plclink_supported;
+  if (transport === "field_network") return !!item.field_network_supported;
+  return !item.local_io && item.tcp_supported !== false;
+}
+
+function visibleArguments(def) {
+  if (isMappedTransport() && Array.isArray(def?.plclink_arguments)) return def.plclink_arguments;
+  const args = def?.arguments || [];
+  return isMappedTransport() ? args : args.filter((arg) => !arg.mapped_only);
+}
+
+function usesRaw(def) {
+  if (isMappedTransport() && Array.isArray(def?.plclink_arguments)) return false;
+  return !!def?.raw_arguments;
+}
+
+function argumentVisible(step, arg) {
+  const cond = arg.show_if;
+  if (!cond) return true;
+  const current = String(step.arguments?.[cond.key] ?? "");
+  if (Array.isArray(cond.in)) return cond.in.map(String).includes(current);
+  return current === String(cond.equals);
+}
+
+function argumentValue(step, arg) {
+  const value = step.arguments?.[arg.key];
+  if ((value === undefined || value === "") && arg.key === "increment" && step.arguments?.raw) {
+    return step.arguments.raw;
+  }
+  return value ?? "";
+}
+
 function renderPalette() {
   const query = $("#command-search")?.value.trim().toLowerCase() || "";
-  const transport = $("#transport")?.value || state.settings.transport;
-  const isMapped = transport === "plclink" || transport === "field_network";
-  const available = state.catalog.filter((item) => {
-    if (transport === "plclink") return !!item.plclink_supported;
-    if (transport === "field_network") return !!item.field_network_supported;
-    return !item.local_io; // TCP ではローカル I/O 専用コマンドを隠す
-  });
+  const transport = transportOf();
+  const isMapped = isMappedTransport(transport);
+  const available = state.catalog.filter((item) => commandAvailable(item, transport));
   const filtered = available.filter((item) =>
     `${item.code} ${item.name} ${item.description} ${item.tool_name || ""}`.toLowerCase().includes(query)
   );
@@ -2624,13 +2661,13 @@ function renderPalette() {
 function newCommand(code) {
   const definition = state.catalog.find((item) => item.code === code);
   const args = {};
-  for (const arg of definition.arguments || []) {
+  for (const arg of visibleArguments(definition)) {
     if (arg.default !== undefined) args[arg.key] = arg.default;
     else if (arg.type === "integer") args[arg.key] = arg.min;
     else if (arg.type === "enum") args[arg.key] = arg.options[0].value;
     else args[arg.key] = "";
   }
-  if (definition.raw_arguments) args.raw = "";
+  if (usesRaw(definition)) args.raw = "";
   return {
     id: state.nextId++,
     type: "command",
@@ -2676,13 +2713,16 @@ function stepHtml(step, nested = false) {
       ? !!def.field_network_supported
       : transport === "plclink"
         ? !!def.plclink_supported
-        : !def.local_io;
+        : !def.local_io && def.tcp_supported !== false;
     const unsupported = !supported;
     const modeLabel = def.local_io
       ? "ローカルI/O"
       : (transport === "field_network" ? "FNコマンド" : "PLCLINKコマンド");
-    const fields = (def.arguments || []).map((arg) => argumentField(step, arg)).join("");
-    const raw = def.raw_arguments ? `
+    const fields = visibleArguments(def)
+      .filter((arg) => argumentVisible(step, arg))
+      .map((arg) => argumentField(step, arg))
+      .join("");
+    const raw = usesRaw(def) ? `
       <label>引数文字列<input data-field="raw" value="${escapeHtml(step.arguments.raw || "")}" placeholder="別資料の構文に従って入力"></label>` : "";
     const ignoreOption = `
       <label class="step-option" title="送信後に装置応答を待たず、すぐ次のカードへ進みます">
@@ -2768,13 +2808,14 @@ function stepHtml(step, nested = false) {
 
 function commandCompactSummary(step, def) {
   const parts = [];
-  for (const arg of def.arguments || []) {
+  for (const arg of visibleArguments(def)) {
+    if (!argumentVisible(step, arg)) continue;
     const value = step.arguments[arg.key];
     if (value === undefined || value === null || value === "") continue;
     parts.push(`${arg.label}:${value}`);
     if (parts.length >= 3) break;
   }
-  if (def.raw_arguments && step.arguments.raw) parts.push(`raw:${step.arguments.raw}`);
+  if (usesRaw(def) && step.arguments.raw) parts.push(`raw:${step.arguments.raw}`);
   if (step.ignore_response) parts.push("応答無視");
   return parts.map((part) => `<span>${escapeHtml(part)}</span>`).join("");
 }
@@ -2791,7 +2832,7 @@ function stepHeader(step, title, nested) {
 }
 
 function argumentField(step, arg) {
-  const value = step.arguments[arg.key] ?? "";
+  const value = argumentValue(step, arg);
   if (arg.type === "enum") {
     return `<label>${escapeHtml(arg.label)}<select data-arg="${arg.key}">
       ${arg.options.map((option) => `<option value="${escapeHtml(option.value)}" ${String(value) === String(option.value) ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
@@ -2812,7 +2853,7 @@ function childArea(step, key, label) {
       <option value="control:loop">LOOP｜くり返し</option>
       <option value="control:break">BREAK｜ループを抜ける</option>
     </optgroup>`;
-  const commandOptions = catalogGroups(state.catalog).map((group) =>
+  const commandOptions = catalogGroups(state.catalog.filter((item) => commandAvailable(item))).map((group) =>
     `<optgroup label="${escapeHtml(group.label)}">${group.items.map(
       (item) => `<option value="command:${item.code}">${item.code}｜${escapeHtml(item.name)}</option>`
     ).join("")}</optgroup>`
@@ -2848,7 +2889,14 @@ function bindStepEvents() {
     const located = locateStep(id);
     if (!located) return;
     card.querySelectorAll(":scope > .step-body [data-arg]").forEach((input) => {
-      input.addEventListener("input", () => { located.step.arguments[input.dataset.arg] = input.value; });
+      const applyArg = () => {
+        located.step.arguments[input.dataset.arg] = input.value;
+        const definition = state.catalog.find((item) => item.code === located.step.command);
+        const controls = visibleArguments(definition).some((arg) => arg.show_if?.key === input.dataset.arg);
+        if (controls && input.tagName === "SELECT") renderSequence();
+      };
+      input.addEventListener("input", applyArg);
+      input.addEventListener("change", applyArg);
     });
     card.querySelectorAll(":scope > .step-body [data-field]").forEach((input) => {
       const applyField = () => {

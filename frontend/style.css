@@ -320,9 +320,17 @@ input, select { min-width: 0; padding: 8px 9px; border: 1px solid #cfd6e2; borde
   overflow: hidden;
   border-top: 1px solid var(--line);
 }
-.timing-toolbar .watch-toolbar-actions {
+.timing-toolbar .watch-toolbar-main {
   flex-wrap: wrap;
-  justify-content: flex-end;
+  row-gap: 8px;
+}
+.timing-toolbar .watch-toolbar-actions {
+  flex: 1 1 100%;
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
+  justify-content: flex-start;
 }
 .timing-channel-panel {
   display: flex;
@@ -510,8 +518,14 @@ body.layout-monitor-focus .timing-measure-info {
   flex: 1 1 100%;
   background: #e8eef8;
 }
+body.layout-monitor-focus .timing-toolbar .watch-toolbar-main {
+  flex-wrap: nowrap;
+}
 body.layout-monitor-focus .timing-toolbar .watch-toolbar-actions {
-  max-width: 100%;
+  flex: 0 1 auto;
+  width: auto;
+  max-width: none;
+  justify-content: flex-end;
 }
 body.layout-monitor-focus .watch-note {
   display: none;

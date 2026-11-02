@@ -13,6 +13,7 @@
     "arguments": [
       {"key": "camera", "label": "カメラ番号", "type": "integer", "digits": 2, "min": 0, "max": 8},
       {"key": "line", "label": "行番号", "type": "integer", "digits": 2, "line_number": true, "min": 0, "max": 999},
+      {"key": "multi", "label": "マルチ番号（0で先頭）", "type": "integer", "digits": 4, "min": 0, "max": 6400, "optional": true, "default": 0, "mapped_only": true},
       {
         "key": "allow_search_ng",
         "label": "サーチNGでも登録",

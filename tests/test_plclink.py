@@ -7,8 +7,11 @@ import pytest
 from backend.models import MemoryWatchItem, ProtocolSettings
 from backend.plc_link import PlcLinkClient, mc3e
 from backend.plc_link.commands import (
+    COMMAND_SPECS,
+    DOCUMENTED_COMMAND_CODES,
     build_command_words,
     command_metadata,
+    dword_to_words,
     pack_string,
     resolve_spec,
 )
@@ -557,3 +560,210 @@ async def test_plclink_timeout_resets_trigger() -> None:
 async def test_unsupported_plclink_command() -> None:
     with pytest.raises(ProtocolError, match="DIO"):
         resolve_spec("POA")
+
+
+def _words(code: str, arguments: dict, area_size: int = 64) -> list[int]:
+    spec = resolve_spec(code)
+    return build_command_words(
+        spec,
+        arguments,
+        encoding="cp932",
+        byte_order="high_low",
+        area_size=area_size,
+    )
+
+
+def test_documented_commands_match_c013_01() -> None:
+    supported = {
+        spec.code
+        for spec in COMMAND_SPECS.values()
+        if spec.code and spec.unsupported_reason is None
+    }
+    assert supported == DOCUMENTED_COMMAND_CODES
+    assert command_metadata("EXP")["plclink_supported"] is True
+    assert command_metadata("EXP")["plclink_code"] == 70
+    assert command_metadata("DDN")["plclink_code"] == 75001
+    assert command_metadata("EXP")["plclink_arguments"]
+
+
+def test_export_batch_words_follow_manual() -> None:
+    words = _words(
+        "EXP",
+        {
+            "kind": "0",
+            "progress": "1",
+            "version_major": 0,
+            "version_minor": 0,
+            "version_sub": 0,
+            "image_save": "2",
+            "shared_light": "0",
+            "history": "1",
+            "inspect_folder": "0",
+            "folder": "AB",
+        },
+    )
+    assert words[:24] == [
+        0, 0,  # trigger
+        70, 0,
+        0, 0,  # 一括
+        1, 0,  # 経過を確認
+        0, 0,
+        0, 0,
+        0, 0,
+        2, 0,  # 画像は保存しない
+        0, 0,
+        1, 0,  # 変更履歴を含む
+        0, 0,
+        *pack_string("AB", encoding="cp932", byte_order="high_low"),
+    ]
+
+
+def test_import_with_numeric_adjustment_uses_code_100() -> None:
+    words = _words(
+        "IMP",
+        {
+            "kind": "0",
+            "progress": "0",
+            "numeric_adjust_mode": "1",
+            "numeric_adjust": "2",
+            "delete_images": "1",
+            "delete_inspect": "0",
+            "keep_capture": "1",
+            "shared_light": "0",
+            "include_3d": "1",
+            "include_system": "0",
+            "path": "AB",
+        },
+    )
+    assert words[:24] == [
+        0, 0,
+        71, 0,
+        100, 0,  # 一括 + 数値補正
+        0, 0,
+        1, 0,  # 画像削除
+        0, 0,
+        1, 0,  # 画像取込設定を保持
+        0, 0,
+        1, 0,  # 3D
+        2, 0,  # 数値補正は保持
+        0, 0,  # システムファイル
+        *pack_string("AB", encoding="cp932", byte_order="high_low"),
+    ]
+
+
+def test_folder_letter_is_converted_for_plclink() -> None:
+    setting = _words(
+        "SFS",
+        {"folder": "M", "mode": "0", "path": "AB"},
+    )
+    assert setting[:10] == [0, 0, 96, 0, 4, 0, 0, 0, 0x4142, 0x0000]
+    reading = _words("SFS", {"folder": "I", "mode": "1", "path": r"C:\ignored"})
+    assert reading[:8] == [0, 0, 96, 0, 5, 0, 1, 0]
+    assert reading[8:] == [0] * (len(reading) - 8)
+    increased = _words("SFI", {"folder": "B", "increment": 100})
+    assert increased[:8] == [0, 0, 97, 0, 1, 0, 100, 0]
+
+
+def test_image_delete_and_lot_commands() -> None:
+    deleted = _words("SIE", {"delete_mode": "2", "locked": "1"})
+    assert deleted[:8] == [0, 0, 36, 0, 2, 0, 1, 0]
+    increased = _words("SLI", {"raw": "4"})
+    assert increased[:6] == [0, 0, 64, 0, 4, 0]
+    named = _words("SLP", {"lot_number": 12, "lot_name": "AB"})
+    assert named[:8] == [0, 0, 65, 0, 12, 0, 0x4142, 0x0000]
+    with pytest.raises(ProtocolError, match="両方を未指定"):
+        _words("SLP", {"lot_number": 0, "lot_name": ""})
+
+
+def test_kma_matches_manual_fixed_point_example() -> None:
+    words = _words(
+        "KMA",
+        {
+            "camera": 1,
+            "line": 3,
+            "multi": 0,
+            "module_type": "2",
+            "module_id": "09",
+            "operation": "1",
+            "module_number": 10,
+            "x": "640.0",
+            "y": "480.0",
+        },
+    )
+    assert words[:16] == [
+        0, 0,
+        26000, 0,
+        1, 0,
+        3, 0,
+        0, 0,
+        10, 0,
+        *dword_to_words(640000),
+        *dword_to_words(480000),
+    ]
+
+
+def test_ocv_reset_matches_manual_example() -> None:
+    words = _words(
+        "WAS",
+        {
+            "camera": 1,
+            "line": 3,
+            "multi": 1,
+            "block": 3,
+            "enabled": "1",
+            "font": 10,
+            "text": "ABCDE",
+            "additional_blocks": ",BL05,BF0",
+        },
+        area_size=80,
+    )
+    expected = [
+        *dword_to_words(0),
+        *dword_to_words(34000),
+        *dword_to_words(1),
+        *dword_to_words(3),
+        *dword_to_words(1),
+        *dword_to_words(2),
+        *dword_to_words(3),
+        *dword_to_words(1),
+        *dword_to_words(10),
+        *pack_string("ABCDE", encoding="cp932", byte_order="high_low"),
+        *dword_to_words(0),
+        *dword_to_words(5),
+        *dword_to_words(0),
+        *dword_to_words(0),
+        *pack_string("", encoding="cp932", byte_order="high_low"),
+        *dword_to_words(0),
+    ]
+    assert pack_string("ABCDE", encoding="cp932", byte_order="high_low") == [
+        0x4142, 0x4344, 0x4500, 0x0000,
+    ]
+    assert words[: len(expected)] == expected
+
+
+def test_region_delete_inserts_dummy_dwords() -> None:
+    words = _words(
+        "NLA",
+        {"camera": 1, "line": 5, "region_row": 2, "region_column": 3},
+    )
+    assert words[:16] == [
+        0, 0,
+        56002, 0,
+        1, 0,
+        5, 0,
+        0, 0,
+        0, 0,
+        2, 0,
+        3, 0,
+    ]
+
+
+def test_numeric_distribution_identifier() -> None:
+    words = _words("DDN", {"camera": 1, "line": 5, "identifier": 123})
+    assert words[:10] == [0, 0, *dword_to_words(75001), 1, 0, 5, 0, 123, 0]
+
+
+def test_dfa_get_omits_path() -> None:
+    words = _words("DFA", {"camera": 1, "line": 16, "mode": "1", "path": ""})
+    assert words[:10] == [0, 0, 30000, 0, 1, 0, 16, 0, 1, 0]
+    assert words[10:] == [0] * (len(words) - 10)

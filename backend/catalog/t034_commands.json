@@ -13,6 +13,7 @@
     "arguments": [
       {"key": "camera", "label": "カメラ番号", "type": "integer", "digits": 2, "min": 0, "max": 8},
       {"key": "line", "label": "ツール行番号", "type": "integer", "digits": 2, "line_number": true, "min": 0, "max": 999},
+      {"key": "multi", "label": "マルチ番号（0で先頭）", "type": "integer", "digits": 4, "min": 0, "max": 6400, "optional": true, "default": 0, "mapped_only": true},
       {"key": "block", "label": "ブロック番号", "type": "integer", "digits": 2, "min": 1, "max": 20, "prefix": ",BL"},
       {"key": "enabled", "label": "ブロック状態", "type": "enum", "optional": true, "prefix": ",BF", "options": [{"value": "", "label": "変更しない"}, {"value": "0", "label": "無効"}, {"value": "1", "label": "有効"}]},
       {"key": "font", "label": "フォント番号", "type": "integer", "digits": 3, "min": 1, "max": 999, "optional": true, "default": "", "prefix": ",FG"},
@@ -83,6 +84,7 @@
       {"key": "task", "label": "タスク番号", "type": "integer", "digits": 2, "min": 1, "max": 50},
       {"key": "camera", "label": "カメラ番号", "type": "integer", "digits": 2, "min": 0, "max": 8},
       {"key": "line", "label": "ツール行番号", "type": "integer", "digits": 2, "line_number": true, "min": 0, "max": 999},
+      {"key": "multi", "label": "マルチ番号（0で先頭）", "type": "integer", "digits": 4, "min": 0, "max": 6400, "optional": true, "default": 0, "mapped_only": true},
       {"key": "block", "label": "ブロック番号", "type": "integer", "digits": 2, "min": 1, "max": 20, "prefix": ",BL"},
       {"key": "enabled", "label": "ブロック状態", "type": "enum", "optional": true, "prefix": ",BF", "options": [{"value": "", "label": "変更しない"}, {"value": "0", "label": "無効"}, {"value": "1", "label": "有効"}]},
       {"key": "font", "label": "フォント番号", "type": "integer", "digits": 3, "min": 1, "max": 999, "optional": true, "default": "", "prefix": ",FG"},

@@ -17,7 +17,7 @@ def test_catalog_endpoint() -> None:
     response = client.get("/api/catalog")
     assert response.status_code == 200
     catalog = response.json()
-    assert len(catalog) == 65
+    assert len(catalog) == 68
     assert any(
         item["code"] == "ICA" and item["tool_id"] == "T001"
         for item in catalog
@@ -44,7 +44,7 @@ def test_index_is_served() -> None:
     response = client.get("/")
     assert response.status_code == 200
     assert "VTV Network Sequencer" in response.text
-    assert "/app.js?v=20261102-port-names" in response.text
+    assert "/app.js?v=20261102-plclink-cmd" in response.text
     assert "pli-port-name-body" in response.text
     assert "eso-port-name-body" in response.text
     assert 'id="header-timeout"' in response.text
