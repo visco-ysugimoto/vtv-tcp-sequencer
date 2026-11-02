@@ -29,7 +29,36 @@ h1 { font-size: 23px; letter-spacing: .02em; }
 h2 { font-size: 18px; }
 h3 { font-size: 13px; color: #4f5b71; }
 .eyebrow { color: #8091b3; font-size: 10px; font-weight: 800; letter-spacing: .15em; margin-bottom: 3px; }
-.header-actions, .compact-actions { display: flex; align-items: center; gap: 8px; }
+.header-actions, .compact-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.local-io-panel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 4px;
+  padding: 4px 8px;
+  border: 1px solid rgba(56, 103, 232, 0.35);
+  border-radius: 8px;
+  background: rgba(56, 103, 232, 0.08);
+}
+.local-io-panel.hidden { display: none; }
+.local-io-label {
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--blue);
+  letter-spacing: 0.04em;
+}
+.local-io-panel input {
+  width: 88px;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: Consolas, monospace;
+}
+.local-io-panel .button {
+  padding: 4px 10px;
+  font-size: 12px;
+}
 .header-timeout {
   display: flex; align-items: center; gap: 6px; padding: 4px 8px;
   border: 1px solid #3a4a6b; border-radius: 7px; background: #26334e;
@@ -106,6 +135,17 @@ h3 { font-size: 13px; color: #4f5b71; }
 .step-body label, .form-grid label { display: flex; flex-direction: column; gap: 5px; color: #667085; font-size: 11px; font-weight: 700; }
 input, select { min-width: 0; padding: 8px 9px; border: 1px solid #cfd6e2; border-radius: 6px; color: var(--ink); background: white; }
 .step-description { grid-column: 1 / -1; color: var(--muted); font-size: 11px; }
+.step-option {
+  grid-column: 1 / -1;
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px;
+  color: #596579;
+  font-size: 12px;
+  font-weight: 700;
+}
+.step-option input { min-width: auto; accent-color: var(--blue); }
 .step-warning { grid-column: 1 / -1; color: var(--danger); font-size: 11px; font-weight: 700; }
 .step-compact-row {
   padding: 7px 12px 9px;
@@ -257,6 +297,19 @@ input, select { min-width: 0; padding: 8px 9px; border: 1px solid #cfd6e2; borde
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   line-height: 1.4;
+}
+.timing-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.timing-check input { margin: 0; }
+.timing-toolbar .watch-toolbar-settings {
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
 }
 .timing-layout {
   display: grid;
@@ -610,6 +663,69 @@ dialog { width: 760px; padding: 0; border: 0; border-radius: 12px; color: var(--
   color: var(--danger);
   cursor: pointer;
   font-weight: 700;
+}
+.port-name-panels {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 10px 0 4px;
+}
+.port-name-panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fafbfc;
+}
+.port-name-heading {
+  padding: 7px 10px;
+  color: #4f5b71;
+  background: #eef2f8;
+  font-size: 11px;
+  font-weight: 800;
+}
+.port-name-table-wrap {
+  max-height: 220px;
+  overflow: auto;
+}
+.port-name-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.port-name-table th,
+.port-name-table td {
+  padding: 5px 8px;
+  border-top: 1px solid #e7ebf2;
+  text-align: left;
+}
+.port-name-table th {
+  position: sticky;
+  top: 0;
+  background: #f3f5f8;
+  color: #667085;
+  font-size: 10px;
+  font-weight: 800;
+}
+.port-name-table td:first-child {
+  width: 52px;
+  color: var(--muted);
+  font-family: Consolas, monospace;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.port-name-table input[type="text"] {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-size: 12px;
+}
+.port-name-empty {
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
 }
 dialog.small-dialog { width: 430px; }
 dialog::backdrop { background: rgba(16, 24, 40, .55); backdrop-filter: blur(2px); }

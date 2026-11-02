@@ -9,10 +9,11 @@ def definition(code: str) -> dict:
 
 def test_catalog_has_system_and_tool_commands() -> None:
     catalog = load_catalog()
-    assert len(catalog) == 65
-    assert len({item["code"] for item in catalog}) == 65
-    assert sum(item["category"] == "system" for item in catalog) == 43
+    assert len(catalog) == 67
+    assert len({item["code"] for item in catalog}) == 67
+    assert sum(item["category"] == "system" for item in catalog) == 45
     assert sum(item["category"] == "tool" for item in catalog) == 22
+    assert {item["code"] for item in catalog} >= {"PLI", "ESI", "PIP"}
 
 
 def test_rrt_is_zero_padded() -> None:

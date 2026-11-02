@@ -44,6 +44,7 @@ class FieldNetworkClient:
             timeout=settings.timeout,
         )
         self._syncing = False
+        self._ignore_task: asyncio.Task[None] | None = None
 
     @staticmethod
     def _build_layout(settings: ProtocolSettings) -> AssemblyLayout:
@@ -120,6 +121,13 @@ class FieldNetworkClient:
             buf[pos + 1] = (unsigned >> 8) & 0xFF
         self.scanner.buffers.write_output(buf)
 
+    def set_output_bit(self, bit_index: int, value: int) -> None:
+        """Assem20（スキャナ→VTV）上の bit を書き換える（ESI 操作用）。"""
+        try:
+            self.scanner.buffers.set_output_bit(bit_index, value)
+        except ValueError as exc:
+            raise ProtocolError(str(exc)) from exc
+
     def _read_input_dword(self, word_index: int) -> int:
         data = self.scanner.buffers.read_input()
         pos = word_index * 2
@@ -163,10 +171,13 @@ class FieldNetworkClient:
         *,
         tcp_code: str | None = None,
         arguments: dict[str, Any] | None = None,
+        ignore_response: bool = False,
     ) -> CommandResult:
         del expect_result, result_mode
         if not self.scanner.is_connected:
             raise ProtocolError("装置に接続されていません")
+
+        await self._await_ignore_task()
 
         code = (tcp_code or command).upper()
         spec = resolve_spec(code)
@@ -189,6 +200,12 @@ class FieldNetworkClient:
         # トリガ ON
         self._write_output_dword(cmd_base, 1)
 
+        if ignore_response:
+            self._ignore_task = asyncio.create_task(
+                self._complete_ignored_command(cmd_base)
+            )
+            return CommandResult(display, "AK", ["(応答無視)"])
+
         try:
             await self._wait_busy(1, "BUSY ON")
             self._write_output_dword(cmd_base, 0)
@@ -209,6 +226,25 @@ class FieldNetworkClient:
         if result_code not in (1, 8):
             raise ProtocolError(f"不正な実行結果です: {result_code}")
         return CommandResult(display, status, [status, detail])
+
+    async def _await_ignore_task(self) -> None:
+        task = self._ignore_task
+        self._ignore_task = None
+        if task is None:
+            return
+        try:
+            await task
+        except Exception:
+            pass
+
+    async def _complete_ignored_command(self, cmd_base: int) -> None:
+        """応答無視時もトリガ立下りと BUSY 解除をバックグラウンドで完了する。"""
+        try:
+            await self._wait_busy(1, "BUSY ON")
+            self._write_output_dword(cmd_base, 0)
+            await self._wait_busy(0, "BUSY OFF")
+        except Exception:
+            self._write_output_dword(cmd_base, 0)
 
     async def _wait_busy(self, expected: int, label: str) -> None:
         deadline = asyncio.get_running_loop().time() + self.settings.timeout

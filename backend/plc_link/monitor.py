@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..models import MemoryWatchItem, ProtocolSettings
+from ..models import MemoryWatchItem, ProtocolSettings, port_display_label
 from .commands import ByteOrder, words_to_dword
 from .memory import DeviceMemory
 
@@ -128,7 +128,14 @@ def build_mapped_watch_items(settings: ProtocolSettings) -> list[MemoryWatchItem
         port_labels[port] = f"{signal.label} (Port {port})"
     for port in range(1, settings.plo_port_count + 1):
         address = settings.plo_address + port - 1
-        label = port_labels.get(port) or f"Port {port}"
+        custom = port_display_label(
+            port, settings.plo_port_names, fallback=f"Port {port}"
+        )
+        # ユーザー名称があれば優先。なければステータス割付名。
+        if custom != f"Port {port}":
+            label = custom
+        else:
+            label = port_labels.get(port) or f"Port {port}"
         items.append(
             MemoryWatchItem(
                 id=f"plo-port-{port}",

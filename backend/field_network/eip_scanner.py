@@ -93,6 +93,18 @@ class IoBuffers:
         with self._lock:
             return bytes(self._output)
 
+    def set_output_bit(self, bit_index: int, value: int) -> None:
+        """出力バッファの 1 bit をアトミックに更新（ESI 割り込み用）。"""
+        byte_index = int(bit_index) // 8
+        bit = int(bit_index) % 8
+        with self._lock:
+            if byte_index < 0 or byte_index >= len(self._output):
+                raise ValueError(f"出力アセンブリ範囲外の bit です: {bit_index}")
+            if int(value):
+                self._output[byte_index] |= 1 << bit
+            else:
+                self._output[byte_index] &= ~(1 << bit)
+
     def write_input(self, data: bytes | bytearray, *, sequence: int | None = None) -> None:
         if len(data) != self.input_size:
             raise ValueError(
@@ -150,7 +162,7 @@ class EipClass1Scanner:
         self.tcp_port = tcp_port
         self.input_size = input_size
         self.output_size = output_size
-        self.rpi_us = max(2000, int(rpi_us))
+        self.rpi_us = max(1000, int(rpi_us))
         self.connection_path = connection_path
         self.o_to_t_header_bytes = o_to_t_header_bytes
         self.timeout = timeout

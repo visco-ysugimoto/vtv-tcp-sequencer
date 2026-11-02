@@ -123,3 +123,37 @@ async def test_tcp_collects_result_lines_until_idle() -> None:
         r"C01 R012 C:\temp\a",
         r"C01 R016 C:\temp\b",
     ]
+
+
+async def test_tcp_ignore_response_returns_immediately() -> None:
+    received: list[bytes] = []
+
+    async def device(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        first = await reader.readuntil(b"\r")
+        received.append(first)
+        writer.write(b"AK\r00000001\r")
+        await writer.drain()
+        second = await reader.readuntil(b"\r")
+        received.append(second)
+        writer.write(b"AK\r")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(device, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    settings = ProtocolSettings(
+        host="127.0.0.1", port=port, checksum=False, input_response=True
+    )
+    async with server:
+        async with VtvTcpClient(settings) as client:
+            ignored = await client.send_command(
+                "RRA", expect_result=True, ignore_response=True
+            )
+            followed = await client.send_command("RCC")
+
+    assert ignored.status == "AK"
+    assert ignored.responses == ["(応答無視)"]
+    assert received == [b"RRA\r", b"RCC\r"]
+    assert followed.status == "AK"

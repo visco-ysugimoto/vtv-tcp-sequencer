@@ -180,6 +180,29 @@ def test_watch_items_and_read() -> None:
     assert values["rsp-result"]["value"] == 1
 
 
+def test_esi_eso_port_names_appear_in_watch() -> None:
+    settings = ProtocolSettings(
+        transport="field_network",
+        host="192.168.0.10",
+        fn_esi_ports=32,
+        fn_eso_ports=32,
+        result_data_size=240,
+        result_data_watch_words=0,
+        command_size=64,
+        response_size=64,
+        fn_input_size=616,
+        fn_output_size=136,
+        esi_port_names={"1": "起動", "99": "無視される"},
+        eso_port_names={"3": "完了"},
+    )
+    items = build_mapped_watch_items(settings)
+    by_id = {item.id: item for item in items}
+    assert by_id["esi-port-1"].label == "ESI-1: 起動"
+    assert by_id["eso-port-3"].label == "ESO-3: 完了"
+    assert by_id["esi-port-2"].label == "ESI-2"
+    assert "esi-port-99" not in by_id
+
+
 def test_default_status_signals() -> None:
     settings = ProtocolSettings(transport="field_network", host="192.168.0.10")
     signals = settings.fn_status_signals

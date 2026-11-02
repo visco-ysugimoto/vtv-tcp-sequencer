@@ -37,6 +37,7 @@ class DeviceClient(Protocol):
         *,
         tcp_code: str | None = None,
         arguments: dict[str, Any] | None = None,
+        ignore_response: bool = False,
     ) -> CommandResult: ...
 
 
@@ -121,6 +122,30 @@ class SequenceEngine:
         definition = self.catalog[code]
         transport = self.client.settings.transport
 
+        from .local_io import apply_local_io, format_local_io_display, is_local_io_command
+
+        if is_local_io_command(code):
+            display = format_local_io_display(code, step.arguments)
+            await self.on_event(
+                {
+                    "type": "tx",
+                    "index": index,
+                    "command": display,
+                    "display": display,
+                }
+            )
+            result = await apply_local_io(
+                self.client, code=code, arguments=step.arguments
+            )
+            self.last_result = result
+            for response in result.responses:
+                await self.on_event(
+                    {"type": "rx", "index": index, "response": response}
+                )
+            if result.status in {"NK", "ER"}:
+                raise ProtocolError(f"{code} が {result.status} を返しました")
+            return
+
         if transport == "plclink" or transport == "field_network":
             from .plc_link.commands import format_plclink_display, resolve_spec
 
@@ -140,6 +165,7 @@ class SequenceEngine:
                 display,
                 tcp_code=code,
                 arguments=step.arguments,
+                ignore_response=step.ignore_response,
             )
         else:
             try:
@@ -171,6 +197,7 @@ class SequenceEngine:
                 command,
                 expect_result,
                 definition.get("result_mode", "single"),
+                ignore_response=step.ignore_response,
             )
 
         self.last_result = result
@@ -178,6 +205,8 @@ class SequenceEngine:
             await self.on_event(
                 {"type": "rx", "index": index, "response": response}
             )
+        if step.ignore_response:
+            return
         if result.status in {"NK", "ER"}:
             raise ProtocolError(f"{code} が {result.status} を返しました")
 
@@ -204,7 +233,12 @@ class SequenceEngine:
         else:
             matched = step.value not in actual
         await self.on_event(
-            {"type": "condition", "matched": matched, "actual": actual}
+            {
+                "type": "condition",
+                "matched": matched,
+                "actual": actual,
+                "expected": step.value,
+            }
         )
         await self._run_steps(step.then_steps if matched else step.else_steps)
 

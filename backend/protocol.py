@@ -126,10 +126,15 @@ class VtvTcpClient:
         *,
         tcp_code: str | None = None,
         arguments: dict | None = None,
+        ignore_response: bool = False,
     ) -> CommandResult:
         del tcp_code, arguments
         if self.reader is None or self.writer is None:
             raise ProtocolError("装置に接続されていません")
+
+        # 前回「応答無視」で残った受信データを捨ててから送信する
+        if not ignore_response:
+            await self._discard_pending_input()
 
         framed = frame_outbound_command(command, self.settings)
         encoded = framed.encode(self.settings.encoding)
@@ -140,6 +145,9 @@ class VtvTcpClient:
             )
         except (TimeoutError, OSError) as exc:
             raise ProtocolError(f"送信に失敗しました: {exc}") from exc
+
+        if ignore_response:
+            return CommandResult(framed, "AK", ["(応答無視)"])
 
         responses: list[str] = []
         status = "AK" if not self.settings.input_response else ""
@@ -168,6 +176,13 @@ class VtvTcpClient:
                     responses.append(line)
 
         return CommandResult(framed, status, responses)
+
+    async def _discard_pending_input(self) -> None:
+        """受信バッファに残った行を短時間で破棄する。"""
+        while True:
+            line = await self._read_line(timeout=0.05, timeout_is_end=True)
+            if line is None:
+                return
 
     async def _read_line(
         self,

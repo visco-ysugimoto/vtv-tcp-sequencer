@@ -195,18 +195,32 @@ def resolve_spec(tcp_code: str) -> PlcLinkCommandSpec:
 
 def command_metadata(tcp_code: str) -> dict[str, int | str | bool | None]:
     """カタログ表示用の PLCLINK 対応情報を返す。"""
+    from ..local_io import local_io_metadata
+
     code = tcp_code.upper()
+    local = local_io_metadata(code)
+    if local is not None:
+        return local  # type: ignore[return-value]
     spec = COMMAND_SPECS.get(code)
     if spec is None:
         return {
+            "local_io": False,
             "plclink_supported": False,
             "plclink_code": None,
             "plclink_reason": "PLCLINK 未対応のコマンドです",
+            "field_network_supported": False,
+            "field_network_code": None,
+            "field_network_reason": "Field Network 未対応のコマンドです",
         }
+    supported = spec.unsupported_reason is None
     return {
-        "plclink_supported": spec.unsupported_reason is None,
+        "local_io": False,
+        "plclink_supported": supported,
         "plclink_code": spec.code if spec.code else None,
         "plclink_reason": spec.unsupported_reason,
+        "field_network_supported": supported,
+        "field_network_code": spec.code if spec.code else None,
+        "field_network_reason": spec.unsupported_reason,
     }
 
 

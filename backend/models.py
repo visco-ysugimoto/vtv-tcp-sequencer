@@ -33,6 +33,37 @@ class StatusSignalMapping(BaseModel):
         return self
 
 
+def sanitize_port_names(value: object) -> dict[str, str]:
+    """ポート番号→名称の辞書を正規化する（キーは文字列のポート番号）。"""
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, str] = {}
+    for key, name in value.items():
+        try:
+            port = int(key)
+        except (TypeError, ValueError):
+            continue
+        if port < 1 or port > 256:
+            continue
+        text = str(name or "").strip()[:40]
+        if text:
+            result[str(port)] = text
+    return result
+
+
+def port_display_label(
+    port: int,
+    names: dict[str, str] | None,
+    *,
+    fallback: str,
+) -> str:
+    """監視表示用のポートラベル。名称があれば『fallback: 名称』。"""
+    custom = (names or {}).get(str(port), "").strip()
+    if custom:
+        return f"{fallback}: {custom}"
+    return fallback
+
+
 def default_fn_status_signals() -> list[StatusSignalMapping]:
     """VTV 既定のステータス出力領域割付（Field Network）。"""
     return [
@@ -110,7 +141,7 @@ class ProtocolSettings(BaseModel):
     fn_eso_ports: Literal[0, 32, 64, 96, 128] = 32
     fn_input_size: int = Field(default=612, ge=4, le=1444)
     fn_output_size: int = Field(default=136, ge=4, le=1444)
-    fn_rpi_us: int = Field(default=10_000, ge=2_000, le=1_000_000)
+    fn_rpi_us: int = Field(default=10_000, ge=1_000, le=1_000_000)
     fn_connection_path: str = "20 04 24 01 2C 14 2C 0A"
     fn_o_to_t_header_bytes: Literal[0, 4] = 4
     fn_eds_name: str = ""
@@ -118,6 +149,22 @@ class ProtocolSettings(BaseModel):
         default_factory=default_fn_status_signals
     )
     plclink_status_signals: list[StatusSignalMapping] = Field(default_factory=list)
+    # ポート名称（キーは "1","2",... / 値は表示名。空は未設定）
+    pli_port_names: dict[str, str] = Field(default_factory=dict)
+    plo_port_names: dict[str, str] = Field(default_factory=dict)
+    esi_port_names: dict[str, str] = Field(default_factory=dict)
+    eso_port_names: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator(
+        "pli_port_names",
+        "plo_port_names",
+        "esi_port_names",
+        "eso_port_names",
+        mode="before",
+    )
+    @classmethod
+    def validate_port_names(cls, value: object) -> dict[str, str]:
+        return sanitize_port_names(value)
 
     @computed_field
     @property
@@ -377,10 +424,21 @@ class MemoryReadRequest(BaseModel):
     items: list[MemoryWatchItem] = Field(min_length=1, max_length=512)
 
 
+class LocalIoRequest(BaseModel):
+    """PLI / ESI ポートの単純な ON/OFF。"""
+
+    settings: ProtocolSettings
+    code: Literal["PLI", "ESI"]
+    state: Literal[0, 1, "0", "1", "on", "off", "ON", "OFF"] = 1
+    ports: str = Field(min_length=1, max_length=200)
+
+
 class CommandStep(BaseModel):
     type: Literal["command"]
     command: str = Field(min_length=3, max_length=3)
     arguments: dict[str, str | int | float] = Field(default_factory=dict)
+    # True のとき送信後に装置応答を待たず、すぐ次のカードへ進む
+    ignore_response: bool = False
 
 
 class DelayStep(BaseModel):

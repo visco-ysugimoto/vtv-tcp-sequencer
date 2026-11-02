@@ -37,9 +37,19 @@ const state = {
     fn_o_to_t_header_bytes: 4, fn_eds_name: "",
     fn_status_signals: DEFAULT_FN_STATUS_SIGNALS.map((item) => ({ ...item })),
     plclink_status_signals: defaultPlcLinkStatusSignals(1),
+    pli_port_names: {},
+    plo_port_names: {},
+    esi_port_names: {},
+    eso_port_names: {},
   },
   statusSignalDraft: DEFAULT_FN_STATUS_SIGNALS.map((item) => ({ ...item })),
   plclinkStatusSignalDraft: defaultPlcLinkStatusSignals(1),
+  portNameDraft: {
+    pli: {},
+    plo: {},
+    esi: {},
+    eso: {},
+  },
   statusSignalSeq: 1,
   socket: null,
   running: false,
@@ -51,21 +61,36 @@ const state = {
   viewMode: "normal", // "normal" | "compact"
   layoutMode: "workspace", // "workspace" | "monitor"
   watchItems: [],
+  watchRequestItems: [],
   watchValues: {},
   watchRunning: false,
   watchTimer: null,
+  watchSocket: null,
+  watchMode: "http", // "websocket" | "http"
   watchIntervalMs: WATCH_INTERVAL_DEFAULT_MS,
   watchLastCycleAt: 0,
   watchActualMs: null,
   watchFetchMs: null,
+  timingDrawQueued: false,
+  timingInfoLastAt: 0,
+  watchPeriodLastAt: 0,
   timingSelectedIds: [],
   timingNeedsDefaultChannels: true,
   timingSamples: [],
+  timingSampleSeq: 0,
+  /** サーバ時刻 → performance.now 系への原点 { serverMs, localMs } */
+  timingTimeOrigin: null,
+  timingAxisMode: "poll", // "time" | "poll"
+  timingShowScale: true,
   timingWindowMs: 5000,
   timingPanMs: 0,
+  timingWindowPolls: 500,
+  timingPanPolls: 0,
   timingZoomMinMs: 20,
   timingZoomMaxMs: 60000,
-  timingMaxSamples: 20000,
+  timingZoomMinPolls: 20,
+  timingZoomMaxPolls: 20000,
+  timingMaxSamples: 60000,
   timingColors: ["#3dd6c6", "#6ea8fe", "#f0b429", "#f07178", "#c3a6ff", "#7ddea2", "#ff9f68", "#8fd3ff"],
   timingCursorA: null,
   timingCursorB: null,
@@ -123,6 +148,7 @@ function bindEvents() {
   $("#plo-port-count").addEventListener("input", () => {
     updateBusyAddressHint();
     renderPlcLinkStatusSignalTable();
+    renderPortNameTables();
   });
   $("#busy-port").addEventListener("input", updateBusyAddressHint);
   $("#result-data-enabled").addEventListener("change", () => {
@@ -163,6 +189,7 @@ function bindEvents() {
     $(`#${id}`)?.addEventListener("change", () => {
       updateFnLayoutHint();
       if (id === "fn-eso-ports") renderStatusSignalTable();
+      if (id === "fn-esi-ports" || id === "fn-eso-ports") renderPortNameTables();
       refreshMappedWatchItems();
       renderWatchList();
       renderTimingChannelList();
@@ -287,6 +314,8 @@ function bindEvents() {
     $(`#${id}`)?.addEventListener("change", onTimeoutChanged);
   }
   $("#run-button").addEventListener("click", runSequence);
+  $("#local-io-on")?.addEventListener("click", () => setLocalIoPorts(1));
+  $("#local-io-off")?.addEventListener("click", () => setLocalIoPorts(0));
   $("#stop-button").addEventListener("click", stopSequence);
   $("#clear-button").addEventListener("click", () => {
     if (!state.running && confirm("すべてのカードを削除しますか？")) {
@@ -330,6 +359,30 @@ function bindEvents() {
     localStorage.setItem("vtv-timing-window-ms", String(state.timingWindowMs));
     syncTimingWindowSelect();
     updateTimingViewSpan();
+    drawTimingChart();
+  });
+  $("#timing-window-polls")?.addEventListener("change", () => {
+    state.timingWindowPolls = clampTimingWindowPolls(Number($("#timing-window-polls").value) || 500);
+    state.timingPanPolls = 0;
+    localStorage.setItem("vtv-timing-window-polls", String(state.timingWindowPolls));
+    syncTimingWindowSelect();
+    updateTimingViewSpan();
+    drawTimingChart();
+  });
+  $("#timing-axis-mode")?.addEventListener("change", () => {
+    const nextMode = $("#timing-axis-mode").value === "time" ? "time" : "poll";
+    preserveTimingViewAcrossAxisMode(nextMode);
+    state.timingAxisMode = nextMode;
+    localStorage.setItem("vtv-timing-axis-mode", state.timingAxisMode);
+    syncTimingAxisModeUi();
+    syncTimingWindowSelect();
+    updateTimingViewSpan();
+    updateTimingMeasureInfo();
+    drawTimingChart();
+  });
+  $("#timing-show-scale")?.addEventListener("change", () => {
+    state.timingShowScale = !!$("#timing-show-scale").checked;
+    localStorage.setItem("vtv-timing-show-scale", state.timingShowScale ? "1" : "0");
     drawTimingChart();
   });
   $("#timing-channel-list")?.addEventListener("change", (event) => {
@@ -389,9 +442,26 @@ function restoreTimingPreferences() {
       state.timingWindowMs = clampTimingWindowMs(windowMs);
     }
   } catch (_) {}
+  try {
+    const windowPolls = Number(localStorage.getItem("vtv-timing-window-polls"));
+    if (Number.isFinite(windowPolls)) {
+      state.timingWindowPolls = clampTimingWindowPolls(windowPolls);
+    }
+  } catch (_) {}
+  try {
+    const mode = localStorage.getItem("vtv-timing-axis-mode");
+    if (mode === "time" || mode === "poll") state.timingAxisMode = mode;
+  } catch (_) {}
+  try {
+    const show = localStorage.getItem("vtv-timing-show-scale");
+    if (show === "0" || show === "1") state.timingShowScale = show === "1";
+  } catch (_) {}
 }
 
 function applyTimingPreferencesToForm() {
+  if ($("#timing-axis-mode")) $("#timing-axis-mode").value = state.timingAxisMode;
+  if ($("#timing-show-scale")) $("#timing-show-scale").checked = !!state.timingShowScale;
+  syncTimingAxisModeUi();
   syncTimingWindowSelect();
   updateTimingViewSpan();
   updateTimingMeasureInfo();
@@ -402,30 +472,66 @@ function clampTimingWindowMs(value) {
   return Math.min(state.timingZoomMaxMs, Math.max(state.timingZoomMinMs, value));
 }
 
-function syncTimingWindowSelect() {
-  const select = $("#timing-window-ms");
-  if (!select) return;
-  const value = String(Math.round(state.timingWindowMs));
-  const options = [...select.options].map((opt) => opt.value);
-  if (options.includes(value)) select.value = value;
-  else {
-    // 近いプリセットを選択表示（実際の表示幅は state を優先）
-    let best = options[0];
-    let bestDiff = Infinity;
-    for (const opt of options) {
-      const diff = Math.abs(Number(opt) - state.timingWindowMs);
-      if (diff < bestDiff) {
-        bestDiff = diff;
-        best = opt;
-      }
-    }
-    select.value = best;
+function clampTimingWindowPolls(value) {
+  if (!Number.isFinite(value)) return 500;
+  return Math.min(
+    state.timingZoomMaxPolls,
+    Math.max(state.timingZoomMinPolls, Math.round(value)),
+  );
+}
+
+function syncTimingAxisModeUi() {
+  const isPoll = state.timingAxisMode === "poll";
+  $("#timing-window-ms")?.classList.toggle("hidden", isPoll);
+  $("#timing-window-polls")?.classList.toggle("hidden", !isPoll);
+  const hint = $("#timing-measure-info");
+  if (hint && !state.timingCursorA && !state.timingPulse) {
+    hint.textContent = isPoll
+      ? "横軸は実時間線形。目盛りは各 poll の実時刻位置（周期がぶれると間隔が変化）。"
+      : "横軸・目盛りとも実時間（等間隔）。poll ごとのばらつき確認には「ポーリング回数」軸を推奨。";
   }
+}
+
+function syncNearestSelectValue(select, target) {
+  if (!select) return;
+  const value = String(Math.round(target));
+  const options = [...select.options].map((opt) => opt.value);
+  if (options.includes(value)) {
+    select.value = value;
+    return;
+  }
+  let best = options[0];
+  let bestDiff = Infinity;
+  for (const opt of options) {
+    const diff = Math.abs(Number(opt) - target);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = opt;
+    }
+  }
+  select.value = best;
+}
+
+function syncTimingWindowSelect() {
+  syncNearestSelectValue($("#timing-window-ms"), state.timingWindowMs);
+  syncNearestSelectValue($("#timing-window-polls"), state.timingWindowPolls);
 }
 
 function updateTimingViewSpan() {
   const el = $("#timing-view-span");
   if (!el) return;
+  if (state.timingAxisMode === "poll") {
+    const live = state.timingPanPolls <= 0;
+    const range = timingViewRange();
+    const timeSpan = timingVisibleTimeSpan(range.start, range.end);
+    const approx = timeSpan && timeSpan.spanMs > 0
+      ? ` ≈ ${formatTimingDuration(timeSpan.spanMs)}`
+      : "";
+    el.textContent = live
+      ? `表示 ${state.timingWindowPolls} poll${approx}`
+      : `表示 ${state.timingWindowPolls} poll${approx}（過去）`;
+    return;
+  }
   const ms = state.timingWindowMs;
   const live = state.timingPanMs <= 0.5;
   const span = ms >= 1000 ? `${(ms / 1000).toFixed(ms >= 10000 ? 0 : 1)} s` : `${Math.round(ms)} ms`;
@@ -452,6 +558,9 @@ function onWatchIntervalChanged() {
   state.watchIntervalMs = readWatchIntervalMs();
   applyWatchIntervalToForm();
   localStorage.setItem("vtv-watch-interval-ms", String(state.watchIntervalMs));
+  if (state.watchRunning && state.watchMode === "websocket") {
+    startWatchSocket();
+  }
 }
 
 function scheduleNextWatchPoll(elapsedMs = 0) {
@@ -464,16 +573,43 @@ function resetWatchActualPeriod() {
   state.watchLastCycleAt = 0;
   state.watchActualMs = null;
   state.watchFetchMs = null;
+  state.watchPeriodLastAt = 0;
+  state.timingTimeOrigin = null;
   updateWatchActualPeriodDisplay();
+}
+
+/**
+ * 監視サンプルの横軸時刻。
+ * WebSocket はサーバの mono_ms（なければ t）を優先し、performance.now 系に線形写像する。
+ * 受信時刻に依存しないため、ブラウザ側の処理遅れで間隔が潰れるのを防ぐ。
+ */
+function resolveWatchSampleTime(message) {
+  const localNow = performance.now();
+  if (!message || typeof message !== "object") return localNow;
+  const serverMs = Number(
+    Number.isFinite(Number(message.mono_ms)) ? message.mono_ms : message.t,
+  );
+  if (!Number.isFinite(serverMs)) return localNow;
+  if (!state.timingTimeOrigin) {
+    state.timingTimeOrigin = { serverMs, localMs: localNow };
+  }
+  return state.timingTimeOrigin.localMs + (serverMs - state.timingTimeOrigin.serverMs);
 }
 
 function formatWatchActualPeriodText() {
   if (!state.watchRunning || state.watchActualMs == null) return "実測 —";
-  const cycle = Math.max(1, Math.round(state.watchActualMs));
-  const fetchMs = state.watchFetchMs == null ? null : Math.max(0, Math.round(state.watchFetchMs));
+  const cycle = state.watchActualMs < 10
+    ? state.watchActualMs.toFixed(1)
+    : String(Math.max(1, Math.round(state.watchActualMs)));
+  const fetchMs = state.watchFetchMs == null
+    ? null
+    : (state.watchFetchMs < 10
+      ? state.watchFetchMs.toFixed(2)
+      : String(Math.max(0, Math.round(state.watchFetchMs))));
+  const mode = state.watchMode === "websocket" ? "読取" : "取得";
   return fetchMs == null
     ? `実測 ${cycle} ms`
-    : `実測 ${cycle} ms（取得 ${fetchMs} ms）`;
+    : `実測 ${cycle} ms（${mode} ${fetchMs} ms）`;
 }
 
 function updateWatchActualPeriodDisplay() {
@@ -484,6 +620,19 @@ function updateWatchActualPeriodDisplay() {
   if (timingEl) timingEl.textContent = text;
 }
 
+function rebuildWatchRequestItems() {
+  state.watchRequestItems = state.watchItems.map(
+    ({ id, device, address, format, length, decimals }) => ({
+      id,
+      device,
+      address,
+      format,
+      length: length ?? 8,
+      decimals: decimals ?? 3,
+    }),
+  );
+}
+
 function updateWatchNote() {
   const note = $("#watch-note");
   if (!note) return;
@@ -491,13 +640,15 @@ function updateWatchNote() {
   if (transport === "plclink") {
     note.textContent =
       `接続設定のコマンド／レスポンス／PLO から自動生成。`
-      + `更新周期 ${readWatchIntervalMs()} ms（HTTP 取得時間を除く）。`;
+      + `更新周期 ${readWatchIntervalMs()} ms。`
+      + `高速監視は WebSocket 配信（目標 1 ms）。項目数・結果データ監視語数を減らすほど安定します。`;
     return;
   }
   if (transport === "field_network") {
     note.textContent =
       `「結果データ」は VTV と同じく「出力値」(生DWORD) と「データ」(解釈値) を表示します。`
-      + `処理時間などの倍精度は表記を「浮動小数点」にしてください。更新周期 ${readWatchIntervalMs()} ms。`;
+      + `更新周期 ${readWatchIntervalMs()} ms（WebSocket）。`
+      + `I/O の鮮度は RPI が上限です。1 ms 分解能を狙う場合は RPI=1000μs も試せます。`;
     return;
   }
   note.textContent = "PLCLINK / Field Network 接続時に監視が利用できます。";
@@ -651,10 +802,12 @@ function buildMappedWatchItems(settings) {
     if (portLabels[port] && signal.role !== "busy") continue;
     portLabels[port] = `${signal.label} (Port ${port})`;
   }
+  const ploNames = normalizePortNames(settings.plo_port_names);
   for (let port = 1; port <= portCount; port += 1) {
+    const custom = portDisplayLabel(port, ploNames, `Port ${port}`);
     items.push({
       id: `plo-port-${port}`,
-      label: portLabels[port] || `Port ${port}`,
+      label: custom !== `Port ${port}` ? custom : (portLabels[port] || `Port ${port}`),
       group: "PLO出力",
       device: "M",
       address: plo + port - 1,
@@ -663,6 +816,97 @@ function buildMappedWatchItems(settings) {
     });
   }
   return items;
+}
+
+function normalizePortNames(raw) {
+  if (!raw || typeof raw !== "object") return {};
+  const result = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const port = Number(key);
+    if (!Number.isFinite(port) || port < 1 || port > 256) continue;
+    const text = String(value || "").trim().slice(0, 40);
+    if (text) result[String(port)] = text;
+  }
+  return result;
+}
+
+function portDisplayLabel(port, names, fallback) {
+  const custom = (names && names[String(port)]) ? String(names[String(port)]).trim() : "";
+  if (custom) return `${fallback}: ${custom}`;
+  return fallback;
+}
+
+function syncPortNameDraftFromSettings(settings = state.settings) {
+  state.portNameDraft = {
+    pli: normalizePortNames(settings.pli_port_names),
+    plo: normalizePortNames(settings.plo_port_names),
+    esi: normalizePortNames(settings.esi_port_names),
+    eso: normalizePortNames(settings.eso_port_names),
+  };
+}
+
+function capturePortNameDraftFromForm() {
+  for (const kind of ["pli", "plo", "esi", "eso"]) {
+    const body = $(`#${kind}-port-name-body`);
+    if (!body) continue;
+    const names = {};
+    body.querySelectorAll("tr[data-port]").forEach((row) => {
+      const port = row.dataset.port;
+      const value = row.querySelector("input")?.value?.trim() || "";
+      if (value) names[port] = value.slice(0, 40);
+    });
+    state.portNameDraft[kind] = names;
+  }
+}
+
+function renderPortNameTables({ capture = true } = {}) {
+  if (capture) capturePortNameDraftFromForm();
+  const ploCount = Math.max(1, Number($("#plo-port-count")?.value) || Number(state.settings.plo_port_count) || 32);
+  const esiCount = Number($("#fn-esi-ports")?.value ?? state.settings.fn_esi_ports) || 0;
+  const esoCount = Number($("#fn-eso-ports")?.value ?? state.settings.fn_eso_ports) || 0;
+  renderPortNameTable("pli", ploCount);
+  renderPortNameTable("plo", ploCount);
+  renderPortNameTable("esi", esiCount);
+  renderPortNameTable("eso", esoCount);
+}
+
+function renderPortNameTable(kind, count) {
+  const body = $(`#${kind}-port-name-body`);
+  if (!body) return;
+  const names = state.portNameDraft[kind] || {};
+  if (!count) {
+    body.innerHTML = '<tr><td colspan="2" class="port-name-empty">ポート数 0</td></tr>';
+    return;
+  }
+  const rows = [];
+  for (let port = 1; port <= count; port += 1) {
+    const value = names[String(port)] || "";
+    rows.push(`<tr data-port="${port}">
+      <td>${port}</td>
+      <td><input type="text" maxlength="40" value="${escapeHtml(value)}" placeholder="名称（任意）" aria-label="${kind.toUpperCase()} ${port} 名称"></td>
+    </tr>`);
+  }
+  body.innerHTML = rows.join("");
+  body.querySelectorAll("input").forEach((input) => {
+    input.addEventListener("input", () => {
+      const row = input.closest("tr[data-port]");
+      if (!row) return;
+      const port = row.dataset.port;
+      const text = input.value.trim().slice(0, 40);
+      if (text) state.portNameDraft[kind][port] = text;
+      else delete state.portNameDraft[kind][port];
+    });
+  });
+}
+
+function readPortNamesFromForm() {
+  capturePortNameDraftFromForm();
+  return {
+    pli_port_names: { ...(state.portNameDraft.pli || {}) },
+    plo_port_names: { ...(state.portNameDraft.plo || {}) },
+    esi_port_names: { ...(state.portNameDraft.esi || {}) },
+    eso_port_names: { ...(state.portNameDraft.eso || {}) },
+  };
 }
 
 function normalizeStatusSignals(raw) {
@@ -979,10 +1223,12 @@ function buildFnMappedWatchItems(settings) {
     { id: "cmd-trigger", label: "トリガ (+0000)", group: "コマンド領域 (Assem20)", device: "OUT", address: cmd, format: "int32" },
     { id: "cmd-code", label: "コマンドコード (+0002)", group: "コマンド領域 (Assem20)", device: "OUT", address: cmd + 2, format: "int32" },
   );
+  const esoNames = normalizePortNames(settings.eso_port_names);
+  const esiNames = normalizePortNames(settings.esi_port_names);
   for (let port = 1; port <= esoPorts; port += 1) {
     items.push({
       id: `eso-port-${port}`,
-      label: `ESO-${port}`,
+      label: portDisplayLabel(port, esoNames, `ESO-${port}`),
       group: "ESO出力 (Assem10)",
       device: "IN",
       address: esoByte * 8 + (port - 1),
@@ -993,7 +1239,7 @@ function buildFnMappedWatchItems(settings) {
   for (let port = 1; port <= esiShow; port += 1) {
     items.push({
       id: `esi-port-${port}`,
-      label: `ESI-${port}`,
+      label: portDisplayLabel(port, esiNames, `ESI-${port}`),
       group: "ESI入力 (Assem20)",
       device: "OUT",
       address: esiByte * 8 + (port - 1),
@@ -1010,6 +1256,7 @@ function refreshMappedWatchItems() {
   };
   const watchable = settings.transport === "plclink" || settings.transport === "field_network";
   state.watchItems = buildMappedWatchItems(watchable ? settings : state.settings);
+  rebuildWatchRequestItems();
   const keep = new Set(state.watchItems.map((item) => item.id));
   for (const id of Object.keys(state.watchValues)) {
     if (!keep.has(id)) delete state.watchValues[id];
@@ -1217,7 +1464,13 @@ function formatWatchAddress(item) {
 }
 
 function startWatch() {
-  const settings = readSettingsForm();
+  let settings = state.settings;
+  try {
+    settings = readSettingsForm();
+    state.settings = { ...state.settings, ...settings };
+  } catch (_) {
+    settings = state.settings;
+  }
   if (settings.transport !== "plclink" && settings.transport !== "field_network") {
     setWatchStatus("PLCLINK / Field Network を選択してください", "error");
     return;
@@ -1234,15 +1487,16 @@ function startWatch() {
   $("#stop-watch-button").disabled = false;
   $("#start-timing-button") && ($("#start-timing-button").disabled = true);
   $("#stop-timing-button") && ($("#stop-timing-button").disabled = false);
-  setWatchStatus("監視中", "running");
+  setWatchStatus("監視接続中…", "running");
   setTimingStatus("記録中", "running");
-  pollWatchValues();
+  startWatchSocket();
 }
 
 function stopWatch(resetValues = false) {
   state.watchRunning = false;
   clearTimeout(state.watchTimer);
   state.watchTimer = null;
+  closeWatchSocket();
   resetWatchActualPeriod();
   if (resetValues) {
     state.watchValues = {};
@@ -1257,6 +1511,142 @@ function stopWatch(resetValues = false) {
   setTimingStatus(state.timingSamples.length ? "停止（波形は保持）" : "監視開始後に記録します");
 }
 
+function closeWatchSocket() {
+  const socket = state.watchSocket;
+  state.watchSocket = null;
+  if (!socket) return;
+  try {
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "stop" }));
+    }
+  } catch (_) {}
+  try { socket.close(); } catch (_) {}
+}
+
+function watchSocketUrl() {
+  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${location.host}/ws/watch`;
+}
+
+function startWatchSocket() {
+  closeWatchSocket();
+  if (!state.watchRequestItems.length) rebuildWatchRequestItems();
+  const transport = state.settings.transport || $("#transport")?.value;
+  const intervalMs = readWatchIntervalMs();
+  let socket;
+  try {
+    socket = new WebSocket(watchSocketUrl());
+  } catch (error) {
+    setWatchStatus(`WS接続失敗: ${error.message}（HTTPへ切替）`, "error");
+    state.watchMode = "http";
+    pollWatchValues();
+    return;
+  }
+  state.watchSocket = socket;
+  state.watchMode = "websocket";
+  socket.addEventListener("open", () => {
+    if (!state.watchRunning || state.watchSocket !== socket) return;
+    socket.send(JSON.stringify({
+      type: "start",
+      transport,
+      interval_ms: intervalMs,
+      items: state.watchRequestItems,
+    }));
+  });
+  socket.addEventListener("message", (event) => {
+    if (!state.watchRunning || state.watchSocket !== socket) return;
+    let message;
+    try { message = JSON.parse(event.data); } catch (_) { return; }
+    handleWatchSocketMessage(message);
+  });
+  socket.addEventListener("error", () => {
+    if (state.watchSocket !== socket) return;
+    setWatchStatus("WSエラー — HTTPポールへ切替", "error");
+    closeWatchSocket();
+    if (state.watchRunning) {
+      state.watchMode = "http";
+      pollWatchValues();
+    }
+  });
+  socket.addEventListener("close", () => {
+    if (state.watchSocket !== socket) return;
+    state.watchSocket = null;
+    if (state.watchRunning && state.watchMode === "websocket") {
+      setWatchStatus("WS切断 — 再接続待ち", "error");
+      state.watchTimer = setTimeout(() => {
+        if (state.watchRunning) startWatchSocket();
+      }, 500);
+    }
+  });
+}
+
+function handleWatchSocketMessage(message) {
+  if (!message || typeof message !== "object") return;
+  if (message.type === "ready") {
+    setWatchStatus(`監視中 (WS ${Math.round(message.interval_ms)} ms)`, "running");
+    return;
+  }
+  if (message.type === "error") {
+    setWatchStatus(`監視エラー: ${message.message || "不明"}`, "error");
+    setTimingStatus(`監視エラー: ${message.message || "不明"}`, "error");
+    return;
+  }
+  if (message.type !== "sample") return;
+
+  const sampleAt = resolveWatchSampleTime(message);
+  if (state.watchLastCycleAt > 0) {
+    const cycleMs = sampleAt - state.watchLastCycleAt;
+    // サーバ時刻の逆行・重複は無視（表示が壊れないように）
+    if (cycleMs >= 0) {
+      state.watchActualMs = state.watchActualMs == null
+        ? cycleMs
+        : (state.watchActualMs * 0.7) + (cycleMs * 0.3);
+    }
+  }
+  state.watchLastCycleAt = sampleAt;
+  const serverDt = Number(message.dt_ms);
+  state.watchFetchMs = Number.isFinite(serverDt)
+    ? (state.watchFetchMs == null ? serverDt : (state.watchFetchMs * 0.7) + (serverDt * 0.3))
+    : state.watchFetchMs;
+
+  const changed = new Set();
+  const incoming = Array.isArray(message.values) ? message.values : [];
+  if (message.full) {
+    const nextValues = {};
+    for (const snapshot of incoming) {
+      nextValues[snapshot.id] = snapshot;
+      if (watchSnapshotChanged(state.watchValues[snapshot.id], snapshot)) {
+        changed.add(snapshot.id);
+      }
+    }
+    state.watchValues = nextValues;
+  } else {
+    for (const snapshot of incoming) {
+      const prev = state.watchValues[snapshot.id];
+      state.watchValues[snapshot.id] = snapshot;
+      if (watchSnapshotChanged(prev, snapshot) || prev === undefined) {
+        changed.add(snapshot.id);
+      }
+    }
+  }
+  if (changed.size) updateWatchValueDisplays(changed);
+  // 値が変わらなくてもサンプルを積む（時間軸はサーバ時刻）
+  recordTimingSample(sampleAt, state.watchValues);
+  const uiNow = performance.now();
+  if (uiNow - (state.watchPeriodLastAt || 0) > 100) {
+    state.watchPeriodLastAt = uiNow;
+    updateWatchActualPeriodDisplay();
+  }
+}
+
+function watchSnapshotChanged(prev, next) {
+  if (prev === undefined) return false;
+  if (prev.valid !== next.valid) return true;
+  if (prev.value !== next.value) return true;
+  // float などは number 比較で足りる。オブジェクト値は稀なので文字列化は避ける
+  return false;
+}
+
 async function pollWatchValues() {
   if (!state.watchRunning) return;
   const started = performance.now();
@@ -1268,27 +1658,16 @@ async function pollWatchValues() {
   }
   state.watchLastCycleAt = started;
 
-  const liveSettings = ($("#transport") && readSettingsForm()) || state.settings;
-  const transport = liveSettings.transport || state.settings.transport;
+  const transport = state.settings.transport || $("#transport")?.value;
   const endpoint = transport === "field_network"
     ? "/api/field-network/memory/read"
     : "/api/plclink/memory/read";
+  if (!state.watchRequestItems.length) rebuildWatchRequestItems();
   try {
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        items: state.watchItems.map(({ id, label, group, device, address, format, length, decimals }) => ({
-          id,
-          label: label || "",
-          group: group || "",
-          device,
-          address,
-          format,
-          length: length ?? 8,
-          decimals: decimals ?? 3,
-        })),
-      }),
+      body: JSON.stringify({ items: state.watchRequestItems }),
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || "監視データを取得できません");
@@ -1296,10 +1675,9 @@ async function pollWatchValues() {
     const nextValues = {};
     for (const snapshot of data.values) {
       nextValues[snapshot.id] = snapshot;
-      if (
-        state.watchValues[snapshot.id] !== undefined
-        && JSON.stringify(state.watchValues[snapshot.id]) !== JSON.stringify(snapshot)
-      ) changed.add(snapshot.id);
+      if (watchSnapshotChanged(state.watchValues[snapshot.id], snapshot)) {
+        changed.add(snapshot.id);
+      }
     }
     state.watchValues = nextValues;
     setWatchStatus("監視中", "running");
@@ -1350,6 +1728,21 @@ function formatTimingDuration(ms) {
   return `${(ms / 1000).toFixed(2)} s`;
 }
 
+function formatTimingPolls(polls) {
+  if (!Number.isFinite(polls) || polls < 0) return "—";
+  const n = Math.round(polls);
+  return `${n} poll`;
+}
+
+function timingIsPollAxis() {
+  return state.timingAxisMode === "poll";
+}
+
+function timingSampleDomain(sample) {
+  if (!sample) return 0;
+  return timingIsPollAxis() ? (sample.n ?? 0) : sample.t;
+}
+
 function clearTimingMeasure() {
   state.timingCursorA = null;
   state.timingCursorB = null;
@@ -1360,15 +1753,25 @@ function clearTimingMeasure() {
 
 function clearTimingSamples() {
   state.timingSamples = [];
+  state.timingSampleSeq = 0;
+  state.timingTimeOrigin = null;
   clearTimingMeasure();
   updateTimingSampleInfo();
   drawTimingChart();
 }
 
 function resetTimingView() {
-  state.timingWindowMs = Number($("#timing-window-ms")?.value) || 5000;
-  state.timingWindowMs = clampTimingWindowMs(state.timingWindowMs);
-  state.timingPanMs = 0;
+  if (timingIsPollAxis()) {
+    state.timingWindowPolls = clampTimingWindowPolls(
+      Number($("#timing-window-polls")?.value) || state.timingWindowPolls || 500,
+    );
+    state.timingPanPolls = 0;
+  } else {
+    state.timingWindowMs = clampTimingWindowMs(
+      Number($("#timing-window-ms")?.value) || state.timingWindowMs || 5000,
+    );
+    state.timingPanMs = 0;
+  }
   syncTimingWindowSelect();
   updateTimingViewSpan();
   drawTimingChart();
@@ -1379,52 +1782,284 @@ function timingLatestT() {
   return performance.now();
 }
 
-function timingViewRange() {
-  const windowMs = clampTimingWindowMs(state.timingWindowMs);
-  const latest = timingLatestT();
-  const pan = Math.max(0, state.timingPanMs || 0);
-  const tEnd = latest - pan;
-  const tStart = tEnd - windowMs;
-  return { tStart, tEnd, windowMs, latest, live: pan <= 0.5 };
+function timingLatestN() {
+  if (state.timingSamples.length) return state.timingSamples[state.timingSamples.length - 1].n ?? 0;
+  return state.timingSampleSeq;
 }
 
-function zoomTimingWindow(factor, anchorT = null) {
+function timingLatestDomain() {
+  return timingIsPollAxis() ? timingLatestN() : timingLatestT();
+}
+
+function timingViewRange() {
+  if (timingIsPollAxis()) {
+    const span = clampTimingWindowPolls(state.timingWindowPolls);
+    const latest = timingLatestN();
+    const pan = Math.max(0, state.timingPanPolls || 0);
+    const end = latest - pan;
+    const start = end - span;
+    const visible = timingVisibleTimeSpan(start, end);
+    const latestT = timingLatestT();
+    const plotStart = visible?.tStart ?? latestT;
+    const plotEnd = visible?.tEnd ?? latestT;
+    const plotSpan = Math.max(1e-3, plotEnd - plotStart);
+    return {
+      start, end, span, latest, live: pan <= 0,
+      plotStart, plotEnd, plotSpan,
+      samples: visible?.samples || [],
+      tStart: plotStart, tEnd: plotEnd, windowMs: span,
+    };
+  }
+  const span = clampTimingWindowMs(state.timingWindowMs);
+  const latest = timingLatestT();
+  const pan = Math.max(0, state.timingPanMs || 0);
+  const end = latest - pan;
+  const start = end - span;
+  return {
+    start, end, span, latest, live: pan <= 0.5,
+    plotStart: start, plotEnd: end, plotSpan: Math.max(1e-3, span),
+    samples: null,
+    tStart: start, tEnd: end, windowMs: span,
+  };
+}
+
+function zoomTimingWindow(factor, anchor = null) {
   const before = timingViewRange();
-  const anchor = anchorT == null ? (before.tStart + before.tEnd) / 2 : anchorT;
-  const ratio = before.windowMs <= 0 ? 0.5 : (anchor - before.tStart) / before.windowMs;
-  const nextWindow = clampTimingWindowMs(before.windowMs * factor);
-  const nextStart = anchor - ratio * nextWindow;
-  const nextEnd = nextStart + nextWindow;
-  state.timingWindowMs = nextWindow;
-  state.timingPanMs = Math.max(0, before.latest - nextEnd);
-  localStorage.setItem("vtv-timing-window-ms", String(Math.round(nextWindow)));
+  const pivot = anchor == null ? (before.start + before.end) / 2 : anchor;
+  const ratio = before.span <= 0 ? 0.5 : (pivot - before.start) / before.span;
+  if (timingIsPollAxis()) {
+    const nextSpan = clampTimingWindowPolls(before.span * factor);
+    const nextStart = pivot - ratio * nextSpan;
+    const nextEnd = nextStart + nextSpan;
+    state.timingWindowPolls = nextSpan;
+    state.timingPanPolls = Math.max(0, Math.round(before.latest - nextEnd));
+    localStorage.setItem("vtv-timing-window-polls", String(nextSpan));
+  } else {
+    const nextSpan = clampTimingWindowMs(before.span * factor);
+    const nextStart = pivot - ratio * nextSpan;
+    const nextEnd = nextStart + nextSpan;
+    state.timingWindowMs = nextSpan;
+    state.timingPanMs = Math.max(0, before.latest - nextEnd);
+    localStorage.setItem("vtv-timing-window-ms", String(Math.round(nextSpan)));
+  }
   syncTimingWindowSelect();
   updateTimingViewSpan();
   drawTimingChart();
+}
+
+function formatTimingTimeAge(ageMs, live, { precise = false } = {}) {
+  if (!Number.isFinite(ageMs)) return "—";
+  if (ageMs <= 0.05) return live ? "0" : (precise ? "0.0 ms" : formatTimingDuration(0));
+  // 1 poll 刻みでは整数 ms だとラベルが潰れるため、短い区間は小数表示
+  if (precise && ageMs < 1000) {
+    const digits = ageMs < 10 ? 2 : 1;
+    return `-${ageMs.toFixed(digits)} ms`;
+  }
+  return `-${formatTimingDuration(ageMs)}`;
+}
+
+function formatTimingDelta(delta) {
+  return timingIsPollAxis() ? `Δ ${formatTimingPolls(delta)}` : `Δt ${formatTimingDuration(delta)}`;
+}
+
+function timingNiceTimeStep(spanMs) {
+  const niceSteps = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 30000, 60000];
+  let step = niceSteps[0];
+  for (const candidate of niceSteps) {
+    if (spanMs / candidate <= 8) {
+      step = candidate;
+      break;
+    }
+    step = candidate;
+  }
+  return step;
+}
+
+/** ポーリング軸の目盛り間隔（拡大時は 1 poll 刻みにして回数と一致させる） */
+function timingNicePollStep(spanPolls) {
+  const niceSteps = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
+  let step = niceSteps[0];
+  for (const candidate of niceSteps) {
+    // 最大おおよそ 20 本まで許可（十分拡大すれば 1 poll = 1 目盛り）
+    if (spanPolls / candidate <= 20) {
+      step = candidate;
+      break;
+    }
+    step = candidate;
+  }
+  return step;
+}
+
+function timingSamplesAroundPollRange(startN, endN) {
+  const pad = 2;
+  const out = [];
+  for (const sample of state.timingSamples) {
+    const n = sample.n ?? 0;
+    if (n < startN - pad) continue;
+    if (n > endN + pad) break;
+    out.push(sample);
+  }
+  return out;
+}
+
+/** ポーリング番号 → 実時刻（近傍サンプルから線形補間） */
+function timingTimeAtPoll(pollN, samples = null) {
+  const list = samples || state.timingSamples;
+  if (!list.length || !Number.isFinite(pollN)) return null;
+  let lo = null;
+  let hi = null;
+  for (const sample of list) {
+    const n = sample.n ?? 0;
+    if (n <= pollN) lo = sample;
+    if (n >= pollN) {
+      hi = sample;
+      break;
+    }
+  }
+  if (lo && hi) {
+    const n0 = lo.n ?? 0;
+    const n1 = hi.n ?? 0;
+    if (n1 === n0) return lo.t;
+    const r = (pollN - n0) / (n1 - n0);
+    return lo.t + r * (hi.t - lo.t);
+  }
+  if (lo) return lo.t;
+  if (hi) return hi.t;
+  return null;
+}
+
+/** 実時刻 → ポーリング番号（近傍サンプルから線形補間） */
+function timingPollAtTime(targetT, samples = null) {
+  const list = samples || state.timingSamples;
+  if (!list.length || !Number.isFinite(targetT)) return null;
+  if (targetT <= list[0].t) return list[0].n ?? 0;
+  const last = list[list.length - 1];
+  if (targetT >= last.t) return last.n ?? 0;
+  for (let i = 1; i < list.length; i += 1) {
+    const a = list[i - 1];
+    const b = list[i];
+    if (targetT > b.t) continue;
+    const dt = b.t - a.t;
+    if (dt <= 0) return a.n ?? 0;
+    const r = (targetT - a.t) / dt;
+    return (a.n ?? 0) + r * ((b.n ?? 0) - (a.n ?? 0));
+  }
+  return last.n ?? 0;
+}
+
+/** 時間軸モード切替時に、いま見ている区間・カーソルをできるだけ維持する */
+function preserveTimingViewAcrossAxisMode(nextMode) {
+  const prevMode = state.timingAxisMode;
+  if (prevMode === nextMode) return;
+  if (!state.timingSamples.length) return;
+
+  const before = timingViewRange();
+  const samples = state.timingSamples;
+
+  if (nextMode === "time") {
+    const tStart = timingTimeAtPoll(before.start, samples);
+    const tEnd = timingTimeAtPoll(before.end, samples);
+    if (tStart != null && tEnd != null && tEnd > tStart) {
+      state.timingWindowMs = clampTimingWindowMs(tEnd - tStart);
+      state.timingPanMs = Math.max(0, timingLatestT() - tEnd);
+      localStorage.setItem("vtv-timing-window-ms", String(Math.round(state.timingWindowMs)));
+    }
+    state.timingCursorA = state.timingCursorA != null
+      ? timingTimeAtPoll(state.timingCursorA, samples)
+      : null;
+    state.timingCursorB = state.timingCursorB != null
+      ? timingTimeAtPoll(state.timingCursorB, samples)
+      : null;
+  } else {
+    const nStart = timingPollAtTime(before.start, samples);
+    const nEnd = timingPollAtTime(before.end, samples);
+    if (nStart != null && nEnd != null && nEnd > nStart) {
+      state.timingWindowPolls = clampTimingWindowPolls(nEnd - nStart);
+      state.timingPanPolls = Math.max(0, Math.round(timingLatestN() - nEnd));
+      localStorage.setItem("vtv-timing-window-polls", String(state.timingWindowPolls));
+    }
+    state.timingCursorA = state.timingCursorA != null
+      ? timingPollAtTime(state.timingCursorA, samples)
+      : null;
+    state.timingCursorB = state.timingCursorB != null
+      ? timingPollAtTime(state.timingCursorB, samples)
+      : null;
+  }
+
+  if (state.timingPulse && state.timingCursorA == null && state.timingCursorB == null) {
+    state.timingPulse = null;
+  }
+}
+
+function timingVisibleTimeSpan(startN, endN) {
+  const samples = timingSamplesAroundPollRange(startN, endN);
+  if (samples.length < 2) {
+    const t0 = timingTimeAtPoll(startN, samples);
+    const t1 = timingTimeAtPoll(endN, samples);
+    if (t0 == null || t1 == null) return null;
+    return { tStart: t0, tEnd: t1, spanMs: Math.max(0, t1 - t0), samples };
+  }
+  const tStart = timingTimeAtPoll(startN, samples) ?? samples[0].t;
+  const tEnd = timingTimeAtPoll(endN, samples) ?? samples[samples.length - 1].t;
+  return { tStart, tEnd, spanMs: Math.max(0, tEnd - tStart), samples };
+}
+
+function formatTimingPulseLength(pulse) {
+  if (!pulse) return "—";
+  if (timingIsPollAxis()) {
+    const polls = Math.max(0, (pulse.nEnd ?? 0) - (pulse.nStart ?? 0));
+    const ms = Math.max(0, pulse.tEnd - pulse.tStart);
+    return `${formatTimingPolls(polls)} (${formatTimingDuration(ms)})`;
+  }
+  return formatTimingDuration(pulse.tEnd - pulse.tStart);
 }
 
 function updateTimingMeasureInfo() {
   const el = $("#timing-measure-info");
   if (!el) return;
   const parts = [];
+  const latest = timingLatestDomain();
   if (state.timingCursorA != null) {
-    parts.push(`A=${formatTimingDuration(timingLatestT() - state.timingCursorA)}前`);
+    if (timingIsPollAxis()) {
+      const agePolls = latest - state.timingCursorA;
+      const tLatest = timingTimeAtPoll(latest);
+      const tA = timingTimeAtPoll(state.timingCursorA);
+      const ageMs = tLatest != null && tA != null ? tLatest - tA : null;
+      parts.push(
+        ageMs != null
+          ? `A=${formatTimingPolls(agePolls)}前（${formatTimingDuration(ageMs)}）`
+          : `A=${formatTimingPolls(agePolls)}前`,
+      );
+    } else {
+      parts.push(`A=${formatTimingDuration(latest - state.timingCursorA)}前`);
+    }
   }
   if (state.timingCursorA != null && state.timingCursorB != null) {
-    const dt = Math.abs(state.timingCursorB - state.timingCursorA);
-    parts.push(`Δt ${formatTimingDuration(dt)}`);
+    const delta = Math.abs(state.timingCursorB - state.timingCursorA);
+    if (timingIsPollAxis()) {
+      const tA = timingTimeAtPoll(state.timingCursorA);
+      const tB = timingTimeAtPoll(state.timingCursorB);
+      const dt = tA != null && tB != null ? Math.abs(tB - tA) : null;
+      parts.push(
+        dt != null
+          ? `${formatTimingDelta(delta)} / Δt ${formatTimingDuration(dt)}`
+          : formatTimingDelta(delta),
+      );
+    } else {
+      parts.push(formatTimingDelta(delta));
+    }
   } else if (state.timingCursorA != null && state.timingCursorB == null) {
     parts.push("B をクリックで区間測定");
   }
   if (state.timingPulse) {
     const pulse = state.timingPulse;
     const label = state.watchItems.find((item) => item.id === pulse.id)?.label || pulse.id;
-    parts.push(
-      `${label} ${pulse.value ? "ON" : "OFF"} ${formatTimingDuration(pulse.tEnd - pulse.tStart)}`,
-    );
+    parts.push(`${label} ${pulse.value ? "ON" : "OFF"} ${formatTimingPulseLength(pulse)}`);
   }
   if (!parts.length) {
-    el.textContent = "クリックでカーソル A/B（Δt と信号長）。ドラッグでパン。ホイールで拡大／縮小。";
+    el.textContent = timingIsPollAxis()
+      ? "横軸は実時間線形。目盛りは各 poll の実時刻（周期がぶれると間隔が変化）。クリックで A/B。"
+      : "横軸・目盛りとも実時間。クリックでカーソル A/B（Δt と信号長）。";
     return;
   }
   el.textContent = parts.join(" ｜ ");
@@ -1472,40 +2107,82 @@ function recordTimingSample(t, values) {
     updateTimingSampleInfo();
     return;
   }
-  state.timingSamples.push({ t, bits });
-  const { windowMs } = timingViewRange();
-  const keepFrom = t - Math.max(windowMs * 4, (state.timingPanMs || 0) + windowMs * 2, 60000);
+  state.timingSampleSeq += 1;
+  const n = state.timingSampleSeq;
+  state.timingSamples.push({ t, n, bits });
+  const keepFromT = t - Math.max(
+    clampTimingWindowMs(state.timingWindowMs) * 4,
+    (state.timingPanMs || 0) + clampTimingWindowMs(state.timingWindowMs) * 2,
+    60000,
+  );
+  const keepFromN = n - Math.max(
+    clampTimingWindowPolls(state.timingWindowPolls) * 4,
+    (state.timingPanPolls || 0) + clampTimingWindowPolls(state.timingWindowPolls) * 2,
+    20000,
+  );
   while (state.timingSamples.length > state.timingMaxSamples) state.timingSamples.shift();
-  while (state.timingSamples.length && state.timingSamples[0].t < keepFrom) {
+  while (
+    state.timingSamples.length
+    && state.timingSamples[0].t < keepFromT
+    && (state.timingSamples[0].n ?? 0) < keepFromN
+  ) {
     state.timingSamples.shift();
   }
-  updateTimingSampleInfo();
-  updateTimingViewSpan();
-  if (state.watchRunning) setTimingStatus("記録中", "running");
-  if (!$("#monitor-timing-panel")?.classList.contains("hidden")) {
-    drawTimingChart();
+  const now = performance.now();
+  if (now - state.timingInfoLastAt > 200) {
+    state.timingInfoLastAt = now;
+    updateTimingSampleInfo();
+    updateTimingViewSpan();
   }
+  if (state.watchRunning) setTimingStatus("記録中", "running");
+  queueTimingChartDraw();
 }
 
-function timingChannelPoints(itemId, tStart, tEnd) {
+function queueTimingChartDraw() {
+  if ($("#monitor-timing-panel")?.classList.contains("hidden")) return;
+  if (state.timingDrawQueued) return;
+  state.timingDrawQueued = true;
+  requestAnimationFrame(() => {
+    state.timingDrawQueued = false;
+    if (!$("#monitor-timing-panel")?.classList.contains("hidden")) {
+      drawTimingChart();
+    }
+  });
+}
+
+function timingChannelPoints(itemId, start, end) {
   const points = [];
+  if (timingIsPollAxis()) {
+    // 窓は poll 番号、描画座標 d は実時間（時間線形）
+    const pad = 2;
+    for (const sample of state.timingSamples) {
+      const n = sample.n ?? 0;
+      if (n < start - pad) continue;
+      if (n > end + pad) break;
+      const v = sample.bits[itemId];
+      if (v == null) continue;
+      points.push({ t: sample.t, n, d: sample.t, v });
+    }
+    return points;
+  }
+  const pad = 50;
   for (const sample of state.timingSamples) {
-    if (sample.t < tStart - 50) continue;
-    if (sample.t > tEnd + 50) break;
+    if (sample.t < start - pad) continue;
+    if (sample.t > end + pad) break;
     const v = sample.bits[itemId];
     if (v == null) continue;
-    points.push({ t: sample.t, v });
+    points.push({ t: sample.t, n: sample.n, d: sample.t, v });
   }
   return points;
 }
 
-function findTimingPulseAt(itemId, t) {
+function findTimingPulseAt(itemId, domainPos) {
   if (!state.timingSamples.length) return null;
   let idx = -1;
   for (let i = 0; i < state.timingSamples.length; i += 1) {
     const v = state.timingSamples[i].bits[itemId];
     if (v == null) continue;
-    if (state.timingSamples[i].t <= t) idx = i;
+    if (timingSampleDomain(state.timingSamples[i]) <= domainPos) idx = i;
     else break;
   }
   if (idx < 0) return null;
@@ -1522,15 +2199,25 @@ function findTimingPulseAt(itemId, t) {
     if (next == null || next !== value) break;
     endIdx += 1;
   }
-  const tStart = state.timingSamples[startIdx].t;
+  const startSample = state.timingSamples[startIdx];
   let tEnd;
+  let nEnd;
   if (endIdx < state.timingSamples.length - 1) {
-    // 次サンプルの時刻がエッジ
+    // 次サンプルがエッジ
     tEnd = state.timingSamples[endIdx + 1].t;
+    nEnd = state.timingSamples[endIdx + 1].n ?? (endIdx + 2);
   } else {
     tEnd = timingLatestT();
+    nEnd = timingLatestN();
   }
-  return { id: itemId, value: value ? 1 : 0, tStart, tEnd };
+  return {
+    id: itemId,
+    value: value ? 1 : 0,
+    tStart: startSample.t,
+    tEnd,
+    nStart: startSample.n ?? (startIdx + 1),
+    nEnd,
+  };
 }
 
 function bindTimingChartInteractions() {
@@ -1551,19 +2238,29 @@ function bindTimingChartInteractions() {
     if (!geom) return;
     const { x } = pointerPos(event);
     const ratio = Math.min(1, Math.max(0, (x - geom.padL) / geom.chartW));
-    const anchorT = geom.tStart + ratio * geom.windowMs;
-    zoomTimingWindow(event.deltaY > 0 ? 1.25 : 0.8, anchorT);
+    const plotPos = geom.plotStart + ratio * geom.plotSpan;
+    let anchor = plotPos;
+    if (timingIsPollAxis()) {
+      const poll = timingPollAtTime(plotPos, geom.samples);
+      anchor = poll == null ? (geom.start + geom.end) / 2 : poll;
+    }
+    zoomTimingWindow(event.deltaY > 0 ? 1.25 : 0.8, anchor);
   }, { passive: false });
 
   canvas.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
     const { x, y } = pointerPos(event);
+    const geom = state.timingChartGeom;
     state.timingPointer = {
       x,
       y,
       startX: x,
       startY: y,
-      startPan: state.timingPanMs,
+      startPan: timingIsPollAxis() ? state.timingPanPolls : state.timingPanMs,
+      startPlotEnd: geom?.plotEnd ?? 0,
+      startPlotSpan: geom?.plotSpan ?? 1,
+      startLatest: timingLatestN(),
+      startSpan: geom?.span ?? 1,
       dragged: false,
       pointerId: event.pointerId,
     };
@@ -1580,8 +2277,21 @@ function bindTimingChartInteractions() {
     const dy = y - ptr.startY;
     if (!ptr.dragged && Math.hypot(dx, dy) > 4) ptr.dragged = true;
     if (!ptr.dragged) return;
-    const dt = (-dx / geom.chartW) * geom.windowMs;
-    state.timingPanMs = Math.max(0, ptr.startPan + dt);
+    if (timingIsPollAxis()) {
+      // 横軸は実時間線形なので、ドラッグ量も時刻→poll に変換する
+      const dt = (-dx / geom.chartW) * (ptr.startPlotSpan || geom.plotSpan);
+      const nextEndT = ptr.startPlotEnd + dt;
+      const nextEndPoll = timingPollAtTime(nextEndT);
+      if (nextEndPoll != null) {
+        state.timingPanPolls = Math.max(0, Math.round(ptr.startLatest - nextEndPoll));
+      } else {
+        const deltaPolls = (-dx / geom.chartW) * (ptr.startSpan || geom.span);
+        state.timingPanPolls = Math.max(0, Math.round(ptr.startPan + deltaPolls));
+      }
+    } else {
+      const delta = (-dx / geom.chartW) * geom.span;
+      state.timingPanMs = Math.max(0, ptr.startPan + delta);
+    }
     ptr.x = x;
     ptr.y = y;
     updateTimingViewSpan();
@@ -1594,19 +2304,25 @@ function bindTimingChartInteractions() {
     const geom = state.timingChartGeom;
     const { x, y } = pointerPos(event);
     if (!ptr.dragged && geom && geom.chartW > 0) {
-      const t = geom.tStart + ((x - geom.padL) / geom.chartW) * geom.windowMs;
-      const clampedT = Math.min(geom.tEnd, Math.max(geom.tStart, t));
+      const plotPos = geom.plotStart + ((x - geom.padL) / geom.chartW) * geom.plotSpan;
+      let clamped;
+      if (timingIsPollAxis()) {
+        const poll = timingPollAtTime(plotPos, geom.samples);
+        clamped = Math.min(geom.end, Math.max(geom.start, poll ?? geom.end));
+      } else {
+        clamped = Math.min(geom.end, Math.max(geom.start, plotPos));
+      }
       if (state.timingCursorA == null || (state.timingCursorA != null && state.timingCursorB != null)) {
-        state.timingCursorA = clampedT;
+        state.timingCursorA = clamped;
         state.timingCursorB = null;
       } else {
-        state.timingCursorB = clampedT;
+        state.timingCursorB = clamped;
       }
       const lane = geom.lanes.find((item) => y >= item.top && y <= item.bottom);
       if (lane) {
-        state.timingPulse = findTimingPulseAt(lane.id, clampedT);
+        state.timingPulse = findTimingPulseAt(lane.id, clamped);
       } else if (state.timingSelectedIds[0]) {
-        state.timingPulse = findTimingPulseAt(state.timingSelectedIds[0], clampedT);
+        state.timingPulse = findTimingPulseAt(state.timingSelectedIds[0], clamped);
       }
       updateTimingMeasureInfo();
       drawTimingChart();
@@ -1637,17 +2353,26 @@ function drawTimingChart() {
   const selected = state.timingSelectedIds
     .map((id) => state.watchItems.find((item) => item.id === id))
     .filter(Boolean);
+  const showScale = !!state.timingShowScale;
   const padL = 8;
   const padR = 12;
   const padT = 10;
-  const padB = 28;
+  const padB = showScale ? 28 : 10;
   const chartW = cssW - padL - padR;
   const chartH = cssH - padT - padB;
-  const { tStart, tEnd, windowMs, live } = timingViewRange();
+  const range = timingViewRange();
+  const { start, end, span, live, plotStart, plotEnd, plotSpan } = range;
+  const plotSamples = range.samples;
   const lanes = [];
+  const isLive = live;
 
   state.timingChartGeom = {
-    padL, padR, padT, padB, chartW, chartH, cssW, cssH, tStart, tEnd, windowMs, lanes,
+    padL, padR, padT, padB, chartW, chartH, cssW, cssH,
+    start, end, span,
+    plotStart, plotEnd, plotSpan,
+    samples: plotSamples,
+    tStart: plotStart, tEnd: plotEnd, windowMs: span,
+    lanes,
   };
 
   if (!selected.length) {
@@ -1659,37 +2384,63 @@ function drawTimingChart() {
 
   const laneH = chartH / selected.length;
   const bitItems = timingBitItems();
-  const xOf = (t) => padL + ((t - tStart) / windowMs) * chartW;
+  // 描画座標は常に実時間線形（ポーリング軸でも plotStart/plotEnd は時刻）
+  const xOf = (t) => padL + ((t - plotStart) / plotSpan) * chartW;
 
-  // 時間グリッド（おおよそ 5〜8 本）
-  const niceSteps = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 30000, 60000];
-  let step = niceSteps[0];
-  for (const candidate of niceSteps) {
-    if (windowMs / candidate <= 8) {
-      step = candidate;
-      break;
+  // 横軸グリッド
+  // ポーリング軸: 各 poll の実時刻位置に目盛り（周期がぶれると間隔が不均一）
+  if (showScale) {
+    const drawScaleTick = (x, label) => {
+      if (!Number.isFinite(x) || x < padL - 1 || x > padL + chartW + 1) return;
+      ctx.strokeStyle = "#1e2a3d";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x, padT);
+      ctx.lineTo(x, padT + chartH);
+      ctx.stroke();
+      ctx.fillStyle = "#68758d";
+      ctx.font = "10px Consolas, monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(label, x, cssH - 10);
+    };
+
+    if (timingIsPollAxis()) {
+      const step = timingNicePollStep(span);
+      const samples = plotSamples?.length
+        ? plotSamples
+        : timingSamplesAroundPollRange(start, end);
+      const tEnd = timingTimeAtPoll(end, samples) ?? plotEnd;
+      const preciseLabels = step <= 2;
+      const firstTick = Math.ceil(start / step) * step;
+      for (let tick = firstTick; tick <= end + 0.01; tick += step) {
+        const t = timingTimeAtPoll(tick, samples);
+        if (t == null) continue;
+        let label;
+        if (tEnd != null) {
+          label = formatTimingTimeAge(tEnd - t, isLive, { precise: preciseLabels });
+        } else {
+          const agePolls = end - tick;
+          label = agePolls <= 0 ? (isLive ? "0" : "0 poll") : `-${formatTimingPolls(agePolls)}`;
+        }
+        drawScaleTick(xOf(t), label);
+      }
+    } else {
+      const niceSteps = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 30000, 60000];
+      let step = niceSteps[0];
+      for (const candidate of niceSteps) {
+        if (span / candidate <= 8) {
+          step = candidate;
+          break;
+        }
+        step = candidate;
+      }
+      const firstTick = Math.ceil(start / step) * step;
+      for (let tick = firstTick; tick <= end + 0.1; tick += step) {
+        drawScaleTick(xOf(tick), formatTimingTimeAge(end - tick, isLive));
+      }
     }
-    step = candidate;
+    ctx.textAlign = "left";
   }
-  ctx.strokeStyle = "#1e2a3d";
-  ctx.lineWidth = 1;
-  const firstTick = Math.ceil(tStart / step) * step;
-  for (let tick = firstTick; tick <= tEnd + 0.1; tick += step) {
-    const x = xOf(tick);
-    ctx.beginPath();
-    ctx.moveTo(x, padT);
-    ctx.lineTo(x, padT + chartH);
-    ctx.stroke();
-    const age = tEnd - tick;
-    ctx.fillStyle = "#68758d";
-    ctx.font = "10px Consolas, monospace";
-    ctx.textAlign = "center";
-    const label = age <= 0.5
-      ? (live ? "0" : formatTimingDuration(0))
-      : `-${formatTimingDuration(age)}`;
-    ctx.fillText(label, x, cssH - 10);
-  }
-  ctx.textAlign = "left";
 
   selected.forEach((item, index) => {
     const top = padT + laneH * index;
@@ -1724,7 +2475,7 @@ function drawTimingChart() {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // 測定中のパルスを薄くハイライト
+    // 測定中のパルスを薄くハイライト（描画は実時間）
     if (state.timingPulse && state.timingPulse.id === item.id) {
       const px0 = Math.max(padL, xOf(state.timingPulse.tStart));
       const px1 = Math.min(padL + chartW, xOf(state.timingPulse.tEnd));
@@ -1734,7 +2485,7 @@ function drawTimingChart() {
       }
     }
 
-    const points = timingChannelPoints(item.id, tStart, tEnd);
+    const points = timingChannelPoints(item.id, start, end);
     if (!points.length) {
       ctx.fillStyle = "#4a5568";
       ctx.font = "10px sans-serif";
@@ -1749,7 +2500,7 @@ function drawTimingChart() {
     let lastY = points[0].v ? highY : lowY;
     for (let i = 0; i < points.length; i += 1) {
       const p = points[i];
-      const x = xOf(Math.min(Math.max(p.t, tStart), tEnd));
+      const x = xOf(Math.min(Math.max(p.d, plotStart), plotEnd));
       const y = p.v ? highY : lowY;
       if (!started) {
         ctx.moveTo(Math.max(padL, x), y);
@@ -1761,11 +2512,11 @@ function drawTimingChart() {
       if (y !== lastY) ctx.lineTo(x, y);
       lastY = y;
     }
-    ctx.lineTo(Math.min(padL + chartW, xOf(Math.min(tEnd, points[points.length - 1].t))), lastY);
-    if (live && state.timingPanMs <= 0.5) ctx.lineTo(padL + chartW, lastY);
+    ctx.lineTo(Math.min(padL + chartW, xOf(Math.min(plotEnd, points[points.length - 1].d))), lastY);
+    if (isLive) ctx.lineTo(padL + chartW, lastY);
     ctx.stroke();
 
-    if (live && state.timingPanMs <= 0.5) {
+    if (isLive) {
       ctx.fillStyle = color;
       ctx.beginPath();
       ctx.arc(padL + chartW - 4, lastY, 3.5, 0, Math.PI * 2);
@@ -1777,7 +2528,7 @@ function drawTimingChart() {
       ? findTimingPulseAt(item.id, state.timingCursorB ?? state.timingCursorA)
       : null;
     if (pulse) {
-      const label = `${pulse.value ? "ON" : "OFF"} ${formatTimingDuration(pulse.tEnd - pulse.tStart)}`;
+      const label = `${pulse.value ? "ON" : "OFF"} ${formatTimingPulseLength(pulse)}`;
       ctx.fillStyle = "#d7e0ef";
       ctx.font = "10px Consolas, monospace";
       ctx.textAlign = "right";
@@ -1786,9 +2537,20 @@ function drawTimingChart() {
     }
   });
 
-  const drawCursor = (t, name, color) => {
-    if (t == null || t < tStart || t > tEnd) return;
-    const x = xOf(t);
+  const cursorPlotPos = (pos) => {
+    if (pos == null) return null;
+    if (!timingIsPollAxis()) {
+      if (pos < start || pos > end) return null;
+      return pos;
+    }
+    if (pos < start || pos > end) return null;
+    return timingTimeAtPoll(pos, plotSamples);
+  };
+
+  const drawCursor = (pos, name, color) => {
+    const plotPos = cursorPlotPos(pos);
+    if (plotPos == null || !Number.isFinite(plotPos)) return;
+    const x = xOf(plotPos);
     ctx.strokeStyle = color;
     ctx.lineWidth = 1.5;
     ctx.setLineDash([4, 3]);
@@ -1807,16 +2569,24 @@ function drawTimingChart() {
   if (state.timingCursorA != null && state.timingCursorB != null) {
     const a = Math.min(state.timingCursorA, state.timingCursorB);
     const b = Math.max(state.timingCursorA, state.timingCursorB);
-    const x0 = Math.max(padL, xOf(a));
-    const x1 = Math.min(padL + chartW, xOf(b));
-    if (x1 > x0) {
-      ctx.fillStyle = "rgba(143, 211, 255, 0.08)";
-      ctx.fillRect(x0, padT, x1 - x0, chartH);
-      ctx.fillStyle = "#8fd3ff";
-      ctx.font = "11px Consolas, monospace";
-      ctx.textAlign = "center";
-      ctx.fillText(`Δt ${formatTimingDuration(b - a)}`, (x0 + x1) / 2, padT + chartH - 8);
-      ctx.textAlign = "left";
+    const plotA = cursorPlotPos(a);
+    const plotB = cursorPlotPos(b);
+    if (plotA != null && plotB != null) {
+      const x0 = Math.max(padL, xOf(Math.min(plotA, plotB)));
+      const x1 = Math.min(padL + chartW, xOf(Math.max(plotA, plotB)));
+      if (x1 > x0) {
+        ctx.fillStyle = "rgba(143, 211, 255, 0.08)";
+        ctx.fillRect(x0, padT, x1 - x0, chartH);
+        ctx.fillStyle = "#8fd3ff";
+        ctx.font = "11px Consolas, monospace";
+        ctx.textAlign = "center";
+        let deltaLabel = formatTimingDelta(b - a);
+        if (timingIsPollAxis()) {
+          deltaLabel = `${deltaLabel} / ${formatTimingDuration(Math.abs(plotB - plotA))}`;
+        }
+        ctx.fillText(deltaLabel, (x0 + x1) / 2, padT + chartH - 8);
+        ctx.textAlign = "left";
+      }
     }
   }
 
@@ -1827,7 +2597,11 @@ function renderPalette() {
   const query = $("#command-search")?.value.trim().toLowerCase() || "";
   const transport = $("#transport")?.value || state.settings.transport;
   const isMapped = transport === "plclink" || transport === "field_network";
-  const available = state.catalog.filter((item) => !isMapped || item.plclink_supported);
+  const available = state.catalog.filter((item) => {
+    if (transport === "plclink") return !!item.plclink_supported;
+    if (transport === "field_network") return !!item.field_network_supported;
+    return !item.local_io; // TCP ではローカル I/O 専用コマンドを隠す
+  });
   const filtered = available.filter((item) =>
     `${item.code} ${item.name} ${item.description} ${item.tool_name || ""}`.toLowerCase().includes(query)
   );
@@ -1837,9 +2611,9 @@ function renderPalette() {
       <h4>${escapeHtml(group.label)}<span>${group.items.length}</span></h4>
       ${group.items.map((item) => `
         <button class="palette-card palette-command" data-code="${item.code}">
-          <span class="command-code">${isMapped ? `${item.plclink_code}：` : item.code}</span>
+          <span class="command-code">${isMapped ? `${item.local_io ? item.code : (item.plclink_code ?? item.code)}：` : item.code}</span>
           <span class="command-name">${escapeHtml(item.name)}</span>
-          ${isMapped ? `<small class="plclink-code">${transport === "field_network" ? "FNコマンド" : "PLCLINKコマンド"}</small>` : ""}
+          ${isMapped ? `<small class="plclink-code">${item.local_io ? "ローカルI/O" : (transport === "field_network" ? "FNコマンド" : "PLCLINKコマンド")}</small>` : ""}
         </button>`).join("")}
     </section>`).join("");
   document.querySelectorAll(".palette-command").forEach((button) => {
@@ -1857,7 +2631,13 @@ function newCommand(code) {
     else args[arg.key] = "";
   }
   if (definition.raw_arguments) args.raw = "";
-  return { id: state.nextId++, type: "command", command: code, arguments: args };
+  return {
+    id: state.nextId++,
+    type: "command",
+    command: code,
+    arguments: args,
+    ignore_response: false,
+  };
 }
 
 function addCommand(code, target) {
@@ -1892,19 +2672,39 @@ function stepHtml(step, nested = false) {
     const def = state.catalog.find((item) => item.code === step.command);
     const transport = $("#transport")?.value || state.settings.transport;
     const isMapped = transport === "plclink" || transport === "field_network";
-    const unsupported = isMapped && !def.plclink_supported;
-    const modeLabel = transport === "field_network" ? "FNコマンド" : "PLCLINKコマンド";
+    const supported = transport === "field_network"
+      ? !!def.field_network_supported
+      : transport === "plclink"
+        ? !!def.plclink_supported
+        : !def.local_io;
+    const unsupported = !supported;
+    const modeLabel = def.local_io
+      ? "ローカルI/O"
+      : (transport === "field_network" ? "FNコマンド" : "PLCLINKコマンド");
     const fields = (def.arguments || []).map((arg) => argumentField(step, arg)).join("");
     const raw = def.raw_arguments ? `
       <label>引数文字列<input data-field="raw" value="${escapeHtml(step.arguments.raw || "")}" placeholder="別資料の構文に従って入力"></label>` : "";
+    const ignoreOption = `
+      <label class="step-option" title="送信後に装置応答を待たず、すぐ次のカードへ進みます">
+        <input data-field="ignore_response" type="checkbox" ${step.ignore_response ? "checked" : ""}>
+        応答を待たない
+      </label>`;
     const compactSummary = commandCompactSummary(step, def);
-    const displayCode = isMapped && def.plclink_code ? `${def.plclink_code}：` : def.code;
+    const mappedCode = def.local_io
+      ? def.code
+      : (transport === "field_network" ? def.field_network_code : def.plclink_code);
+    const displayCode = isMapped && mappedCode != null && mappedCode !== ""
+      ? `${mappedCode}：`
+      : def.code;
+    const unsupportedReason = transport === "field_network"
+      ? (def.field_network_reason || def.plclink_reason)
+      : def.plclink_reason;
     return `<article class="step-card generated-step${unsupported ? " unsupported-step" : ""}" data-id="${step.id}">
       ${stepHeader(step, `<strong>${displayCode}</strong>${escapeHtml(def.name)}${isMapped ? `<small class="plclink-code">${modeLabel}</small>` : ""}${def.tool_name ? `<small class="tool-badge">${escapeHtml(def.tool_id)} ${escapeHtml(def.tool_name)}</small>` : ""}`, nested)}
       ${isCompact
     ? (compactSummary ? `<div class="step-compact-row">${compactSummary}</div>` : "")
-    : `<div class="step-body">${fields}${raw}
-        ${unsupported ? `<p class="step-warning">${escapeHtml(def.plclink_reason || "この通信方式では使用できません")}</p>` : ""}
+    : `<div class="step-body">${fields}${raw}${ignoreOption}
+        ${unsupported ? `<p class="step-warning">${escapeHtml(unsupportedReason || "この通信方式では使用できません")}</p>` : ""}
         <p class="step-description">${escapeHtml(def.description || "")}${!isMapped && def.example ? `　例: ${escapeHtml(def.example)}` : ""}</p>
       </div>`}
     </article>`;
@@ -1975,6 +2775,7 @@ function commandCompactSummary(step, def) {
     if (parts.length >= 3) break;
   }
   if (def.raw_arguments && step.arguments.raw) parts.push(`raw:${step.arguments.raw}`);
+  if (step.ignore_response) parts.push("応答無視");
   return parts.map((part) => `<span>${escapeHtml(part)}</span>`).join("");
 }
 
@@ -2050,9 +2851,14 @@ function bindStepEvents() {
       input.addEventListener("input", () => { located.step.arguments[input.dataset.arg] = input.value; });
     });
     card.querySelectorAll(":scope > .step-body [data-field]").forEach((input) => {
-      input.addEventListener("input", () => {
-        located.step[input.dataset.field] = input.type === "number" ? Number(input.value) : input.value;
-      });
+      const applyField = () => {
+        if (input.type === "checkbox") located.step[input.dataset.field] = input.checked;
+        else if (input.type === "number") located.step[input.dataset.field] = Number(input.value);
+        else if (input.dataset.field === "raw") located.step.arguments.raw = input.value;
+        else located.step[input.dataset.field] = input.value;
+      };
+      input.addEventListener("input", applyField);
+      input.addEventListener("change", applyField);
     });
     card.querySelectorAll(":scope > .step-header [data-action]").forEach((button) => {
       button.addEventListener("click", () => stepAction(id, button.dataset.action));
@@ -2318,6 +3124,7 @@ function readSettingsForm() {
         Number($("#busy-port")?.value) || 1,
       )
       : readPlcLinkStatusSignalsFromForm(),
+    ...readPortNamesFromForm(),
   };
 }
 
@@ -2414,10 +3221,15 @@ function restoreSettings() {
       state.settings.plclink_status_signals,
       state.settings.busy_port ?? 1,
     );
+    state.settings.pli_port_names = normalizePortNames(state.settings.pli_port_names);
+    state.settings.plo_port_names = normalizePortNames(state.settings.plo_port_names);
+    state.settings.esi_port_names = normalizePortNames(state.settings.esi_port_names);
+    state.settings.eso_port_names = normalizePortNames(state.settings.eso_port_names);
     const busy = state.settings.plclink_status_signals.find((item) => item.role === "busy");
     if (busy) state.settings.busy_port = Number(busy.plo_port) || 1;
     state.statusSignalDraft = state.settings.fn_status_signals.map((item) => ({ ...item }));
     state.plclinkStatusSignalDraft = state.settings.plclink_status_signals.map((item) => ({ ...item }));
+    syncPortNameDraftFromSettings(state.settings);
   } catch (_) {}
 }
 
@@ -2483,6 +3295,8 @@ function applySettingsToForm() {
   );
   renderStatusSignalTable();
   renderPlcLinkStatusSignalTable();
+  syncPortNameDraftFromSettings(s);
+  renderPortNameTables({ capture: false });
   syncTransportUi();
   syncResultDataUi();
   updateBusyAddressHint();
@@ -2563,6 +3377,7 @@ function syncTransportUi() {
   applyLayoutMode();
   renderPalette();
   renderSequence();
+  syncLocalIoPanel();
 }
 
 function applyFieldNetworkDefaultsToForm() {
@@ -2958,13 +3773,19 @@ function runSequence() {
 }
 
 function findUnsupportedPlcLinkCommand(steps) {
+  const transport = state.settings.transport || $("#transport")?.value;
   for (const step of steps) {
     if (step.type === "command") {
       const definition = state.catalog.find((item) => item.code === step.command);
-      if (!definition?.plclink_supported) {
+      const supported = transport === "field_network"
+        ? !!definition?.field_network_supported
+        : !!definition?.plclink_supported;
+      if (!supported) {
         return {
           command: step.command,
-          reason: definition?.plclink_reason || "PLCLINKでは使用できません",
+          reason: transport === "field_network"
+            ? (definition?.field_network_reason || definition?.plclink_reason || "Field Networkでは使用できません")
+            : (definition?.plclink_reason || "PLCLINKでは使用できません"),
         };
       }
     }
@@ -3037,6 +3858,76 @@ function setRunning(running) {
   $("#run-button").disabled = running;
   $("#stop-button").disabled = !running;
   if (!running) refreshConnectionBadge();
+}
+
+function localIoCode() {
+  const transport = state.settings?.transport || $("#transport")?.value;
+  if (transport === "plclink") return "PLI";
+  if (transport === "field_network") return "ESI";
+  return null;
+}
+
+function syncLocalIoPanel() {
+  const panel = $("#local-io-panel");
+  if (!panel) return;
+  const code = localIoCode();
+  panel.classList.toggle("hidden", !code);
+  if ($("#local-io-label") && code) $("#local-io-label").textContent = code;
+  if (!code) return;
+  const names = normalizePortNames(
+    code === "PLI" ? state.settings.pli_port_names : state.settings.esi_port_names,
+  );
+  const named = Object.entries(names)
+    .sort((a, b) => Number(a[0]) - Number(b[0]))
+    .slice(0, 8)
+    .map(([port, name]) => `${port}:${name}`);
+  panel.title = named.length
+    ? `${code} ポートを直接 ON/OFF（例: ${named.join(", ")}）`
+    : `${code} ポートを直接 ON/OFF します（タスク実行中も可）`;
+}
+
+async function setLocalIoPorts(stateValue) {
+  const code = localIoCode();
+  if (!code) return;
+  const ports = ($("#local-io-ports")?.value || "").trim();
+  if (!ports) {
+    addLog("error", "ERR", `${code} ポート番号を入力してください`);
+    return;
+  }
+  const settings = (() => {
+    try {
+      return readSettingsForm();
+    } catch (_) {
+      return state.settings;
+    }
+  })();
+  if (!settings?.host && code === "ESI") {
+    addLog("error", "ERR", "接続設定の装置 IP を確認してください");
+    return;
+  }
+  try {
+    const response = await fetch("/api/local-io", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        settings,
+        code,
+        state: stateValue ? "1" : "0",
+        ports,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = payload.detail || payload.message || response.statusText;
+      throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    }
+    addLog("tx", "TX", payload.display || `${code}${stateValue ? "ON" : "OFF"}[${ports}]`);
+    for (const line of payload.responses || [payload.status || "AK"]) {
+      addLog("rx", "RX", line);
+    }
+  } catch (error) {
+    addLog("error", "ERR", `${code} 失敗: ${error.message || error}`);
+  }
 }
 
 function addLog(css, kind, data) {

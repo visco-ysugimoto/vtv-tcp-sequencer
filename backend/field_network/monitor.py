@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from ..models import MemoryWatchItem, ProtocolSettings
+from ..models import MemoryWatchItem, ProtocolSettings, port_display_label
 from ..plc_link.commands import ByteOrder, words_to_dword
 from .layout import (
     AssemblyLayout,
@@ -124,7 +124,9 @@ def build_mapped_watch_items(settings: ProtocolSettings) -> list[MemoryWatchItem
         items.append(
             MemoryWatchItem(
                 id=f"eso-port-{port}",
-                label=f"ESO-{port}",
+                label=port_display_label(
+                    port, settings.eso_port_names, fallback=f"ESO-{port}"
+                ),
                 group="ESO出力 (Assem10)",
                 device="IN",
                 address=bit,
@@ -137,7 +139,9 @@ def build_mapped_watch_items(settings: ProtocolSettings) -> list[MemoryWatchItem
         items.append(
             MemoryWatchItem(
                 id=f"esi-port-{port}",
-                label=f"ESI-{port}",
+                label=port_display_label(
+                    port, settings.esi_port_names, fallback=f"ESI-{port}"
+                ),
                 group="ESI入力 (Assem20)",
                 device="OUT",
                 address=bit,

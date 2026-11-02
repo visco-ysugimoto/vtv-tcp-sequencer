@@ -54,9 +54,11 @@ async def test_plclink_command_uses_shared_sequence_engine() -> None:
             *,
             tcp_code: str | None = None,
             arguments: dict | None = None,
+            ignore_response: bool = False,
         ) -> CommandResult:
             del expect_result, result_mode, arguments
             assert tcp_code == "RRA"
+            assert ignore_response is False
             return CommandResult(command, "AK", ["AK", "result=1"])
 
     async def collect(event: dict) -> None:
@@ -73,4 +75,36 @@ async def test_plclink_command_uses_shared_sequence_engine() -> None:
         "AK",
         "result=1",
     ]
+    assert events[-1]["type"] == "sequence_completed"
+
+
+async def test_ignore_response_skips_nk_stop() -> None:
+    events: list[dict] = []
+
+    class FakeClient:
+        settings = ProtocolSettings(host="127.0.0.1")
+
+        async def send_command(
+            self,
+            command: str,
+            expect_result: bool = False,
+            result_mode: str = "single",
+            *,
+            tcp_code: str | None = None,
+            arguments: dict | None = None,
+            ignore_response: bool = False,
+        ) -> CommandResult:
+            del command, expect_result, result_mode, tcp_code, arguments
+            assert ignore_response is True
+            return CommandResult("RRA", "NK", ["(応答無視)"])
+
+    async def collect(event: dict) -> None:
+        events.append(event)
+
+    engine = SequenceEngine(FakeClient(), collect, asyncio.Event())
+    await engine.run(
+        [CommandStep(type="command", command="RRA", ignore_response=True)]
+    )
+
+    assert any(event["type"] == "rx" and event["response"] == "(応答無視)" for event in events)
     assert events[-1]["type"] == "sequence_completed"

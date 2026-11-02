@@ -43,12 +43,16 @@ def test_build_command_words_active_task_run() -> None:
 
 
 def test_plclink_command_metadata() -> None:
-    assert command_metadata("RRA") == {
-        "plclink_supported": True,
-        "plclink_code": 9,
-        "plclink_reason": None,
-    }
+    meta = command_metadata("RRA")
+    assert meta["plclink_supported"] is True
+    assert meta["plclink_code"] == 9
+    assert meta["plclink_reason"] is None
+    assert meta["field_network_supported"] is True
+    assert meta["field_network_code"] == 9
     assert command_metadata("POA")["plclink_supported"] is False
+    assert command_metadata("PLI")["plclink_supported"] is True
+    assert command_metadata("PLI")["field_network_supported"] is False
+    assert command_metadata("ESI")["field_network_supported"] is True
 
 
 def test_busy_address_from_plo_port() -> None:
@@ -94,6 +98,30 @@ def test_plclink_status_signals_drive_busy_and_watch() -> None:
     assert by_id["plo-port-7"].label == "BUSY (Port 7)"
     assert by_id["plo-port-4"].label == "エラー (Port 4)"
     assert by_id["plo-port-1"].label == "Port 1"
+
+
+def test_plo_port_names_override_watch_labels() -> None:
+    from backend.models import StatusSignalMapping
+
+    settings = ProtocolSettings(
+        transport="plclink",
+        host="0.0.0.0",
+        plo_address=1024,
+        plo_port_count=4,
+        plo_port_names={"1": "準備完了", "2": "  "},
+        pli_port_names={"1": "起動要求"},
+        plclink_status_signals=[
+            StatusSignalMapping(
+                id="busy", label="BUSY", source="plo", plo_port=1, role="busy"
+            ),
+        ],
+    )
+    assert settings.plo_port_names == {"1": "準備完了"}
+    assert settings.pli_port_names == {"1": "起動要求"}
+    items = build_mapped_watch_items(settings)
+    by_id = {item.id: item for item in items if item.group == "PLO出力"}
+    assert by_id["plo-port-1"].label == "Port 1: 準備完了"
+    assert by_id["plo-port-2"].label == "Port 2"
 
 
 def test_build_mapped_watch_items() -> None:

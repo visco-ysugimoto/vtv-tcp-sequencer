@@ -14,13 +14,21 @@ from .engine import DeviceClient, SequenceEngine, create_client
 from .field_network import FieldNetworkClient, parse_eds_text
 from .field_network.layout import build_layout
 from .field_network.monitor import read_assembly_items
-from .models import MemoryReadRequest, ProtocolSettings, SequenceRequest
+from .models import (
+    LocalIoRequest,
+    MemoryReadRequest,
+    MemoryWatchItem,
+    ProtocolSettings,
+    SequenceRequest,
+)
 from .network import connect_targets
 from .paths import frontend_dir
 from .plc_link import PlcLinkClient
 from .plc_link.commands import command_metadata
 from .plc_link.monitor import read_memory_items
+from .local_io import apply_local_io
 from .protocol import ProtocolError
+from .watch_stream import run_watch_loop
 
 _plclink_client: PlcLinkClient | None = None
 _field_network_client: FieldNetworkClient | None = None
@@ -174,10 +182,11 @@ async def get_catalog() -> list[dict]:
     for item in catalog:
         meta = command_metadata(item["code"])
         item.update(meta)
-        # Field Network コマンドは PLCLINK と同型番号
-        item["field_network_supported"] = meta["plclink_supported"]
-        item["field_network_code"] = meta["plclink_code"]
-        item["field_network_reason"] = meta["plclink_reason"]
+        # 旧メタデータに FN キーが無い場合のみ PLCLINK と同型として補完
+        item.setdefault("field_network_supported", meta.get("plclink_supported"))
+        item.setdefault("field_network_code", meta.get("plclink_code"))
+        item.setdefault("field_network_reason", meta.get("plclink_reason"))
+        item.setdefault("local_io", False)
     return catalog
 
 
@@ -359,6 +368,36 @@ async def test_connection(settings: ProtocolSettings) -> dict[str, str]:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@app.post("/api/local-io")
+async def apply_local_io_endpoint(request: LocalIoRequest) -> dict[str, object]:
+    """PLI/ESI ポートを ON/OFF する（シーケンス実行中でも可）。"""
+    settings = request.settings
+    code = request.code.upper()
+    try:
+        if code == "PLI":
+            if settings.transport != "plclink":
+                raise ProtocolError("PLI は PLCLINK 接続時のみ使用できます")
+            client = await _get_plclink_client(settings)
+        elif code == "ESI":
+            if settings.transport != "field_network":
+                raise ProtocolError("ESI は Field Network 接続時のみ使用できます")
+            client = await _ensure_field_network_connected(settings)
+        else:
+            raise ProtocolError(f"未対応のローカル I/O です: {code}")
+        result = await apply_local_io(
+            client,
+            code=code,
+            arguments={"state": request.state, "ports": request.ports},
+        )
+    except ProtocolError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "status": result.status,
+        "display": result.command,
+        "responses": result.responses,
+    }
+
+
 @app.post("/api/plclink/memory/read")
 async def read_plclink_memory(request: MemoryReadRequest) -> dict[str, object]:
     client = _plclink_client
@@ -392,6 +431,119 @@ async def read_field_network_memory(request: MemoryReadRequest) -> dict[str, obj
         byte_order=client.settings.byte_order,
     )
     return {"values": values, "stats": client.scanner.buffers.stats}
+
+
+@app.websocket("/ws/watch")
+async def watch_websocket(websocket: WebSocket) -> None:
+    """高速監視ストリーム。items を登録後、interval_ms でサンプルを push する。"""
+    await websocket.accept()
+    stop_event = asyncio.Event()
+    loop_task: asyncio.Task[None] | None = None
+
+    async def stop_loop() -> None:
+        stop_event.set()
+        nonlocal loop_task
+        if loop_task and not loop_task.done():
+            loop_task.cancel()
+            await asyncio.gather(loop_task, return_exceptions=True)
+        loop_task = None
+        stop_event.clear()
+
+    try:
+        while True:
+            message = await websocket.receive_json()
+            msg_type = message.get("type")
+            if msg_type == "stop":
+                await stop_loop()
+                await websocket.send_json({"type": "stopped"})
+                continue
+            if msg_type == "ping":
+                await websocket.send_json({"type": "pong", "t": message.get("t")})
+                continue
+            if msg_type != "start":
+                await websocket.send_json({"type": "error", "message": "不明な操作です"})
+                continue
+
+            await stop_loop()
+            transport = message.get("transport")
+            if transport not in {"plclink", "field_network"}:
+                await websocket.send_json(
+                    {"type": "error", "message": "transport は plclink / field_network のみです"}
+                )
+                continue
+            try:
+                items = [
+                    MemoryWatchItem.model_validate(item)
+                    for item in (message.get("items") or [])
+                ]
+            except ValidationError as exc:
+                await websocket.send_json(
+                    {"type": "error", "message": _validation_message(exc)}
+                )
+                continue
+            if not items:
+                await websocket.send_json(
+                    {"type": "error", "message": "監視アドレスがありません"}
+                )
+                continue
+
+            interval_ms = float(message.get("interval_ms") or 1)
+            interval_ms = min(10_000.0, max(0.5, interval_ms))
+
+            def make_reader(selected_transport: str, selected_items: list[MemoryWatchItem]):
+                def read_once() -> list[dict[str, object]]:
+                    if selected_transport == "plclink":
+                        client = _plclink_client
+                        if client is None or not client.server.is_running:
+                            raise RuntimeError("疑似PLCが起動していません")
+                        return read_memory_items(
+                            client.memory,
+                            selected_items,
+                            encoding=client.settings.encoding,
+                            byte_order=client.settings.byte_order,
+                        )
+                    client = _field_network_client
+                    if client is None or not client.is_connected:
+                        raise RuntimeError("Field Network 未接続です")
+                    return read_assembly_items(
+                        client.read_input(),
+                        client.read_output(),
+                        selected_items,
+                        encoding=client.settings.encoding,
+                        byte_order=client.settings.byte_order,
+                    )
+
+                return read_once
+
+            stop_event.clear()
+
+            async def send_json(payload: dict[str, object]) -> None:
+                await websocket.send_json(payload)
+
+            loop_task = asyncio.create_task(
+                run_watch_loop(
+                    transport=transport,  # type: ignore[arg-type]
+                    items=items,
+                    interval_ms=interval_ms,
+                    read_once=make_reader(transport, items),
+                    send_json=send_json,
+                    should_stop=stop_event.is_set,
+                )
+            )
+            await websocket.send_json(
+                {
+                    "type": "ready",
+                    "transport": transport,
+                    "interval_ms": interval_ms,
+                    "item_count": len(items),
+                    "mode": "websocket",
+                }
+            )
+    except WebSocketDisconnect:
+        await stop_loop()
+    except Exception:
+        await stop_loop()
+        raise
 
 
 @app.websocket("/ws")

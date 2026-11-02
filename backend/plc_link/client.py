@@ -27,6 +27,7 @@ class PlcLinkClient:
             port=settings.port,
         )
         self._peer: str | None = None
+        self._ignore_task: asyncio.Task[None] | None = None
 
     async def __aenter__(self) -> PlcLinkClient:
         await self.connect()
@@ -112,10 +113,13 @@ class PlcLinkClient:
         *,
         tcp_code: str | None = None,
         arguments: dict[str, Any] | None = None,
+        ignore_response: bool = False,
     ) -> CommandResult:
         del expect_result, result_mode  # PLCLINK は常にレスポンス領域を読む
         if self.server.client_count == 0:
             raise ProtocolError("装置に接続されていません")
+
+        await self._await_ignore_task()
 
         code = (tcp_code or command).upper()
         spec = resolve_spec(code)
@@ -143,6 +147,12 @@ class PlcLinkClient:
         # トリガ ON
         self.memory.write_dword(base, 1)
 
+        if ignore_response:
+            self._ignore_task = asyncio.create_task(
+                self._complete_ignored_command(base, busy)
+            )
+            return CommandResult(display, "AK", ["(応答無視)"])
+
         try:
             await self._wait_bit(busy, 1, "BUSY ON")
             # BUSY ON を確認したら速やかにトリガ OFF
@@ -166,6 +176,25 @@ class PlcLinkClient:
         if result_code not in (1, 8):
             raise ProtocolError(f"不正な実行結果です: {result_code}")
         return CommandResult(display, status, responses)
+
+    async def _await_ignore_task(self) -> None:
+        task = self._ignore_task
+        self._ignore_task = None
+        if task is None:
+            return
+        try:
+            await task
+        except Exception:
+            pass
+
+    async def _complete_ignored_command(self, base: int, busy: int) -> None:
+        """応答無視時もトリガ立下りと BUSY 解除をバックグラウンドで完了する。"""
+        try:
+            await self._wait_bit(busy, 1, "BUSY ON")
+            self.memory.write_dword(base, 0)
+            await self._wait_bit(busy, 0, "BUSY OFF")
+        except Exception:
+            self.memory.write_dword(base, 0)
 
     async def _wait_bit(self, address: int, expected: int, label: str) -> None:
         deadline = asyncio.get_running_loop().time() + self.settings.timeout

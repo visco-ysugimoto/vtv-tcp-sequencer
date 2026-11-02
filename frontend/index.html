@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>VTV Network Sequencer</title>
-  <link rel="stylesheet" href="/style.css?v=20260805-fn">
+  <link rel="stylesheet" href="/style.css?v=20261102-port-names">
 </head>
 <body>
   <header class="app-header">
@@ -23,6 +23,12 @@
       <button id="settings-button" class="button secondary">接続設定</button>
       <button id="run-button" class="button primary">▶ 実行</button>
       <button id="stop-button" class="button danger" disabled>■ 停止</button>
+      <div id="local-io-panel" class="local-io-panel hidden" title="PLI/ESI ポートを直接 ON/OFF します（タスク実行中も可）">
+        <span id="local-io-label" class="local-io-label">ESI</span>
+        <input id="local-io-ports" type="text" value="1" aria-label="ポート番号" placeholder="1,2,5-8">
+        <button id="local-io-on" type="button" class="button secondary">ON</button>
+        <button id="local-io-off" type="button" class="button secondary">OFF</button>
+      </div>
     </div>
   </header>
 
@@ -118,7 +124,7 @@
                 <span class="watch-field-label">更新周期</span>
                 <span class="watch-field-control">
                   <input id="watch-interval" type="number" min="1" max="10000" step="1" value="500"
-                    title="監視の更新間隔（ミリ秒）。下限 1 ms。HTTP 取得時間より短い場合は取得完了直後に次を開始します。" aria-label="更新周期（ミリ秒）">
+                    title="監視の更新間隔（ミリ秒）。下限 1 ms。WebSocket 配信でサーバ側がこの周期で push します。" aria-label="更新周期（ミリ秒）">
                   <span class="watch-field-unit">ms</span>
                 </span>
                 <span id="watch-actual-period" class="watch-actual-period" title="ポーリング開始間隔の実測（平滑化）。括弧内は直近の HTTP 取得時間です。">実測 —</span>
@@ -153,9 +159,18 @@
             </div>
             <div class="watch-toolbar-row watch-toolbar-settings">
               <label class="watch-field">
+                <span class="watch-field-label">時間軸</span>
+                <span class="watch-field-control">
+                  <select id="timing-axis-mode" aria-label="タイミング時間軸モード" title="ポーリング回数: 横軸は実時間線形、目盛りは各 poll の実時刻位置。実時間: 等間隔の時間目盛り。">
+                    <option value="time">実時間</option>
+                    <option value="poll" selected>ポーリング回数</option>
+                  </select>
+                </span>
+              </label>
+              <label class="watch-field">
                 <span class="watch-field-label">表示幅</span>
                 <span class="watch-field-control">
-                  <select id="timing-window-ms" aria-label="タイミング表示幅">
+                  <select id="timing-window-ms" class="hidden" aria-label="タイミング表示幅（実時間）">
                     <option value="100">0.1 秒</option>
                     <option value="200">0.2 秒</option>
                     <option value="500">0.5 秒</option>
@@ -166,18 +181,37 @@
                     <option value="30000">30 秒</option>
                     <option value="60000">60 秒</option>
                   </select>
+                  <select id="timing-window-polls" aria-label="タイミング表示幅（ポーリング回数）">
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                    <option value="200">200</option>
+                    <option value="500" selected>500</option>
+                    <option value="1000">1000</option>
+                    <option value="2000">2000</option>
+                    <option value="5000">5000</option>
+                    <option value="10000">10000</option>
+                  </select>
                 </span>
-                <span id="timing-view-span" class="watch-actual-period">表示 5.0 s</span>
+                <span id="timing-view-span" class="watch-actual-period">表示 500 poll</span>
+              </label>
+              <label class="watch-field timing-scale-toggle">
+                <span class="watch-field-label">目盛り</span>
+                <span class="watch-field-control">
+                  <label class="timing-check">
+                    <input id="timing-show-scale" type="checkbox" checked>
+                    表示する
+                  </label>
+                </span>
               </label>
               <div class="watch-field">
                 <span class="watch-field-label">ポーリング</span>
                 <span id="timing-actual-period" class="watch-actual-period"
-                  title="ポーリング開始間隔の実測（平滑化）。括弧内は直近の HTTP 取得時間です。">実測 —</span>
+                  title="ポーリング開始間隔の実測（平滑化）。括弧内は直近の読取時間です。">実測 —</span>
                 <span id="timing-sample-info" class="watch-actual-period">サンプル —</span>
               </div>
             </div>
             <div id="timing-measure-info" class="timing-measure-info">
-              クリックでカーソル A/B（Δt と信号長）。ドラッグでパン。ホイールで拡大／縮小。
+              横軸は実時間線形。目盛りは各 poll の実時刻（周期がぶれると間隔が変化）。クリックで A/B。
             </div>
           </div>
           <div class="timing-layout">
@@ -282,6 +316,28 @@
           </table>
         </div>
         <p id="busy-address-hint" class="export-note">BUSY 実アドレス: M1024（PLO先頭 + ポート番号 - 1）。VTV の「ステータス信号」割付と一致させてください。</p>
+        <h4 class="subsection-title">ポート名称（PLI / PLO）</h4>
+        <p class="export-note">D/M 監視やローカル I/O で分かりやすい名前を付けられます。空欄は Port 番号のみ表示します。</p>
+        <div class="port-name-panels">
+          <div class="port-name-panel">
+            <div class="port-name-heading">PLI（仮想入力）</div>
+            <div class="port-name-table-wrap">
+              <table class="port-name-table">
+                <thead><tr><th>Port</th><th>名称</th></tr></thead>
+                <tbody id="pli-port-name-body"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="port-name-panel">
+            <div class="port-name-heading">PLO（仮想出力）</div>
+            <div class="port-name-table-wrap">
+              <table class="port-name-table">
+                <thead><tr><th>Port</th><th>名称</th></tr></thead>
+                <tbody id="plo-port-name-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
         <h3 class="subsection-title">結果データ出力</h3>
         <div class="check-grid single result-data-toggles">
           <label><input id="result-data-enabled" type="checkbox">結果データ出力を有効にする</label>
@@ -308,7 +364,7 @@
         <div class="form-grid three">
           <label>入力サイズ（byte）<input id="fn-input-size" type="number" min="4" max="1444" step="2" value="612"></label>
           <label>出力サイズ（byte）<input id="fn-output-size" type="number" min="4" max="1444" step="2" value="136"></label>
-          <label>RPI（μs）<input id="fn-rpi-us" type="number" min="2000" max="1000000" step="1000" value="10000"></label>
+          <label>RPI（μs）<input id="fn-rpi-us" type="number" min="1000" max="1000000" step="1000" value="10000" title="I/O 更新周期。1ms 分解能を狙う場合は 1000 を試してください（装置側の対応範囲内で）。"></label>
           <label>ESI ポート数<select id="fn-esi-ports">
             <option value="0">なし</option><option value="32" selected>32</option>
             <option value="64">64</option><option value="96">96</option><option value="128">128</option>
@@ -354,6 +410,28 @@
             <tbody id="fn-status-signal-body"></tbody>
           </table>
         </div>
+        <h4 class="subsection-title">ポート名称（ESI / ESO）</h4>
+        <p class="export-note">D/M 監視で分かりやすい名前を付けられます。空欄は ESI-N / ESO-N のみ表示します。</p>
+        <div class="port-name-panels">
+          <div class="port-name-panel">
+            <div class="port-name-heading">ESI（入力）</div>
+            <div class="port-name-table-wrap">
+              <table class="port-name-table">
+                <thead><tr><th>Port</th><th>名称</th></tr></thead>
+                <tbody id="esi-port-name-body"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="port-name-panel">
+            <div class="port-name-heading">ESO（出力）</div>
+            <div class="port-name-table-wrap">
+              <table class="port-name-table">
+                <thead><tr><th>Port</th><th>名称</th></tr></thead>
+                <tbody id="eso-port-name-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
         <p class="export-note">アプリが EtherNet/IP Scanner として VTV（Adapter）へ接続します。ポートは通常 44818。PLCLINK とは併用できません。</p>
       </div>
       <div id="connection-test-result" class="test-result"></div>
@@ -396,6 +474,6 @@
     </form>
   </dialog>
 
-  <script src="/app.js?v=20261027-vtv" defer></script>
+  <script src="/app.js?v=20261102-port-names" defer></script>
 </body>
 </html>
