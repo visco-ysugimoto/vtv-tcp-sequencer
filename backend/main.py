@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -9,6 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
+from . import __version__
 from .catalog import load_catalog
 from .engine import DeviceClient, SequenceEngine, create_client
 from .field_network import FieldNetworkClient, parse_eds_text
@@ -42,8 +44,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(
-    title="VTV TCP Sequencer",
-    version="0.1.0",
+    title="VTV Network Sequencer",
+    version=__version__,
     lifespan=lifespan,
 )
 FRONTEND = frontend_dir()
@@ -174,6 +176,12 @@ async def _close_field_network_client() -> None:
     client, _field_network_client = _field_network_client, None
     if client is not None:
         await client.close()
+
+
+@app.get("/api/health")
+async def health() -> dict[str, bool]:
+    """起動プロセスの死活確認用。カタログ読込など重い処理はしない。"""
+    return {"ok": True}
 
 
 @app.get("/api/catalog")
@@ -565,6 +573,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     {
                         "type": "sequence_failed",
                         "message": _validation_message(exc),
+                        "duration_ms": 0,
+                        "last_response": "",
                     }
                 )
                 continue
@@ -596,8 +606,33 @@ async def _execute_sequence(
     request: SequenceRequest,
     stop_event: asyncio.Event,
 ) -> None:
+    started = time.perf_counter()
+    meta: dict[str, object] = {
+        "last_response": "",
+        "position": None,
+        "total": None,
+        "label": "",
+    }
+
     async def send_event(event: dict) -> None:
+        if event.get("type") == "rx":
+            meta["last_response"] = str(event.get("response") or "")
+        elif event.get("type") == "step_started":
+            meta["position"] = event.get("position")
+            meta["total"] = event.get("total")
+            meta["label"] = event.get("label") or ""
         await websocket.send_json(event)
+
+    def failed(message: str) -> dict[str, object]:
+        return {
+            "type": "sequence_failed",
+            "message": message,
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+            "last_response": meta["last_response"],
+            "position": meta["position"],
+            "total": meta["total"],
+            "label": meta["label"],
+        }
 
     settings = request.settings
     if settings.transport == "plclink":
@@ -630,16 +665,9 @@ async def _execute_sequence(
             async with create_client(settings) as client:
                 await run_with_client(client)
     except ProtocolError as exc:
-        await send_event(
-            {"type": "sequence_failed", "message": str(exc)}
-        )
+        await send_event(failed(str(exc)))
     except Exception as exc:
-        await send_event(
-            {
-                "type": "sequence_failed",
-                "message": f"予期しないエラー: {exc}",
-            }
-        )
+        await send_event(failed(f"予期しないエラー: {exc}"))
     finally:
         if settings.transport not in {"plclink", "field_network"}:
             await send_event({"type": "connection", "state": "disconnected"})
@@ -650,6 +678,11 @@ def _validation_message(exc: ValidationError) -> str:
     if not errors:
         return "入力内容が不正です"
     return str(errors[0].get("msg", "入力内容が不正です"))
+
+
+@app.get("/api/version")
+async def version() -> dict[str, str]:
+    return {"name": "VTV Network Sequencer", "version": __version__}
 
 
 @app.get("/")

@@ -49,7 +49,8 @@ class PlcLinkClient:
             if winerr == 10048 or errno in {98, 10048}:
                 raise ProtocolError(
                     f"待受ポート {self.settings.port} は既に使用中です。"
-                    " 以前起動した Network Sequencer / python.exe が残っている可能性があります。"
+                    " 以前起動した VTV Network Sequencer / python.exe が"
+                    "残っている可能性があります。"
                     " アプリウィンドウをすべて閉じ、タスクマネージャーで python.exe を終了するか、"
                     " 接続設定の待受ポートを別番号（例: 5001）に変更してください。"
                     f"（詳細: {exc}）"

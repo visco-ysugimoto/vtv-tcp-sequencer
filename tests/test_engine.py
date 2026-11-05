@@ -3,7 +3,14 @@ import asyncio
 import pytest
 
 from backend.engine import SequenceEngine
-from backend.models import BreakStep, CommandStep, LoopStep, ProtocolSettings
+from backend.models import (
+    BreakStep,
+    CommandStep,
+    DelayStep,
+    IfStep,
+    LoopStep,
+    ProtocolSettings,
+)
 from backend.protocol import CommandResult, ProtocolError, VtvTcpClient
 
 
@@ -108,3 +115,68 @@ async def test_ignore_response_skips_nk_stop() -> None:
 
     assert any(event["type"] == "rx" and event["response"] == "(応答無視)" for event in events)
     assert events[-1]["type"] == "sequence_completed"
+    assert isinstance(events[-1]["duration_ms"], int)
+    assert events[-1]["last_response"] == "(応答無視)"
+
+
+async def test_step_events_identify_executed_cards() -> None:
+    events: list[dict] = []
+
+    class FakeClient:
+        settings = ProtocolSettings(host="127.0.0.1")
+
+        async def send_command(
+            self,
+            command: str,
+            expect_result: bool = False,
+            result_mode: str = "single",
+            *,
+            tcp_code: str | None = None,
+            arguments: dict | None = None,
+            ignore_response: bool = False,
+        ) -> CommandResult:
+            del expect_result, result_mode, tcp_code, arguments, ignore_response
+            return CommandResult(command, "AK", ["AK"])
+
+    async def collect(event: dict) -> None:
+        events.append(event)
+
+    engine = SequenceEngine(FakeClient(), collect, asyncio.Event())
+    await engine.run(
+        [
+            CommandStep(type="command", command="RRA", id="1"),
+            IfStep(
+                type="if",
+                id="if-1",
+                source="status",
+                operator="equals",
+                value="AK",
+                then_steps=[
+                    CommandStep(type="command", command="RRA", id="then")
+                ],
+                else_steps=[
+                    CommandStep(type="command", command="RRA", id="else")
+                ],
+            ),
+            LoopStep(
+                type="loop",
+                id="loop-1",
+                count=2,
+                steps=[DelayStep(type="delay", milliseconds=0, id="wait")],
+            ),
+        ]
+    )
+
+    started = [event for event in events if event["type"] == "step_started"]
+    assert [event["id"] for event in started] == [
+        "1",
+        "if-1",
+        "then",
+        "loop-1",
+        "wait",
+        "wait",
+    ]
+    assert [event["position"] for event in started] == [1, 2, 3, 5, 6, 6]
+    assert {event["total"] for event in started} == {6}
+    assert started[0]["label"].startswith("RRA")
+    assert "else" not in {event["id"] for event in started}

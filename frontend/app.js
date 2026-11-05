@@ -99,6 +99,29 @@ const state = {
   timingPointer: null,
   softPlcPollTimer: null,
   softPlcClientCount: 0,
+  softPlcListening: false,
+  softPlcPort: 0,
+  fnLive: false,
+  fnLiveHost: "",
+  fnLivePort: 0,
+  connectionStatus: "disconnected",
+  settingsPage: "connection",
+  draftReady: false,
+  draftTimer: null,
+  undoAction: null,
+  undoTimer: null,
+  sequenceName: "",
+  sequenceLibraryId: "",
+  favorites: [],
+  foldUnsupported: true,
+  logFilter: "all",
+  watchQuery: "",
+  watchChangedOnly: false,
+  watchChangedIds: new Set(),
+  lastResponse: "",
+  runStartedAt: 0,
+  runPositionText: "",
+  appVersion: "",
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -121,12 +144,16 @@ async function initialize() {
   const response = await fetch("/api/catalog");
   state.catalog = await response.json();
   $("#catalog-count").textContent = state.catalog.length;
+  restoreSequenceDraft();
+  restoreWorkshop();
   renderPalette();
   renderSequence();
   renderWatchList();
   renderTimingChannelList();
   bindEvents();
+  bindWorkshopEvents();
   startSoftPlcStatusPoll();
+  void loadAppVersion();
 }
 
 function bindEvents() {
@@ -318,11 +345,34 @@ function bindEvents() {
   $("#local-io-off")?.addEventListener("click", () => setLocalIoPorts(0));
   $("#stop-button").addEventListener("click", stopSequence);
   $("#clear-button").addEventListener("click", () => {
-    if (!state.running && confirm("すべてのカードを削除しますか？")) {
-      state.steps = []; renderSequence();
-    }
+    if (state.running || !state.steps.length) return;
+    if (!confirm("すべてのカードを削除しますか？")) return;
+    const snapshot = cloneData(state.steps);
+    const nextId = state.nextId;
+    state.steps = [];
+    renderSequence();
+    showToast("シーケンスをクリアしました", () => {
+      state.steps = snapshot;
+      state.nextId = nextId;
+      renderSequence();
+    });
   });
-  $("#clear-log-button").addEventListener("click", clearLog);
+  $("#clear-log-button").addEventListener("click", () => clearLog());
+  $("#undo-toast-button")?.addEventListener("click", () => {
+    const action = state.undoAction;
+    hideToast();
+    action?.();
+  });
+  $("#empty-open-settings")?.addEventListener("click", () => {
+    openSettingsDialog();
+    selectSettingsPage("connection");
+  });
+  document.querySelectorAll("[data-settings-tab]").forEach((button) => {
+    button.addEventListener("click", () => selectSettingsPage(button.dataset.settingsTab));
+  });
+  window.addEventListener("beforeunload", () => {
+    if (state.draftReady) persistSequenceDraft();
+  });
   $("#export-log-button").addEventListener("click", openLogExport);
   $("#log-export-form").addEventListener("submit", exportLog);
   $("#save-button").addEventListener("click", saveSequence);
@@ -1270,8 +1320,22 @@ function renderWatchList(changed = new Set()) {
     list.innerHTML = '<div class="watch-empty">接続設定から監視アドレスを生成できません。</div>';
     return;
   }
+  const query = (state.watchQuery || "").trim().toLowerCase();
+  const visibleItems = state.watchItems.filter((item) => {
+    if (state.watchChangedOnly && !state.watchChangedIds.has(item.id)) return false;
+    if (!query) return true;
+    const haystack = `${item.label || ""} ${item.group || ""} ${formatWatchAddress(item)}`.toLowerCase();
+    return haystack.includes(query);
+  });
+  if (!visibleItems.length) {
+    const message = state.watchChangedOnly && !query
+      ? "変化した信号はまだありません。"
+      : "条件に合う信号がありません。";
+    list.innerHTML = `<div class="watch-empty">${message}</div>`;
+    return;
+  }
   const groups = [];
-  for (const item of state.watchItems) {
+  for (const item of visibleItems) {
     const last = groups[groups.length - 1];
     if (!last || last.name !== item.group) groups.push({ name: item.group, items: [item] });
     else last.items.push(item);
@@ -1432,6 +1496,17 @@ function watchValueClass(snapshot, item, changed) {
 }
 
 function updateWatchValueDisplays(changed = new Set()) {
+  let reveal = false;
+  for (const id of changed) {
+    if (!state.watchChangedIds.has(id)) {
+      state.watchChangedIds.add(id);
+      reveal = true;
+    }
+  }
+  if (reveal && state.watchChangedOnly) {
+    renderWatchList(changed);
+    return;
+  }
   for (const item of state.watchItems) {
     const element = document.querySelector(`[data-watch-value="${item.id}"]`);
     if (!element) continue;
@@ -1475,6 +1550,7 @@ function startWatch() {
     setWatchStatus("PLCLINK / Field Network を選択してください", "error");
     return;
   }
+  state.watchChangedIds = new Set();
   refreshMappedWatchItems();
   renderWatchList();
   if (!state.watchItems.length) {
@@ -2638,23 +2714,49 @@ function renderPalette() {
   const query = $("#command-search")?.value.trim().toLowerCase() || "";
   const transport = transportOf();
   const isMapped = isMappedTransport(transport);
+  const matches = (item) =>
+    `${item.code} ${item.name} ${item.description} ${item.tool_name || ""}`.toLowerCase().includes(query);
   const available = state.catalog.filter((item) => commandAvailable(item, transport));
-  const filtered = available.filter((item) =>
-    `${item.code} ${item.name} ${item.description} ${item.tool_name || ""}`.toLowerCase().includes(query)
-  );
+  const unavailable = state.catalog.filter((item) => !commandAvailable(item, transport));
+  const filtered = available.filter(matches);
+  const favoriteCodes = new Set(state.favorites || []);
+  const favorites = filtered.filter((item) => favoriteCodes.has(item.code));
   if ($("#catalog-count")) $("#catalog-count").textContent = available.length;
-  $("#command-palette").innerHTML = catalogGroups(filtered).map((group) => `
+  const favoriteHtml = favorites.length ? `
+    <section class="command-group">
+      <h4>お気に入り<span>${favorites.length}</span></h4>
+      ${favorites.map((item) => paletteCommandButton(item, transport, isMapped)).join("")}
+    </section>` : "";
+  const groups = catalogGroups(filtered).map((group) => `
     <section class="command-group">
       <h4>${escapeHtml(group.label)}<span>${group.items.length}</span></h4>
-      ${group.items.map((item) => `
-        <button class="palette-card palette-command" data-code="${item.code}">
-          <span class="command-code">${isMapped ? `${item.local_io ? item.code : (item.plclink_code ?? item.code)}：` : item.code}</span>
-          <span class="command-name">${escapeHtml(item.name)}</span>
-          ${isMapped ? `<small class="plclink-code">${item.local_io ? "ローカルI/O" : (transport === "field_network" ? "FNコマンド" : "PLCLINKコマンド")}</small>` : ""}
-        </button>`).join("")}
+      ${group.items.map((item) => paletteCommandButton(item, transport, isMapped)).join("")}
     </section>`).join("");
-  document.querySelectorAll(".palette-command").forEach((button) => {
-    button.addEventListener("click", () => addCommand(button.dataset.code, state.steps));
+  const hidden = unavailable.filter(matches);
+  const folded = hidden.length ? `
+    <details class="unsupported-fold" ${state.foldUnsupported === false ? "open" : ""}>
+      <summary>この方式では使えない ${hidden.length}</summary>
+      ${hidden.map((item) => paletteCommandButton(item, transport, isMapped)).join("")}
+    </details>` : "";
+  const palette = $("#command-palette");
+  if (!palette) return;
+  palette.innerHTML = `${favoriteHtml}${groups}${folded}`;
+  palette.querySelectorAll(".palette-command").forEach((button) => {
+    button.addEventListener("click", () => {
+      const code = button.dataset.code;
+      const item = state.catalog.find((entry) => entry.code === code);
+      if (!item || !commandAvailable(item, transport)) {
+        showToast(unsupportedCommandReason(item, transport));
+        return;
+      }
+      addCommand(code, state.steps);
+    });
+  });
+  palette.querySelectorAll("[data-favorite]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleFavorite(button.dataset.favorite);
+    });
   });
 }
 
@@ -2686,7 +2788,13 @@ function addCommand(code, target) {
 function addControl(type, target) {
   if (state.running) return;
   if (type === "delay") target.push({ id: state.nextId++, type, milliseconds: 100 });
-  if (type === "break") target.push({ id: state.nextId++, type });
+  if (type === "break") {
+    if (!listIsInsideLoop(target)) {
+      showToast("BREAK はループの中にだけ追加できます。");
+      return;
+    }
+    target.push({ id: state.nextId++, type });
+  }
   if (type === "loop") target.push({ id: state.nextId++, type, count: 2, steps: [] });
   if (type === "if") target.push({
     id: state.nextId++, type, source: "status", operator: "equals", value: "AK",
@@ -2701,12 +2809,19 @@ function renderSequence() {
   const html = state.steps.map((step) => stepHtml(step)).join("");
   $("#sequence-list").insertAdjacentHTML("beforeend", html);
   bindStepEvents();
+  persistSequenceDraft();
 }
 
 function stepHtml(step, nested = false) {
   const isCompact = state.viewMode === "compact";
   if (step.type === "command") {
     const def = state.catalog.find((item) => item.code === step.command);
+    if (!def) {
+      return `<article class="step-card generated-step unsupported-step" data-id="${step.id}">
+        ${stepHeader(step, `<strong>${escapeHtml(step.command || "?")}</strong>不明なコマンド`, nested)}
+        ${isCompact ? "" : `<div class="step-body"><p class="step-warning">カタログにないコマンドです。</p></div>`}
+      </article>`;
+    }
     const transport = $("#transport")?.value || state.settings.transport;
     const isMapped = transport === "plclink" || transport === "field_network";
     const supported = transport === "field_network"
@@ -2739,11 +2854,16 @@ function stepHtml(step, nested = false) {
     const unsupportedReason = transport === "field_network"
       ? (def.field_network_reason || def.plclink_reason)
       : def.plclink_reason;
-    return `<article class="step-card generated-step${unsupported ? " unsupported-step" : ""}" data-id="${step.id}">
+    const missing = missingLabels(step);
+    const missingNote = missing.length
+      ? `<p class="step-warning missing-note">未入力: ${escapeHtml(missing.join("、"))}</p>`
+      : "";
+    return `<article class="step-card generated-step${unsupported ? " unsupported-step" : ""}${missing.length ? " incomplete-step" : ""}" data-id="${step.id}">
       ${stepHeader(step, `<strong>${displayCode}</strong>${escapeHtml(def.name)}${isMapped ? `<small class="plclink-code">${modeLabel}</small>` : ""}${def.tool_name ? `<small class="tool-badge">${escapeHtml(def.tool_id)} ${escapeHtml(def.tool_name)}</small>` : ""}`, nested)}
       ${isCompact
-    ? (compactSummary ? `<div class="step-compact-row">${compactSummary}</div>` : "")
+    ? `${compactSummary ? `<div class="step-compact-row">${compactSummary}</div>` : ""}${missingNote}`
     : `<div class="step-body">${fields}${raw}${ignoreOption}
+        ${missingNote}
         ${unsupported ? `<p class="step-warning">${escapeHtml(unsupportedReason || "この通信方式では使用できません")}</p>` : ""}
         <p class="step-description">${escapeHtml(def.description || "")}${!isMapped && def.example ? `　例: ${escapeHtml(def.example)}` : ""}</p>
       </div>`}
@@ -2824,24 +2944,25 @@ function stepHeader(step, title, nested) {
   return `<div class="step-header">
     <span class="drag-handle" draggable="true" title="ドラッグして移動" aria-label="ドラッグして移動">⠿</span><div class="step-title">${title}</div>
     <div class="step-actions">
-      <button data-action="up" title="上へ">↑</button><button data-action="down" title="下へ">↓</button>
-      <button data-action="duplicate" title="複製">⧉</button>
-      <button data-action="remove" class="remove" title="削除">×</button>
+      <button data-action="up" title="上へ" aria-label="上へ">↑</button><button data-action="down" title="下へ" aria-label="下へ">↓</button>
+      <button data-action="duplicate" title="複製" aria-label="複製">⧉</button>
+      <button data-action="remove" class="remove" title="削除" aria-label="削除">×</button>
     </div>
   </div>`;
 }
 
 function argumentField(step, arg) {
   const value = argumentValue(step, arg);
+  const missingClass = argumentIsMissing(step, arg) ? "missing-arg" : "";
   if (arg.type === "enum") {
-    return `<label>${escapeHtml(arg.label)}<select data-arg="${arg.key}">
+    return `<label class="${missingClass}">${escapeHtml(arg.label)}<select data-arg="${arg.key}">
       ${arg.options.map((option) => `<option value="${escapeHtml(option.value)}" ${String(value) === String(option.value) ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
     </select></label>`;
   }
   const attrs = arg.type === "integer"
     ? `type="number" min="${arg.min}" max="${arg.max}" step="1"`
     : `type="text" maxlength="${arg.max_length || 1024}"`;
-  return `<label>${escapeHtml(arg.label)}<input data-arg="${arg.key}" ${attrs} value="${escapeHtml(value)}"></label>`;
+  return `<label class="${missingClass}">${escapeHtml(arg.label)}<input data-arg="${arg.key}" ${attrs} value="${escapeHtml(value)}"></label>`;
 }
 
 function childArea(step, key, label) {
@@ -2862,7 +2983,7 @@ function childArea(step, key, label) {
     <h3>${label}</h3>
     <div class="nested-cards drop-list" data-parent-id="${step.id}" data-child-key="${key}">${(step[key] || []).map((child) => stepHtml(child, true)).join("")}</div>
     ${isCompact ? "" : `<div class="nested-add"><select data-child-select="${key}">${controlOptions}${commandOptions}</select>
-      <button data-add-child="${key}" class="icon-button">＋ カード追加</button>
+      <button data-add-child="${key}" class="icon-button" aria-label="カードを追加">＋ カード追加</button>
     </div>`}
   </div>`;
 }
@@ -2894,6 +3015,10 @@ function bindStepEvents() {
         const definition = state.catalog.find((item) => item.code === located.step.command);
         const controls = visibleArguments(definition).some((arg) => arg.show_if?.key === input.dataset.arg);
         if (controls && input.tagName === "SELECT") renderSequence();
+        else {
+          refreshCardMissing(card, located.step);
+          scheduleDraftSave();
+        }
       };
       input.addEventListener("input", applyArg);
       input.addEventListener("change", applyArg);
@@ -2904,6 +3029,8 @@ function bindStepEvents() {
         else if (input.type === "number") located.step[input.dataset.field] = Number(input.value);
         else if (input.dataset.field === "raw") located.step.arguments.raw = input.value;
         else located.step[input.dataset.field] = input.value;
+        refreshCardMissing(card, located.step);
+        scheduleDraftSave();
       };
       input.addEventListener("input", applyField);
       input.addEventListener("change", applyField);
@@ -2986,7 +3113,9 @@ function stepContainsId(step, id) {
 
 function canDropInto(id, dropList) {
   const source = locateStep(id);
-  if (!source || !targetList(dropList)) return false;
+  const destination = targetList(dropList);
+  if (!source || !destination) return false;
+  if (source.step.type === "break" && !listIsInsideLoop(destination)) return false;
   if (dropList.dataset.dropRoot) return true;
   return !stepContainsId(source.step, Number(dropList.dataset.parentId));
 }
@@ -3055,7 +3184,18 @@ function stepAction(id, action) {
   if (state.running) return;
   const found = locateStep(id);
   if (!found) return;
-  if (action === "remove") found.list.splice(found.index, 1);
+  if (action === "remove") {
+    const snapshot = cloneData(state.steps);
+    const nextId = state.nextId;
+    found.list.splice(found.index, 1);
+    renderSequence();
+    showToast("カードを削除しました", () => {
+      state.steps = snapshot;
+      state.nextId = nextId;
+      renderSequence();
+    });
+    return;
+  }
   if (action === "up" && found.index > 0) [found.list[found.index - 1], found.list[found.index]] = [found.list[found.index], found.list[found.index - 1]];
   if (action === "down" && found.index < found.list.length - 1) [found.list[found.index + 1], found.list[found.index]] = [found.list[found.index], found.list[found.index + 1]];
   if (action === "duplicate") {
@@ -3069,6 +3209,94 @@ function stepAction(id, action) {
 function assignIds(step) {
   step.id = state.nextId++;
   for (const key of ["steps", "then_steps", "else_steps"]) (step[key] || []).forEach(assignIds);
+}
+
+function ensureStepIds(step) {
+  const numeric = Number(step.id);
+  if (!Number.isFinite(numeric) || numeric <= 0) step.id = state.nextId++;
+  else if (numeric >= state.nextId) state.nextId = numeric + 1;
+  for (const key of ["steps", "then_steps", "else_steps"]) (step[key] || []).forEach(ensureStepIds);
+}
+
+function cloneData(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function persistSequenceDraft() {
+  if (!state.draftReady) return;
+  try {
+    localStorage.setItem("vtv-sequence-draft", JSON.stringify({
+      version: 1,
+      nextId: state.nextId,
+      steps: state.steps,
+      name: state.sequenceName || "",
+      libraryId: state.sequenceLibraryId || "",
+    }));
+  } catch (_) {}
+}
+
+function scheduleDraftSave() {
+  if (!state.draftReady) return;
+  clearTimeout(state.draftTimer);
+  state.draftTimer = setTimeout(persistSequenceDraft, 250);
+}
+
+function restoreSequenceDraft() {
+  try {
+    const data = JSON.parse(localStorage.getItem("vtv-sequence-draft") || "null");
+    if (data && Array.isArray(data.steps)) {
+      const steps = data.steps;
+      const savedNext = Number(data.nextId);
+      if (Number.isFinite(savedNext) && savedNext > state.nextId) state.nextId = savedNext;
+      steps.forEach(ensureStepIds);
+      state.steps = steps;
+      state.sequenceName = typeof data.name === "string" ? data.name : "";
+      state.sequenceLibraryId = typeof data.libraryId === "string" ? data.libraryId : "";
+    }
+  } catch (_) {}
+  state.draftReady = true;
+}
+
+function hideToast() {
+  clearTimeout(state.undoTimer);
+  state.undoTimer = null;
+  state.undoAction = null;
+  $("#undo-toast")?.classList.add("hidden");
+}
+
+function showToast(message, onUndo = null) {
+  state.undoAction = onUndo;
+  const toast = $("#undo-toast");
+  if (!toast) return;
+  $("#undo-toast-message").textContent = message;
+  $("#undo-toast-button")?.classList.toggle("hidden", !onUndo);
+  toast.classList.remove("hidden");
+  clearTimeout(state.undoTimer);
+  state.undoTimer = setTimeout(hideToast, onUndo ? 8000 : 4500);
+}
+
+function showRunHint(message) {
+  const hint = $("#run-hint");
+  if (!hint) return;
+  hint.textContent = message || "";
+  hint.classList.toggle("hidden", !message);
+}
+
+function selectSettingsPage(page) {
+  const transport = $("#transport")?.value || state.settings.transport || "tcp";
+  const advanced = transport === "plclink" || transport === "field_network";
+  state.settingsPage = advanced && page ? page : "connection";
+  document.querySelectorAll("[data-settings-tab]").forEach((button) => {
+    const tab = button.dataset.settingsTab;
+    const available = tab === "connection" || advanced;
+    button.classList.toggle("hidden", !available);
+    const active = tab === state.settingsPage;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  document.querySelectorAll("[data-settings-chunk]").forEach((section) => {
+    section.classList.toggle("page-off", section.dataset.settingsChunk !== state.settingsPage);
+  });
 }
 
 function syncTimeoutInputs(value) {
@@ -3181,8 +3409,8 @@ function openSettingsDialog() {
   if (!dialog) return;
   applySettingsToForm();
   syncTransportUi();
-  if (typeof dialog.showModal === "function") dialog.showModal();
-  else dialog.setAttribute("open", "");
+  renderProfileSelect();
+  openDialog(dialog, "#transport");
 }
 
 function closeSettingsDialog() {
@@ -3210,6 +3438,7 @@ async function saveSettings(event) {
   try {
     state.settings = readSettingsForm();
     localStorage.setItem("vtv-settings", JSON.stringify(state.settings));
+    syncActiveProfile(state.settings);
     refreshMappedWatchItems();
     renderWatchList();
     renderTimingChannelList();
@@ -3222,7 +3451,7 @@ async function saveSettings(event) {
       resultEl.className = "test-result error";
       resultEl.textContent = error.message || String(error);
     } else {
-      alert(error.message || String(error));
+      showToast(error.message || String(error));
     }
   }
 }
@@ -3426,6 +3655,7 @@ function syncTransportUi() {
   renderPalette();
   renderSequence();
   syncLocalIoPanel();
+  selectSettingsPage(state.settingsPage);
 }
 
 function applyFieldNetworkDefaultsToForm() {
@@ -3542,6 +3772,9 @@ async function connectFieldNetwork() {
     resultEl.textContent = data.message || "接続しました";
     markConnectionVerified(true, settings);
     state.settings = settings;
+    state.fnLive = true;
+    state.fnLiveHost = settings.host;
+    state.fnLivePort = Number(settings.port) || 0;
     localStorage.setItem("vtv-settings", JSON.stringify(settings));
     refreshMappedWatchItems();
     renderWatchList();
@@ -3550,6 +3783,7 @@ async function connectFieldNetwork() {
   } catch (error) {
     resultEl.className = "test-result error";
     resultEl.textContent = error.message;
+    state.fnLive = false;
     markConnectionVerified(false, settings);
     refreshConnectionBadge();
     return null;
@@ -3620,6 +3854,25 @@ function markConnectionVerified(verified, settings) {
   );
 }
 
+function settingsMatchVerified(settings = state.settings) {
+  return Boolean(
+    settings?.host
+    && state.connectionVerified
+    && state.verifiedSettingsKey === settingsKey(settings),
+  );
+}
+
+function plcLinkListeningHere() {
+  return state.softPlcListening
+    && Number(state.softPlcPort) === Number(state.settings.port);
+}
+
+function fieldNetworkLiveHere() {
+  return state.fnLive
+    && state.fnLiveHost === state.settings.host
+    && Number(state.fnLivePort) === Number(state.settings.port);
+}
+
 function restoreConnectionState() {
   try {
     const saved = JSON.parse(localStorage.getItem("vtv-connection-verified"));
@@ -3627,60 +3880,69 @@ function restoreConnectionState() {
     if (saved?.verified && saved?.key === key && state.settings.host) {
       state.connectionVerified = true;
       state.verifiedSettingsKey = key;
-      setConnection("connected");
     }
   } catch (_) {}
+  refreshConnectionBadge();
 }
 
 function refreshConnectionBadge() {
   if (state.running) return;
-  const settingsMatch =
-    state.connectionVerified
-    && state.verifiedSettingsKey === settingsKey(state.settings);
-  if (state.settings.transport === "plclink") {
-    // PLCLINK は実際の VTV TCP 接続数を優先する。
-    if (state.softPlcClientCount > 0) {
+  const remembered = settingsMatchVerified();
+  const transport = state.settings.transport || "tcp";
+  if (transport === "plclink") {
+    if (plcLinkListeningHere() && state.softPlcClientCount > 0) {
       setConnection("connected");
       return;
     }
-    if (settingsMatch) {
-      setConnection("connecting");
+    if (plcLinkListeningHere()) {
+      setConnection("listening");
       return;
     }
-    setConnection("disconnected");
+    setConnection(remembered ? "remembered" : "disconnected");
     return;
   }
-  if (state.settings.transport === "field_network") {
-    if (settingsMatch) {
+  if (transport === "field_network") {
+    if (fieldNetworkLiveHere()) {
       setConnection("connected");
       return;
     }
-    setConnection("disconnected");
+    setConnection(remembered ? "remembered" : "disconnected");
     return;
   }
-  if (settingsMatch) {
-    setConnection("connected");
-    return;
-  }
-  setConnection("disconnected");
+  setConnection(remembered ? "remembered" : "disconnected");
 }
 
 function startSoftPlcStatusPoll() {
   if (state.softPlcPollTimer) return;
   state.softPlcPollTimer = setInterval(() => {
-    pollSoftPlcStatus();
+    pollLinkStatus();
   }, 1500);
-  pollSoftPlcStatus();
+  pollLinkStatus();
 }
 
-async function pollSoftPlcStatus() {
-  if (state.settings.transport !== "plclink" || state.running) return;
+async function pollLinkStatus() {
+  if (state.running) return;
+  const transport = state.settings.transport;
   try {
-    const response = await fetch("/api/plclink/status");
-    if (!response.ok) return;
-    const data = await response.json();
-    state.softPlcClientCount = Number(data.client_count) || 0;
-    refreshConnectionBadge();
+    if (transport === "plclink") {
+      const response = await fetch("/api/plclink/status");
+      if (!response.ok) return;
+      const data = await response.json();
+      state.softPlcListening = data.status === "listening";
+      state.softPlcClientCount = Number(data.client_count) || 0;
+      state.softPlcPort = Number(data.port) || 0;
+      refreshConnectionBadge();
+      return;
+    }
+    if (transport === "field_network") {
+      const response = await fetch("/api/field-network/status");
+      if (!response.ok) return;
+      const data = await response.json();
+      state.fnLive = data.status === "connected";
+      state.fnLiveHost = data.host || "";
+      state.fnLivePort = Number(data.port) || 0;
+      refreshConnectionBadge();
+    }
   } catch (_) {}
 }
 
@@ -3712,12 +3974,11 @@ async function startSoftPlc({ updateBadge = true } = {}) {
     resultEl.textContent =
       `${data.message || "待受を開始しました。"}\n`
       + `VTV に設定する接続先: ${targets}`;
+    state.softPlcListening = true;
+    state.softPlcPort = Number(data.port) || Number(settings.port) || 0;
+    state.softPlcClientCount = Number(data.client_count) || 0;
     if (updateBadge) {
-      state.softPlcClientCount = Number(data.client_count) || 0;
-      const live = state.softPlcClientCount > 0;
-      if (live) {
-        markConnectionVerified(true, settings);
-      }
+      if (state.softPlcClientCount > 0) markConnectionVerified(true, settings);
       refreshConnectionBadge();
     }
     return data;
@@ -3765,15 +4026,27 @@ async function verifyConnectionSettings({ showMessage = false, resultEl = null }
     markConnectionVerified(true, settings);
     state.settings = settings;
     localStorage.setItem("vtv-settings", JSON.stringify(settings));
+    if (settings.transport === "field_network") {
+      state.fnLive = true;
+      state.fnLiveHost = settings.host;
+      state.fnLivePort = Number(settings.port) || 0;
+    }
+    if (settings.transport === "plclink") {
+      state.softPlcListening = true;
+      state.softPlcPort = Number(settings.port) || 0;
+      state.softPlcClientCount = Math.max(state.softPlcClientCount, 1);
+    }
     refreshMappedWatchItems();
     renderWatchList();
-    setConnection("connected");
+    refreshConnectionBadge();
     if (showMessage && resultEl) {
       resultEl.className = "test-result success";
       resultEl.textContent = data.message || "接続に成功しました。";
     }
     return true;
   } catch (error) {
+    if (settings.transport === "field_network") state.fnLive = false;
+    if (settings.transport === "plclink") state.softPlcClientCount = 0;
     markConnectionVerified(false, settings);
     refreshConnectionBadge();
     if (showMessage && resultEl) {
@@ -3791,33 +4064,78 @@ async function testConnection() {
   });
 }
 
-function runSequence() {
-  state.settings = readSettingsForm();
-  if (!state.settings.host) {
-    openSettingsDialog();
-    $("#connection-test-result").className = "test-result error";
-    $("#connection-test-result").textContent = state.settings.transport === "plclink"
+function runBlockReason(settings) {
+  if (!settings.host) {
+    return settings.transport === "plclink"
       ? "待受アドレスを入力してください。"
       : "装置 IP を入力してください。";
+  }
+  if (!state.steps.length) return "実行するカードを追加してください。";
+  if (findOrphanBreak(state.steps)) return "BREAK はループの中に置いてください。";
+  const missing = findMissingArgument(state.steps);
+  if (missing) return `${missing.command}: ${missing.label}を入力してください。`;
+  if (settings.transport === "plclink" || settings.transport === "field_network") {
+    const unsupported = findUnsupportedPlcLinkCommand(state.steps);
+    if (unsupported) return `${unsupported.command}: ${unsupported.reason}`;
+  }
+  if (!settingsMatchVerified(settings)) {
+    return "この設定は未確認です。接続設定で接続テストをしてください。";
+  }
+  return "";
+}
+
+function runSequence() {
+  if (state.running) {
+    showRunHint("実行中です。終わるか停止してから、もう一度実行してください。");
     return;
   }
-  if (!state.steps.length) { alert("実行するカードを追加してください。"); return; }
-  if (state.settings.transport === "plclink" || state.settings.transport === "field_network") {
-    const unsupported = findUnsupportedPlcLinkCommand(state.steps);
-    if (unsupported) {
-      alert(`${unsupported.command}: ${unsupported.reason}`);
-      return;
-    }
+  let settings;
+  try {
+    settings = readSettingsForm();
+  } catch (error) {
+    showRunHint(error.message || "接続設定を確認してください。");
+    return;
   }
-  clearExecutionStyles(); clearLog(); setRunning(true);
+  state.settings = settings;
+  const reason = runBlockReason(settings);
+  if (reason) {
+    showRunHint(reason);
+    if (!settings.host) {
+      openSettingsDialog();
+      selectSettingsPage("connection");
+    }
+    return;
+  }
+  showRunHint("");
+  clearExecutionStyles();
+  clearLog({ undo: false });
+  setRunProgress(null);
+  state.lastResponse = "";
+  state.runRecorded = false;
+  state.runStartedAt = performance.now();
+  state.runPositionText = "";
+  $("#run-summary")?.classList.add("hidden");
+  setRunning(true);
   const protocol = location.protocol === "https:" ? "wss" : "ws";
   state.socket = new WebSocket(`${protocol}://${location.host}/ws`);
   state.socket.addEventListener("open", () => state.socket.send(JSON.stringify({
     type: "execute", payload: { settings: state.settings, steps: cleanSteps(state.steps) },
   })));
   state.socket.addEventListener("message", (event) => handleEvent(JSON.parse(event.data)));
-  state.socket.addEventListener("error", () => { addLog("error", "ERR", "WebSocket接続に失敗しました"); setRunning(false); });
-  state.socket.addEventListener("close", () => { if (state.running) setRunning(false); });
+  state.socket.addEventListener("error", () => {
+    addLog("error", "ERR", "WebSocket接続に失敗しました");
+    showRunHint("WebSocket接続に失敗しました。");
+    if (state.running) {
+      finishRun("failed", { message: "WebSocket接続に失敗しました", last_response: state.lastResponse });
+    }
+    setRunning(false);
+  });
+  state.socket.addEventListener("close", () => {
+    if (!state.running) return;
+    finishRun("failed", { message: "実行中に通信が切れました", last_response: state.lastResponse });
+    showRunHint("実行中に通信が切れました。実行は中断されています。");
+    setRunning(false);
+  });
 }
 
 function findUnsupportedPlcLinkCommand(steps) {
@@ -3848,9 +4166,13 @@ function findUnsupportedPlcLinkCommand(steps) {
 }
 
 function cleanSteps(steps) {
-  return steps.map(({ id, ...step }) => {
-    for (const key of ["steps", "then_steps", "else_steps"]) if (step[key]) step[key] = cleanSteps(step[key]);
-    return step;
+  return steps.map((step) => {
+    const next = { ...step };
+    if (next.id !== undefined && next.id !== null) next.id = String(next.id);
+    for (const key of ["steps", "then_steps", "else_steps"]) {
+      if (next[key]) next[key] = cleanSteps(next[key]);
+    }
+    return next;
   });
 }
 
@@ -3864,6 +4186,16 @@ function handleEvent(event) {
       setConnection("connecting");
       addLog("info", "SYS", `${event.message} に接続中`);
     } else if (event.state === "connected") {
+      if (state.settings.transport === "field_network") {
+        state.fnLive = true;
+        state.fnLiveHost = state.settings.host;
+        state.fnLivePort = Number(state.settings.port) || 0;
+      }
+      if (state.settings.transport === "plclink") {
+        state.softPlcListening = true;
+        state.softPlcPort = Number(state.settings.port) || 0;
+        state.softPlcClientCount = Math.max(state.softPlcClientCount, 1);
+      }
       setConnection("connected");
     } else if (event.state === "disconnected") {
       refreshConnectionBadge();
@@ -3873,39 +4205,128 @@ function handleEvent(event) {
     }
   }
   if (event.type === "step_started") {
-    const cards = document.querySelectorAll(".step-card");
-    cards.forEach((card) => card.classList.remove("active"));
-    cards[event.index - 1]?.classList.add("active");
+    document.querySelectorAll(".step-card.active").forEach((card) => card.classList.remove("active"));
+    const card = stepCardByEvent(event);
+    if (card) {
+      card.classList.remove("done", "failed");
+      card.classList.add("active");
+      card.scrollIntoView({ block: "nearest" });
+    }
+    setRunProgress(event);
   }
   if (event.type === "step_completed") {
-    const card = document.querySelectorAll(".step-card")[event.index - 1];
-    card?.classList.remove("active"); card?.classList.add("done");
+    const card = stepCardByEvent(event);
+    card?.classList.remove("active");
+    card?.classList.add("done");
   }
   if (event.type === "tx") addLog("tx", "TX", event.display);
-  if (event.type === "rx") addLog("rx", "RX", event.response);
+  if (event.type === "rx") {
+    state.lastResponse = String(event.response ?? "");
+    addLog("rx", "RX", event.response);
+  }
   if (event.type === "loop_iteration") addLog("info", "LOOP", `${event.iteration} / ${event.count}`);
   if (event.type === "loop_break") addLog("info", "BREAK", "条件によりループを終了しました");
   if (event.type === "condition") addLog("info", "IF", `${event.matched ? "一致" : "不一致"} (${event.actual || "空"})`);
-  if (event.type === "sequence_completed") { addLog("info", "DONE", "シーケンスが完了しました"); setRunning(false); }
-  if (event.type === "sequence_stopped") { addLog("info", "STOP", event.message); setRunning(false); }
+  if (event.type === "sequence_completed") {
+    addLog("info", "DONE", "シーケンスが完了しました");
+    finishRun("success", event);
+    setRunning(false);
+  }
+  if (event.type === "sequence_stopped") {
+    addLog("info", "STOP", event.message);
+    finishRun("stopped", event);
+    setRunning(false);
+  }
   if (event.type === "sequence_failed") {
-    document.querySelector(".step-card.active")?.classList.add("failed");
-    addLog("error", "ERR", event.message); setRunning(false);
+    const card = document.querySelector(".step-card.active") || stepCardByEvent(event);
+    if (card) {
+      card.classList.remove("active");
+      card.classList.add("failed");
+      card.scrollIntoView({ block: "nearest" });
+    }
+    addLog("error", "ERR", event.message);
+    showRunHint(event.message || "シーケンスが失敗しました");
+    finishRun("failed", event);
+    setRunning(false);
   }
 }
 
+function stepCardByEvent(event) {
+  if (event?.id !== undefined && event?.id !== null && event.id !== "") {
+    const card = document.querySelector(`.step-card[data-id="${CSS.escape(String(event.id))}"]`);
+    if (card) return card;
+  }
+  if (!event?.index) return null;
+  return document.querySelectorAll(".step-card")[event.index - 1] || null;
+}
+
+function setRunProgress(event) {
+  const el = $("#run-progress");
+  if (!el) return;
+  if (!event) {
+    el.classList.add("hidden");
+    el.textContent = "";
+    el.removeAttribute("title");
+    return;
+  }
+  const position = event.position || event.index || "?";
+  const total = event.total ? `/${event.total}` : "";
+  const text = `${position}${total} ${event.label || ""}`.trim();
+  state.runPositionText = text;
+  el.textContent = text;
+  el.title = text;
+  el.classList.remove("hidden");
+}
+
+const CONNECTION_LABELS = {
+  connected: "接続中",
+  connecting: "接続中…",
+  listening: "待受中",
+  remembered: "前回成功",
+  disconnected: "未接続",
+};
+
 function setConnection(status) {
+  state.connectionStatus = status;
   const badge = $("#connection-badge");
-  badge.className = `badge ${status}`;
-  badge.textContent = status === "connected" ? "接続中" : status === "connecting" ? "接続中…" : "未接続";
-  if (status === "disconnected") stopWatch(true);
+  if (badge) {
+    badge.className = `badge ${status}`;
+    badge.textContent = CONNECTION_LABELS[status] || "未接続";
+    if (status === "remembered") {
+      badge.title = "この設定で以前接続に成功しています。いまの通信は確認していません。";
+    } else if (status === "listening") {
+      badge.title = "疑似 PLC は待受中です。VTV からの接続を待っています。";
+    } else {
+      badge.title = "";
+    }
+  }
+  const transport = state.settings.transport;
+  const watchAlive = transport === "plclink"
+    ? plcLinkListeningHere()
+    : transport === "field_network"
+      ? fieldNetworkLiveHere()
+      : false;
+  if (state.watchRunning && !watchAlive && status !== "connecting") stopWatch(true);
 }
 
 function setRunning(running) {
   state.running = running;
-  $("#run-button").disabled = running;
-  $("#stop-button").disabled = !running;
-  if (!running) refreshConnectionBadge();
+  const runButton = $("#run-button");
+  const stopButton = $("#stop-button");
+  if (runButton) {
+    runButton.disabled = running;
+    runButton.title = running
+      ? "実行中はもう一度実行できません"
+      : "実行（Ctrl+Enter）";
+  }
+  if (stopButton) {
+    stopButton.disabled = !running;
+    stopButton.title = "停止（Ctrl+.）";
+  }
+  if (!running) {
+    setRunProgress(null);
+    refreshConnectionBadge();
+  }
 }
 
 function localIoCode() {
@@ -3978,30 +4399,62 @@ async function setLocalIoPorts(stateValue) {
   }
 }
 
-function addLog(css, kind, data) {
-  $("#log .log-empty")?.remove();
+function addLog(_css, kind, data) {
   const now = new Date();
-  const timestamp = formatTimestamp(now);
-  const time = timestamp.slice(11);
-  state.logs.push({ timestamp, kind, data: String(data) });
-  $("#log").insertAdjacentHTML("beforeend", `<div class="log-row ${css}">
-    <span class="log-time">${time}</span><span class="log-kind">${kind}</span><span class="log-data">${escapeHtml(data)}</span>
-  </div>`);
-  $("#log").scrollTop = $("#log").scrollHeight;
+  state.logs.push({ timestamp: formatTimestamp(now), kind, data: String(data) });
+  paintLog();
 }
 
-function clearLog() {
+function logCss(kind) {
+  if (kind === "TX") return "tx";
+  if (kind === "RX") return "rx";
+  if (kind === "ERR") return "error";
+  return "info";
+}
+
+function paintLog() {
+  const log = $("#log");
+  if (!log) return;
+  const filter = state.logFilter || "all";
+  const entries = state.logs
+    .map((entry, index) => ({ entry, index }))
+    .filter(({ entry }) => logMatches(entry, filter));
+  if (!entries.length) {
+    log.innerHTML = `<div class="log-empty">${state.logs.length ? "この種別のログはありません。" : "実行すると送受信内容が表示されます。"}</div>`;
+    return;
+  }
+  log.innerHTML = entries.map(({ entry, index }) => {
+    const time = String(entry.timestamp || "").slice(11);
+    const copy = entry.kind === "ERR"
+      ? `<button type="button" class="log-copy" data-log-copy="${index}">コピー</button>`
+      : "";
+    return `<div class="log-row ${logCss(entry.kind)}">
+      <span class="log-time">${escapeHtml(time)}</span><span class="log-kind">${escapeHtml(entry.kind)}</span><span class="log-data">${escapeHtml(entry.data)}</span>${copy}
+    </div>`;
+  }).join("");
+  log.scrollTop = log.scrollHeight;
+}
+
+function clearLog(options = {}) {
+  const undo = options.undo !== false && state.logs.length > 0;
+  const snapshot = undo ? state.logs.map((entry) => ({ ...entry })) : null;
   state.logs = [];
-  $("#log").innerHTML = '<div class="log-empty">実行すると送受信内容が表示されます。</div>';
+  paintLog();
+  if (snapshot) {
+    showToast("通信ログを消去しました", () => {
+      state.logs = snapshot;
+      paintLog();
+    });
+  }
 }
 function clearExecutionStyles() { document.querySelectorAll(".step-card").forEach((card) => card.classList.remove("active", "done", "failed")); }
 
 function openLogExport() {
   if (!state.logs.length) {
-    alert("出力できる通信ログがありません。");
+    showToast("出力できる通信ログがありません。");
     return;
   }
-  $("#log-export-dialog").showModal();
+  openDialog($("#log-export-dialog"), "#log-export-format");
 }
 
 function exportLog(event) {
@@ -4056,19 +4509,681 @@ function fileTimestamp(date) {
 }
 
 function saveSequence() {
-  const blob = new Blob([JSON.stringify({ version: 1, steps: cleanSteps(state.steps) }, null, 2)], { type: "application/json" });
+  const blob = new Blob([JSON.stringify({
+    version: 1,
+    name: state.sequenceName || "",
+    steps: cleanSteps(state.steps),
+  }, null, 2)], { type: "application/json" });
   const link = document.createElement("a"); link.href = URL.createObjectURL(blob);
   link.download = "vtv-sequence.json"; link.click(); URL.revokeObjectURL(link.href);
 }
 
 async function loadSequence(event) {
-  const file = event.target.files[0]; if (!file) return;
+  const input = event.target;
+  const file = input.files?.[0];
+  if (!file) return;
   try {
     const data = JSON.parse(await file.text());
     if (!Array.isArray(data.steps)) throw new Error("steps がありません");
-    state.steps = data.steps; state.steps.forEach(assignIds); renderSequence();
-  } catch (error) { alert(`読み込めません: ${error.message}`); }
-  event.target.value = "";
+    if (state.steps.length && !confirm("現在のシーケンスを読み込んだ内容で置き換えますか？")) return;
+    const snapshot = cloneData(state.steps);
+    const nextId = state.nextId;
+    const previousName = state.sequenceName;
+    const previousLibraryId = state.sequenceLibraryId;
+    state.steps = data.steps;
+    state.steps.forEach(assignIds);
+    if (typeof data.name === "string") {
+      state.sequenceName = data.name;
+      state.sequenceLibraryId = "";
+      const nameInput = $("#sequence-name");
+      if (nameInput) nameInput.value = data.name;
+    }
+    renderSequence();
+    renderSequenceLibrary();
+    showToast("シーケンスを読み込みました", () => {
+      state.steps = snapshot;
+      state.nextId = nextId;
+      state.sequenceName = previousName;
+      state.sequenceLibraryId = previousLibraryId;
+      const nameInput = $("#sequence-name");
+      if (nameInput) nameInput.value = previousName || "";
+      renderSequence();
+      renderSequenceLibrary();
+    });
+  } catch (error) {
+    showToast(`読み込めません: ${error.message}`);
+  } finally {
+    input.value = "";
+  }
+}
+
+function listIsInsideLoop(target, list = state.steps, ancestorLoop = false) {
+  if (list === target) return ancestorLoop;
+  for (const step of list) {
+    const loop = ancestorLoop || step.type === "loop";
+    if (step.steps && listIsInsideLoop(target, step.steps, loop)) return true;
+    if (step.then_steps && listIsInsideLoop(target, step.then_steps, ancestorLoop)) return true;
+    if (step.else_steps && listIsInsideLoop(target, step.else_steps, ancestorLoop)) return true;
+  }
+  return false;
+}
+
+function findOrphanBreak(steps, insideLoop = false) {
+  for (const step of steps) {
+    if (step.type === "break" && !insideLoop) return true;
+    if (step.steps && findOrphanBreak(step.steps, insideLoop || step.type === "loop")) return true;
+    if (step.then_steps && findOrphanBreak(step.then_steps, insideLoop)) return true;
+    if (step.else_steps && findOrphanBreak(step.else_steps, insideLoop)) return true;
+  }
+  return false;
+}
+
+function conditionEquals(step, condition) {
+  if (!condition || condition.equals === undefined) return false;
+  return String(step.arguments?.[condition.key] ?? "") === String(condition.equals);
+}
+
+function argumentIsRequired(step, arg) {
+  if (!arg?.optional) return true;
+  return conditionEquals(step, arg.required_if);
+}
+
+function argumentIsMissing(step, arg) {
+  if (!argumentIsRequired(step, arg) || !argumentVisible(step, arg)) return false;
+  const value = argumentValue(step, arg);
+  return value === undefined || value === null || String(value).trim() === "";
+}
+
+function missingLabels(step) {
+  if (step?.type !== "command") return [];
+  const definition = state.catalog.find((item) => item.code === step.command);
+  if (!definition) return [];
+  return visibleArguments(definition)
+    .filter((arg) => argumentIsMissing(step, arg))
+    .map((arg) => arg.label);
+}
+
+function findMissingArgument(steps) {
+  for (const step of steps) {
+    const labels = missingLabels(step);
+    if (labels.length) return { command: step.command, label: labels[0] };
+    for (const key of ["steps", "then_steps", "else_steps"]) {
+      if (step[key]) {
+        const nested = findMissingArgument(step[key]);
+        if (nested) return nested;
+      }
+    }
+  }
+  return null;
+}
+
+function refreshCardMissing(card, step) {
+  if (!card || step?.type !== "command") return;
+  const labels = missingLabels(step);
+  card.classList.toggle("incomplete-step", labels.length > 0);
+  const definition = state.catalog.find((item) => item.code === step.command);
+  card.querySelectorAll("[data-arg]").forEach((input) => {
+    const arg = visibleArguments(definition).find((item) => item.key === input.dataset.arg);
+    input.closest("label")?.classList.toggle("missing-arg", !!(arg && argumentIsMissing(step, arg)));
+  });
+  let note = card.querySelector(".missing-note");
+  if (!labels.length) {
+    note?.remove();
+    return;
+  }
+  if (!note) {
+    note = document.createElement("p");
+    note.className = "step-warning missing-note";
+    const body = card.querySelector(":scope > .step-body");
+    if (body) body.prepend(note);
+    else card.append(note);
+  }
+  note.textContent = `未入力: ${labels.join("、")}`;
+}
+
+function paletteCommandButton(item, transport, isMapped) {
+  const favorite = (state.favorites || []).includes(item.code);
+  const codeLabel = isMapped
+    ? `${item.local_io ? item.code : (item.plclink_code ?? item.code)}：`
+    : item.code;
+  const mode = item.local_io
+    ? "ローカルI/O"
+    : (transport === "field_network" ? "FNコマンド" : "PLCLINKコマンド");
+  return `<div class="palette-row">
+    <button class="palette-card palette-command${commandAvailable(item, transport) ? "" : " unavailable"}" data-code="${escapeHtml(item.code)}" type="button">
+      <span class="command-code">${escapeHtml(String(codeLabel))}</span>
+      <span class="command-name">${escapeHtml(item.name)}</span>
+      ${isMapped ? `<small class="plclink-code">${mode}</small>` : ""}
+    </button>
+    <button type="button" class="favorite-toggle" data-favorite="${escapeHtml(item.code)}" aria-pressed="${favorite ? "true" : "false"}" aria-label="${favorite ? "お気に入りを外す" : "お気に入りに追加"}">${favorite ? "★" : "☆"}</button>
+  </div>`;
+}
+
+function unsupportedCommandReason(item, transport) {
+  if (!item) return "この通信方式では使用できません。";
+  if (transport === "field_network") {
+    return item.field_network_reason || item.plclink_reason || "Field Network では使用できません。";
+  }
+  if (transport === "plclink") return item.plclink_reason || "PLCLINK では使用できません。";
+  return "TCP では使用できません。";
+}
+
+function toggleFavorite(code) {
+  const list = state.favorites || [];
+  state.favorites = list.includes(code) ? list.filter((item) => item !== code) : [...list, code];
+  try { localStorage.setItem("vtv-palette-favorites", JSON.stringify(state.favorites)); } catch (_) {}
+  renderPalette();
+}
+
+function logMatches(entry, filter) {
+  if (filter === "tx") return entry.kind === "TX";
+  if (filter === "rx") return entry.kind === "RX";
+  if (filter === "error") return entry.kind === "ERR";
+  if (filter === "info") return !["TX", "RX", "ERR"].includes(entry.kind);
+  return true;
+}
+
+function onLogClick(event) {
+  const button = event.target.closest("[data-log-copy]");
+  if (!button) return;
+  const entry = state.logs[Number(button.dataset.logCopy)];
+  if (!entry) return;
+  const text = `${entry.timestamp} ${entry.kind} ${entry.data}`;
+  const done = () => showToast("失敗行をコピーしました。");
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(() => showToast(text));
+    return;
+  }
+  showToast(text);
+}
+
+function readJsonStore(key, fallback) {
+  try {
+    const data = JSON.parse(localStorage.getItem(key) || "null");
+    return data && typeof data === "object" ? data : fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function newLocalId() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function profileStore() {
+  const data = readJsonStore("vtv-connection-profiles", { activeId: "", items: [] });
+  if (!Array.isArray(data.items)) data.items = [];
+  return data;
+}
+
+function saveProfileStore(data) {
+  try { localStorage.setItem("vtv-connection-profiles", JSON.stringify(data)); } catch (_) {}
+}
+
+function renderProfileSelect() {
+  const select = $("#profile-select");
+  if (!select) return;
+  const data = profileStore();
+  select.innerHTML = `<option value="">（プロファイルなし）</option>${data.items.map((item) =>
+    `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`
+  ).join("")}`;
+  select.value = data.items.some((item) => item.id === data.activeId) ? data.activeId : "";
+  const active = data.items.find((item) => item.id === select.value);
+  const name = $("#profile-name");
+  if (name && document.activeElement !== name) name.value = active?.name || "";
+}
+
+function syncActiveProfile(settings) {
+  const data = profileStore();
+  const item = data.items.find((entry) => entry.id === data.activeId);
+  if (!item) return;
+  item.settings = cloneData(settings);
+  item.updatedAt = new Date().toISOString();
+  saveProfileStore(data);
+}
+
+function saveProfile() {
+  let settings;
+  try {
+    settings = readSettingsForm();
+  } catch (error) {
+    showToast(error.message || "設定を確認してください。");
+    return;
+  }
+  const name = ($("#profile-name")?.value || "").trim();
+  if (!name) {
+    showToast("プロファイル名を入力してください。");
+    return;
+  }
+  const data = profileStore();
+  const selected = $("#profile-select")?.value || "";
+  let item = data.items.find((entry) => entry.id === selected);
+  const named = data.items.find((entry) => entry.name === name);
+  if (named && (!item || named.id !== item.id)) {
+    if (!confirm(`「${name}」を上書きしますか？`)) return;
+    item = named;
+  }
+  if (!item) {
+    item = { id: newLocalId(), name, settings: cloneData(settings), updatedAt: new Date().toISOString() };
+    data.items.push(item);
+  } else {
+    item.name = name;
+    item.settings = cloneData(settings);
+    item.updatedAt = new Date().toISOString();
+  }
+  data.activeId = item.id;
+  saveProfileStore(data);
+  state.settings = settings;
+  localStorage.setItem("vtv-settings", JSON.stringify(settings));
+  renderProfileSelect();
+  showToast(`プロファイル「${name}」を保存しました。`);
+}
+
+function applySelectedProfile() {
+  const id = $("#profile-select")?.value || "";
+  const data = profileStore();
+  data.activeId = id;
+  saveProfileStore(data);
+  const item = data.items.find((entry) => entry.id === id);
+  const name = $("#profile-name");
+  if (name) name.value = item?.name || "";
+  if (!item) return;
+  state.settings = { ...state.settings, ...cloneData(item.settings) };
+  localStorage.setItem("vtv-settings", JSON.stringify(state.settings));
+  applySettingsToForm();
+  refreshConnectionBadge();
+  refreshMappedWatchItems();
+  renderWatchList();
+  renderTimingChannelList();
+  renderPalette();
+  syncLocalIoPanel();
+}
+
+function deleteProfile() {
+  const id = $("#profile-select")?.value || "";
+  if (!id) {
+    showToast("削除するプロファイルを選んでください。");
+    return;
+  }
+  const data = profileStore();
+  const item = data.items.find((entry) => entry.id === id);
+  if (!item) return;
+  if (!confirm(`プロファイル「${item.name}」を削除しますか？`)) return;
+  data.items = data.items.filter((entry) => entry.id !== id);
+  if (data.activeId === id) data.activeId = "";
+  saveProfileStore(data);
+  renderProfileSelect();
+  showToast("プロファイルを削除しました。");
+}
+
+function libraryStore() {
+  const data = readJsonStore("vtv-sequence-library", { recent: [], items: [] });
+  if (!Array.isArray(data.items)) data.items = [];
+  if (!Array.isArray(data.recent)) data.recent = [];
+  return data;
+}
+
+function touchRecent(data, id) {
+  data.recent = [id, ...data.recent.filter((item) => item !== id)].slice(0, 8);
+}
+
+function renderSequenceLibrary() {
+  const select = $("#sequence-recent");
+  if (!select) return;
+  const data = libraryStore();
+  const byId = new Map(data.items.map((item) => [item.id, item]));
+  const recentIds = new Set(data.recent);
+  const options = [
+    ...data.recent.map((id) => byId.get(id)).filter(Boolean),
+    ...data.items.filter((item) => !recentIds.has(item.id)),
+  ];
+  select.innerHTML = `<option value="">最近使ったシーケンス</option>${options.map((item) =>
+    `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`
+  ).join("")}`;
+  if (state.sequenceLibraryId && byId.has(state.sequenceLibraryId)) select.value = state.sequenceLibraryId;
+}
+
+function saveSequenceLibrary() {
+  const name = ($("#sequence-name")?.value || "").trim();
+  if (!name) {
+    showToast("シーケンス名を入力してください。");
+    return;
+  }
+  state.sequenceName = name;
+  const data = libraryStore();
+  let item = data.items.find((entry) => entry.id === state.sequenceLibraryId);
+  const sameName = data.items.find((entry) => entry.name === name);
+  if (sameName && (!item || sameName.id !== item.id)) {
+    if (!confirm(`「${name}」を上書きしますか？`)) return;
+    item = sameName;
+  }
+  const payload = {
+    name,
+    steps: cloneData(state.steps),
+    nextId: state.nextId,
+    updatedAt: new Date().toISOString(),
+  };
+  if (!item) {
+    item = { id: newLocalId(), ...payload };
+    data.items.unshift(item);
+  } else {
+    Object.assign(item, payload);
+  }
+  state.sequenceLibraryId = item.id;
+  touchRecent(data, item.id);
+  try { localStorage.setItem("vtv-sequence-library", JSON.stringify(data)); } catch (_) {}
+  persistSequenceDraft();
+  renderSequenceLibrary();
+  showToast(`「${name}」を残しました。`);
+}
+
+function openLibrarySequence(id) {
+  if (!id) return;
+  const data = libraryStore();
+  const item = data.items.find((entry) => entry.id === id);
+  if (!item) return;
+  if (state.steps.length && !confirm("現在のシーケンスを、選んだ内容で置き換えますか？")) {
+    renderSequenceLibrary();
+    return;
+  }
+  const snapshot = cloneData(state.steps);
+  const nextId = state.nextId;
+  const previousName = state.sequenceName;
+  const previousLibraryId = state.sequenceLibraryId;
+  state.steps = cloneData(item.steps || []);
+  const savedNext = Number(item.nextId);
+  if (Number.isFinite(savedNext) && savedNext > state.nextId) state.nextId = savedNext;
+  state.steps.forEach(ensureStepIds);
+  state.sequenceName = item.name || "";
+  state.sequenceLibraryId = item.id;
+  const input = $("#sequence-name");
+  if (input) input.value = state.sequenceName;
+  touchRecent(data, item.id);
+  try { localStorage.setItem("vtv-sequence-library", JSON.stringify(data)); } catch (_) {}
+  renderSequence();
+  renderSequenceLibrary();
+  showToast(`「${item.name}」を開きました`, () => {
+    state.steps = snapshot;
+    state.nextId = nextId;
+    state.sequenceName = previousName;
+    state.sequenceLibraryId = previousLibraryId;
+    if ($("#sequence-name")) $("#sequence-name").value = previousName || "";
+    renderSequence();
+    renderSequenceLibrary();
+  });
+}
+
+function readRunHistory() {
+  try {
+    const data = JSON.parse(localStorage.getItem("vtv-run-history") || "[]");
+    return Array.isArray(data) ? data : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function formatDuration(ms) {
+  const value = Number(ms);
+  const safe = Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
+  if (safe < 1000) return `${safe} ms`;
+  return `${(safe / 1000).toFixed(1)} 秒`;
+}
+
+function destinationText(settings) {
+  const transport = settings?.transport || "tcp";
+  const label = transport === "plclink"
+    ? "PLCLINK"
+    : transport === "field_network"
+      ? "Field Network"
+      : "TCP";
+  return `${label} ${settings?.host || ""}:${settings?.port ?? ""}`.trim();
+}
+
+function showRunSummary(entry) {
+  const el = $("#run-summary");
+  if (!el) return;
+  const outcome = entry.result === "success" ? "成功" : entry.result === "stopped" ? "停止" : "失敗";
+  const where = entry.result === "success" ? "" : (entry.stoppedAt ? ` ${entry.stoppedAt}` : "");
+  const last = entry.lastResponse ? ` 最後の応答: ${entry.lastResponse}` : "";
+  const text = `${outcome}${where} · ${formatDuration(entry.durationMs)}${last}`;
+  el.textContent = text;
+  el.title = entry.message ? `${text} / ${entry.message}` : text;
+  el.className = `run-summary ${entry.result === "failed" ? "failed" : entry.result === "stopped" ? "stopped" : "ok"}`;
+}
+
+function finishRun(kind, event = {}) {
+  if (state.runRecorded) return;
+  state.runRecorded = true;
+  const durationMs = Number.isFinite(Number(event.duration_ms))
+    ? Number(event.duration_ms)
+    : Math.max(0, Math.round(performance.now() - (state.runStartedAt || performance.now())));
+  const position = event.position && event.total
+    ? `${event.position}/${event.total} ${event.label || ""}`.trim()
+    : (state.runPositionText || "");
+  const entry = {
+    at: new Date().toISOString(),
+    destination: destinationText(state.settings),
+    result: kind,
+    stoppedAt: kind === "success" ? "" : position,
+    durationMs,
+    lastResponse: event.last_response || state.lastResponse || "",
+    message: event.message || "",
+  };
+  const history = readRunHistory();
+  history.unshift(entry);
+  try { localStorage.setItem("vtv-run-history", JSON.stringify(history.slice(0, 40))); } catch (_) {}
+  showRunSummary(entry);
+  if ($("#help-dialog")?.open) renderRunHistory();
+}
+
+function renderRunHistory() {
+  const list = $("#run-history");
+  if (!list) return;
+  const history = readRunHistory();
+  if (!history.length) {
+    list.innerHTML = `<p class="export-note">まだ実行記録はありません。</p>`;
+    return;
+  }
+  list.innerHTML = history.slice(0, 12).map((entry) => {
+    const outcome = entry.result === "success" ? "成功" : entry.result === "stopped" ? "停止" : "失敗";
+    const when = String(entry.at || "").replace("T", " ").slice(0, 19);
+    const where = entry.stoppedAt ? ` ${entry.stoppedAt}` : "";
+    const last = entry.lastResponse ? ` / ${entry.lastResponse}` : "";
+    return `<div class="run-history-item">${escapeHtml(`${when} ${outcome}${where} ${formatDuration(entry.durationMs)} ${entry.destination || ""}${last}`)}</div>`;
+  }).join("");
+}
+
+function exportSupportBundle() {
+  const payload = {
+    app: "VTV Network Sequencer",
+    version: state.appVersion || "",
+    exportedAt: new Date().toISOString(),
+    settings: state.settings,
+    sequence: { name: state.sequenceName || "", steps: cleanSteps(state.steps) },
+    logs: state.logs,
+    runHistory: readRunHistory().slice(0, 20),
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `vtv-support-${fileTimestamp(new Date())}.json`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+function exportTimingImage() {
+  const canvas = $("#timing-chart");
+  if (!canvas || !state.timingSamples.length) {
+    showToast("書き出せる波形がありません。");
+    return;
+  }
+  canvas.toBlob((blob) => {
+    if (!blob) {
+      showToast("画像を書き出せませんでした。");
+      return;
+    }
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `vtv-timing-${fileTimestamp(new Date())}.png`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  });
+}
+
+function exportTimingCsv() {
+  if (!state.timingSamples.length) {
+    showToast("書き出せる波形がありません。");
+    return;
+  }
+  const channels = timingBitItems().filter((item) => state.timingSelectedIds.includes(item.id));
+  const header = ["時刻ms", "poll", ...channels.map((item) => item.label)];
+  const rows = state.timingSamples.map((sample) => [
+    sample.t,
+    sample.n ?? "",
+    ...channels.map((item) => sample.bits?.[item.id] ?? ""),
+  ]);
+  const content = [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
+  const blob = new Blob(["\uFEFF", content], { type: "text/csv;charset=utf-8" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `vtv-timing-${fileTimestamp(new Date())}.csv`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+function openDialog(dialog, focusSelector) {
+  if (!dialog) return;
+  if (typeof dialog.showModal === "function") {
+    if (!dialog.open) dialog.showModal();
+  } else {
+    dialog.setAttribute("open", "");
+  }
+  const focus = (focusSelector && dialog.querySelector(focusSelector))
+    || dialog.querySelector("input, select, textarea, button:not(.close-button)");
+  focus?.focus();
+}
+
+function openHelpDialog() {
+  renderRunHistory();
+  openDialog($("#help-dialog"), "#help-title");
+}
+
+function closeHelpDialog() {
+  const dialog = $("#help-dialog");
+  if (!dialog) return;
+  if (typeof dialog.close === "function" && dialog.open) dialog.close();
+  else dialog.removeAttribute("open");
+}
+
+async function loadAppVersion() {
+  try {
+    const response = await fetch("/api/version");
+    if (response.ok) {
+      const data = await response.json();
+      state.appVersion = data.version || "";
+    }
+  } catch (_) {}
+  const el = $("#app-version");
+  if (!el) return;
+  el.textContent = state.appVersion
+    ? `VTV Network Sequencer ${state.appVersion}`
+    : "VTV Network Sequencer";
+}
+
+function restoreWorkshop() {
+  try {
+    const favorites = JSON.parse(localStorage.getItem("vtv-palette-favorites") || "[]");
+    if (Array.isArray(favorites)) {
+      state.favorites = favorites.filter((item) => typeof item === "string");
+    }
+  } catch (_) {}
+  state.foldUnsupported = localStorage.getItem("vtv-fold-unsupported") !== "0";
+  const filter = localStorage.getItem("vtv-log-filter");
+  if (["all", "tx", "rx", "error", "info"].includes(filter)) state.logFilter = filter;
+  state.watchChangedOnly = localStorage.getItem("vtv-watch-changed-only") === "1";
+  state.watchQuery = localStorage.getItem("vtv-watch-query") || "";
+  const fold = $("#fold-unsupported");
+  if (fold) fold.checked = state.foldUnsupported;
+  const logFilter = $("#log-filter");
+  if (logFilter) logFilter.value = state.logFilter;
+  const changedOnly = $("#watch-changed-only");
+  if (changedOnly) changedOnly.checked = state.watchChangedOnly;
+  const watchSearch = $("#watch-search");
+  if (watchSearch) watchSearch.value = state.watchQuery;
+  const name = $("#sequence-name");
+  if (name) name.value = state.sequenceName || "";
+  renderSequenceLibrary();
+  renderProfileSelect();
+}
+
+function bindWorkshopEvents() {
+  $("#fold-unsupported")?.addEventListener("change", (event) => {
+    state.foldUnsupported = event.target.checked;
+    localStorage.setItem("vtv-fold-unsupported", state.foldUnsupported ? "1" : "0");
+    renderPalette();
+  });
+  $("#profile-save")?.addEventListener("click", saveProfile);
+  $("#profile-delete")?.addEventListener("click", deleteProfile);
+  $("#profile-select")?.addEventListener("change", applySelectedProfile);
+  $("#sequence-save-library")?.addEventListener("click", saveSequenceLibrary);
+  $("#sequence-name")?.addEventListener("input", (event) => {
+    state.sequenceName = event.target.value;
+    scheduleDraftSave();
+  });
+  $("#sequence-recent")?.addEventListener("change", (event) => openLibrarySequence(event.target.value));
+  $("#log-filter")?.addEventListener("change", (event) => {
+    state.logFilter = event.target.value;
+    localStorage.setItem("vtv-log-filter", state.logFilter);
+    paintLog();
+  });
+  $("#log")?.addEventListener("click", onLogClick);
+  $("#watch-search")?.addEventListener("input", (event) => {
+    state.watchQuery = event.target.value;
+    localStorage.setItem("vtv-watch-query", state.watchQuery);
+    renderWatchList();
+  });
+  $("#watch-changed-only")?.addEventListener("change", (event) => {
+    state.watchChangedOnly = event.target.checked;
+    localStorage.setItem("vtv-watch-changed-only", state.watchChangedOnly ? "1" : "0");
+    renderWatchList();
+  });
+  $("#timing-export-image")?.addEventListener("click", exportTimingImage);
+  $("#timing-export-csv")?.addEventListener("click", exportTimingCsv);
+  $("#help-button")?.addEventListener("click", openHelpDialog);
+  $("#help-close-button")?.addEventListener("click", closeHelpDialog);
+  $("#help-close-action")?.addEventListener("click", closeHelpDialog);
+  $("#support-export-button")?.addEventListener("click", exportSupportBundle);
+  document.addEventListener("keydown", onWorkshopKeydown);
+}
+
+function onWorkshopKeydown(event) {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey || event.defaultPrevented) return;
+  const key = event.key.toLowerCase();
+  const dialogOpen = !!document.querySelector("dialog[open]");
+  if (key === "enter") {
+    event.preventDefault();
+    if (dialogOpen) return;
+    runSequence();
+    return;
+  }
+  if (dialogOpen) return;
+  if (key === "k") {
+    event.preventDefault();
+    const search = $("#command-search");
+    search?.focus();
+    search?.select?.();
+    return;
+  }
+  if (key === ".") {
+    event.preventDefault();
+    if (state.running) stopSequence();
+    else showRunHint("実行中ではありません。");
+    return;
+  }
+  if (key === "s" && event.shiftKey) {
+    event.preventDefault();
+    saveSequence();
+  }
 }
 
 initialize().catch((error) => {

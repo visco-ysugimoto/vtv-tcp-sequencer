@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
 StatusSignalSource = Literal["status", "eso", "plo"]
 StatusSignalRole = Literal["none", "busy", "auto", "result_valid", "error"]
@@ -433,7 +440,20 @@ class LocalIoRequest(BaseModel):
     ports: str = Field(min_length=1, max_length=200)
 
 
-class CommandStep(BaseModel):
+def _coerce_step_id(value: object) -> str | None:
+    if value is None or value == "":
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return text[:64]
+
+
+class _StepIdentity(BaseModel):
+    id: Annotated[str | None, BeforeValidator(_coerce_step_id)] = None
+
+
+class CommandStep(_StepIdentity):
     type: Literal["command"]
     command: str = Field(min_length=3, max_length=3)
     arguments: dict[str, str | int | float] = Field(default_factory=dict)
@@ -441,16 +461,16 @@ class CommandStep(BaseModel):
     ignore_response: bool = False
 
 
-class DelayStep(BaseModel):
+class DelayStep(_StepIdentity):
     type: Literal["delay"]
     milliseconds: int = Field(default=100, ge=0, le=3_600_000)
 
 
-class BreakStep(BaseModel):
+class BreakStep(_StepIdentity):
     type: Literal["break"]
 
 
-class IfStep(BaseModel):
+class IfStep(_StepIdentity):
     type: Literal["if"]
     source: Literal["status", "response"] = "status"
     operator: Literal["equals", "contains", "not_contains"] = "equals"
@@ -459,7 +479,7 @@ class IfStep(BaseModel):
     else_steps: list[SequenceStep] = Field(default_factory=list)
 
 
-class LoopStep(BaseModel):
+class LoopStep(_StepIdentity):
     type: Literal["loop"]
     count: int = Field(default=2, ge=1, le=10_000)
     steps: list[SequenceStep] = Field(default_factory=list)

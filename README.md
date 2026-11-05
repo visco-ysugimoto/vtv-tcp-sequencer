@@ -1,4 +1,4 @@
-# VTV TCP Sequencer
+# VTV Network Sequencer
 
 VTV-9000 のネットワーク I/O を、ブラウザ上の縦並びカードから実行する
 ローカルアプリです。ブラウザと装置の間は Python（FastAPI）が中継します。

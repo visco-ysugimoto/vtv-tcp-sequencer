@@ -1,4 +1,4 @@
-VTV TCP Sequencer ご利用上の注意
+VTV Network Sequencer ご利用上の注意
 ================================
 
 ■ 起動方法
@@ -20,7 +20,7 @@ Python を Windows 用 exe にまとめる方式（PyInstaller）のため、
    例: ...\VTV_TCP_Sequencer\
 3. 会社のセキュリティポリシーで除外できない場合は、
    IT 管理者へ「社内配布アプリの誤検知」として除外申請してください
-   ・製品名: VTV TCP Sequencer
+   ・製品名: VTV Network Sequencer
    ・ファイル: VTV_TCP_Sequencer.exe
    ・ハッシュ: 同梱の SHA256.txt を参照
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
@@ -49,6 +50,29 @@ class LoopBreak(RuntimeError):
     pass
 
 
+def _index_step_positions(
+    steps: list[SequenceStep],
+) -> tuple[dict[str, int], int]:
+    """画面上のカード順（両分岐・ループ本体は1回）で位置を付ける。"""
+    positions: dict[str, int] = {}
+    counter = 0
+
+    def walk(items: list[SequenceStep]) -> None:
+        nonlocal counter
+        for step in items:
+            counter += 1
+            if step.id:
+                positions[step.id] = counter
+            if isinstance(step, IfStep):
+                walk(step.then_steps)
+                walk(step.else_steps)
+            elif isinstance(step, LoopStep):
+                walk(step.steps)
+
+    walk(steps)
+    return positions, counter
+
+
 def create_client(
     settings: ProtocolSettings,
 ) -> VtvTcpClient | PlcLinkClient | FieldNetworkClient:
@@ -73,26 +97,91 @@ class SequenceEngine:
         self.last_result: CommandResult | None = None
         self.step_number = 0
         self.loop_depth = 0
+        self.positions: dict[str, int] = {}
+        self.step_total = 0
+        self.started_at = 0.0
+        self.last_response = ""
+
+    def _elapsed_ms(self) -> int:
+        if not self.started_at:
+            return 0
+        return int((time.perf_counter() - self.started_at) * 1000)
+
+    def _outcome(self) -> dict[str, object]:
+        return {
+            "duration_ms": self._elapsed_ms(),
+            "last_response": self.last_response,
+        }
+
+    def _step_label(self, step: SequenceStep) -> str:
+        if isinstance(step, CommandStep):
+            code = step.command.upper()
+            definition = self.catalog.get(code)
+            name = ""
+            if isinstance(definition, dict):
+                name = str(definition.get("name") or "")
+            if name:
+                return f"{code} {name}"
+            return code
+        if isinstance(step, DelayStep):
+            return f"待機 {step.milliseconds}ms"
+        if isinstance(step, IfStep):
+            return "条件"
+        if isinstance(step, LoopStep):
+            return f"ループ ×{step.count}"
+        return "BREAK"
+
+    def _step_event(
+        self,
+        event_type: str,
+        step: SequenceStep,
+        index: int,
+        **extra: object,
+    ) -> dict[str, Any]:
+        position = index
+        if step.id and step.id in self.positions:
+            position = self.positions[step.id]
+        event: dict[str, Any] = {
+            "type": event_type,
+            "index": index,
+            "position": position,
+            "total": self.step_total,
+            "step": step.type,
+            "id": step.id,
+            "label": self._step_label(step),
+        }
+        event.update(extra)
+        return event
 
     async def run(self, steps: list[SequenceStep]) -> None:
-        await self.on_event({"type": "sequence_started"})
+        self.positions, self.step_total = _index_step_positions(steps)
+        self.step_number = 0
+        self.started_at = time.perf_counter()
+        self.last_response = ""
+        await self.on_event(
+            {"type": "sequence_started", "total": self.step_total}
+        )
         try:
             await self._run_steps(steps)
         except SequenceStopped:
             await self.on_event(
-                {"type": "sequence_stopped", "message": "ユーザーが停止しました"}
+                {
+                    "type": "sequence_stopped",
+                    "message": "ユーザーが停止しました",
+                    **self._outcome(),
+                }
             )
             return
-        await self.on_event({"type": "sequence_completed"})
+        await self.on_event(
+            {"type": "sequence_completed", **self._outcome()}
+        )
 
     async def _run_steps(self, steps: list[SequenceStep]) -> None:
         for step in steps:
             self._check_stopped()
             self.step_number += 1
             current = self.step_number
-            await self.on_event(
-                {"type": "step_started", "index": current, "step": step.type}
-            )
+            await self.on_event(self._step_event("step_started", step, current))
             if isinstance(step, CommandStep):
                 await self._run_command(step, current)
             elif isinstance(step, DelayStep):
@@ -102,18 +191,16 @@ class SequenceEngine:
                     raise ProtocolError(
                         "BREAKカードはループの中で使用してください"
                     )
+                await self.on_event(self._step_event("loop_break", step, current))
                 await self.on_event(
-                    {"type": "loop_break", "index": current}
-                )
-                await self.on_event(
-                    {"type": "step_completed", "index": current}
+                    self._step_event("step_completed", step, current)
                 )
                 raise LoopBreak
             elif isinstance(step, IfStep):
                 await self._run_if(step)
             elif isinstance(step, LoopStep):
                 await self._run_loop(step)
-            await self.on_event({"type": "step_completed", "index": current})
+            await self.on_event(self._step_event("step_completed", step, current))
 
     async def _run_command(self, step: CommandStep, index: int) -> None:
         code = step.command.upper()
@@ -139,6 +226,7 @@ class SequenceEngine:
             )
             self.last_result = result
             for response in result.responses:
+                self.last_response = response
                 await self.on_event(
                     {"type": "rx", "index": index, "response": response}
                 )
@@ -202,6 +290,7 @@ class SequenceEngine:
 
         self.last_result = result
         for response in result.responses:
+            self.last_response = response
             await self.on_event(
                 {"type": "rx", "index": index, "response": response}
             )

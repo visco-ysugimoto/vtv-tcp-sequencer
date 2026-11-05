@@ -40,11 +40,39 @@ def test_catalog_endpoint() -> None:
     }
 
 
+def test_health_endpoint() -> None:
+    response = client.get("/api/health")
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+def test_version_endpoint() -> None:
+    response = client.get("/api/version")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "VTV Network Sequencer"
+    assert body["version"]
+
+
 def test_index_is_served() -> None:
     response = client.get("/")
     assert response.status_code == 200
     assert "VTV Network Sequencer" in response.text
-    assert "/app.js?v=20261102-plclink-cmd" in response.text
+    assert "/app.js?v=20261105-workshop" in response.text
+    assert 'id="run-hint"' in response.text
+    assert 'id="run-summary"' in response.text
+    assert 'id="help-button"' in response.text
+    assert 'id="profile-select"' in response.text
+    assert 'id="sequence-name"' in response.text
+    assert 'data-control="break"' in response.text
+    assert 'id="log-filter"' in response.text
+    assert 'id="watch-search"' in response.text
+    assert 'id="timing-export-csv"' in response.text
+    assert 'id="app-version"' in response.text
+    assert 'id="help-dialog"' in response.text
+    assert 'id="undo-toast"' in response.text
+    assert 'data-settings-tab="signals"' in response.text
+    assert 'id="empty-open-settings"' in response.text
     assert "pli-port-name-body" in response.text
     assert "eso-port-name-body" in response.text
     assert 'id="header-timeout"' in response.text

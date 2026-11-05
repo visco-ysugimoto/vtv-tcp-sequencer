@@ -1,4 +1,4 @@
-﻿# VTV TCP Sequencer Windows distribution build
+﻿# VTV Network Sequencer Windows distribution build
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 

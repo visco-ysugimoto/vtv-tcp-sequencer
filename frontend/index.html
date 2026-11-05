@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>VTV Network Sequencer</title>
-  <link rel="stylesheet" href="/style.css?v=20261102-timing-toolbar">
+  <link rel="stylesheet" href="/style.css?v=20261105-workshop">
 </head>
 <body>
   <header class="app-header">
     <div>
       <p class="eyebrow">VTV-9000 NETWORK I/O</p>
-      <h1>Network Sequencer</h1>
+      <h1>VTV Network Sequencer</h1>
     </div>
     <div class="header-actions">
       <label class="header-timeout" title="コマンド応答の待ち時間（秒）。重い処理の前に延ばしてください。">
@@ -19,10 +19,13 @@
         <span class="header-timeout-unit">秒</span>
       </label>
       <span id="connection-badge" class="badge disconnected">未接続</span>
+      <span id="run-progress" class="run-progress hidden"></span>
+      <span id="run-summary" class="run-summary hidden"></span>
       <button id="layout-mode-button" class="button secondary" title="モニター専用表示に切替">モニター拡大</button>
+      <button id="help-button" class="button secondary" title="接続と信号の短い手順">手順</button>
       <button id="settings-button" class="button secondary">接続設定</button>
-      <button id="run-button" class="button primary">▶ 実行</button>
-      <button id="stop-button" class="button danger" disabled>■ 停止</button>
+      <button id="run-button" class="button primary" title="実行（Ctrl+Enter）" aria-keyshortcuts="Control+Enter">▶ 実行</button>
+      <button id="stop-button" class="button danger" disabled title="停止（Ctrl+.）" aria-keyshortcuts="Control+.">■ 停止</button>
       <div id="local-io-panel" class="local-io-panel hidden" title="PLI/ESI ポートを直接 ON/OFF します（タスク実行中も可）">
         <span id="local-io-label" class="local-io-label">ESI</span>
         <input id="local-io-ports" type="text" value="1" aria-label="ポート番号" placeholder="1,2,5-8">
@@ -30,6 +33,7 @@
         <button id="local-io-off" type="button" class="button secondary">OFF</button>
       </div>
     </div>
+    <p id="run-hint" class="run-hint hidden" role="status"></p>
   </header>
 
   <main class="workspace">
@@ -43,7 +47,11 @@
       </div>
       <label class="search">
         <span>⌕</span>
-        <input id="command-search" type="search" placeholder="コマンドを検索">
+        <input id="command-search" type="search" placeholder="コマンドを検索" aria-label="コマンドを検索" aria-keyshortcuts="Control+K">
+      </label>
+      <label class="palette-options">
+        <input id="fold-unsupported" type="checkbox" checked>
+        使えないコマンドを畳む
       </label>
       <div class="palette-section">
         <h3>制御</h3>
@@ -51,6 +59,7 @@
           <button class="palette-card control" data-control="delay">⏱ 待機</button>
           <button class="palette-card control" data-control="if">◇ 条件</button>
           <button class="palette-card control" data-control="loop">↻ ループ</button>
+          <button class="palette-card control" data-control="break" title="ループの中にだけ追加できます">BREAK</button>
         </div>
       </div>
       <div class="palette-section grow">
@@ -66,19 +75,44 @@
           <h2>実行シーケンス</h2>
         </div>
         <div class="compact-actions">
-          <button id="save-button" class="icon-button" title="JSON保存">保存</button>
-          <label class="icon-button file-button" title="JSON読込">
+          <button id="save-button" class="icon-button" title="JSON保存" aria-label="シーケンスをJSONで保存" aria-keyshortcuts="Control+Shift+S">保存</button>
+          <label class="icon-button file-button" title="JSON読込" aria-label="シーケンスをJSONから読み込む">
             読込<input id="load-input" type="file" accept=".json">
           </label>
-          <button id="clear-button" class="icon-button" title="すべて削除">クリア</button>
-          <button id="view-mode-button" class="icon-button" title="表示モード切替">コンパクト</button>
+          <button id="clear-button" class="icon-button" title="すべて削除" aria-label="シーケンスをすべて削除">クリア</button>
+          <button id="view-mode-button" class="icon-button" title="表示モード切替" aria-label="表示モードを切り替える">コンパクト</button>
         </div>
+      </div>
+      <div class="sequence-library">
+        <label>名前
+          <input id="sequence-name" type="text" maxlength="40" placeholder="シーケンス名" aria-label="シーケンス名">
+        </label>
+        <button id="sequence-save-library" type="button" class="icon-button">この名前で残す</button>
+        <label>最近
+          <select id="sequence-recent" aria-label="最近使ったシーケンス">
+            <option value="">最近使ったシーケンス</option>
+          </select>
+        </label>
       </div>
       <div id="sequence-list" class="sequence-list drop-list" data-drop-root="true">
         <div id="empty-state" class="empty-state">
           <div class="empty-icon">＋</div>
           <h3>カードを追加してください</h3>
           <p>左のカードをクリックすると、ここに順番に追加されます。</p>
+          <ol class="setup-steps">
+            <li>
+              <button type="button" id="empty-open-settings" class="link-button">接続</button>
+              <span>通信方式と接続先を保存する</span>
+            </li>
+            <li>
+              <span class="setup-label">カード</span>
+              <span>左のコマンドをクリックして並べる</span>
+            </li>
+            <li>
+              <span class="setup-label">実行</span>
+              <span>右上の実行で装置へ送る</span>
+            </li>
+          </ol>
         </div>
       </div>
     </section>
@@ -90,7 +124,7 @@
           <h2 id="monitor-heading-title">モニター</h2>
         </div>
         <div class="compact-actions">
-          <button id="layout-mode-monitor-button" class="icon-button" title="モニター専用表示に切替">拡大</button>
+          <button id="layout-mode-monitor-button" class="icon-button" title="モニター専用表示に切替" aria-label="モニター専用表示に切替">拡大</button>
         </div>
       </div>
       <div class="monitor-tabs">
@@ -100,10 +134,20 @@
       </div>
       <div class="monitor-panes">
         <div id="monitor-log-panel" class="monitor-content">
-          <div class="monitor-toolbar">
+          <div class="monitor-toolbar log-toolbar">
+            <label class="log-filter">
+              <span class="visually-hidden">通信ログの種別</span>
+              <select id="log-filter" aria-label="通信ログの種別">
+                <option value="all">すべて</option>
+                <option value="tx">送信</option>
+                <option value="rx">受信</option>
+                <option value="error">失敗</option>
+                <option value="info">情報</option>
+              </select>
+            </label>
             <span class="monitor-pane-label">通信ログ</span>
-            <button id="export-log-button" class="icon-button">出力</button>
-            <button id="clear-log-button" class="icon-button">消去</button>
+            <button id="export-log-button" class="icon-button" aria-label="通信ログを出力">出力</button>
+            <button id="clear-log-button" class="icon-button" aria-label="通信ログを消去">消去</button>
           </div>
           <div id="log" class="log" aria-live="polite">
             <div class="log-empty">実行すると送受信内容が表示されます。</div>
@@ -114,9 +158,9 @@
             <div class="watch-toolbar-row watch-toolbar-main">
               <span id="watch-status" class="watch-status">停止中</span>
               <div class="watch-toolbar-actions">
-                <button id="refresh-map-button" class="icon-button" title="接続設定から一覧を再生成">再読込</button>
-                <button id="start-watch-button" class="icon-button">開始</button>
-                <button id="stop-watch-button" class="icon-button" disabled>停止</button>
+                <button id="refresh-map-button" class="icon-button" title="接続設定から一覧を再生成" aria-label="監視一覧を再読込">再読込</button>
+                <button id="start-watch-button" class="icon-button" aria-label="監視を開始">開始</button>
+                <button id="stop-watch-button" class="icon-button" disabled aria-label="監視を停止">停止</button>
               </div>
             </div>
             <div class="watch-toolbar-row watch-toolbar-settings">
@@ -140,6 +184,10 @@
               </label>
             </div>
           </div>
+          <div class="watch-filter-bar">
+            <input id="watch-search" type="search" placeholder="信号名で検索" aria-label="監視リストの検索">
+            <label><input id="watch-changed-only" type="checkbox"> 変化した信号だけ</label>
+          </div>
           <div id="watch-list" class="watch-list"></div>
           <p id="watch-note" class="watch-note">接続設定のコマンド／レスポンス／PLO割付から自動生成します。</p>
         </div>
@@ -148,13 +196,15 @@
             <div class="watch-toolbar-row watch-toolbar-main">
               <span id="timing-status" class="watch-status">監視開始後に記録します</span>
               <div class="watch-toolbar-actions">
-                <button id="timing-zoom-in-button" class="icon-button" title="時間軸を拡大（ホイール上でも可）">拡大</button>
-                <button id="timing-zoom-out-button" class="icon-button" title="時間軸を縮小（ホイール下でも可）">縮小</button>
-                <button id="timing-zoom-reset-button" class="icon-button" title="表示幅をリセットし最新へ追従">リセット</button>
-                <button id="timing-measure-clear-button" class="icon-button" title="測定カーソルを消去">測定クリア</button>
-                <button id="timing-clear-button" class="icon-button" title="波形を消去">消去</button>
-                <button id="start-timing-button" class="icon-button">開始</button>
-                <button id="stop-timing-button" class="icon-button" disabled>停止</button>
+                <button id="timing-zoom-in-button" class="icon-button" title="時間軸を拡大（ホイール上でも可）" aria-label="時間軸を拡大">拡大</button>
+                <button id="timing-zoom-out-button" class="icon-button" title="時間軸を縮小（ホイール下でも可）" aria-label="時間軸を縮小">縮小</button>
+                <button id="timing-zoom-reset-button" class="icon-button" title="表示幅をリセットし最新へ追従" aria-label="表示幅をリセット">リセット</button>
+                <button id="timing-measure-clear-button" class="icon-button" title="測定カーソルを消去" aria-label="測定カーソルを消去">測定クリア</button>
+                <button id="timing-clear-button" class="icon-button" title="波形を消去" aria-label="波形を消去">消去</button>
+                <button id="timing-export-image" class="icon-button" type="button" aria-label="波形を画像で保存">画像</button>
+                <button id="timing-export-csv" class="icon-button" type="button" aria-label="波形をCSVで保存">CSV</button>
+                <button id="start-timing-button" class="icon-button" aria-label="タイミング記録を開始">開始</button>
+                <button id="stop-timing-button" class="icon-button" disabled aria-label="タイミング記録を停止">停止</button>
               </div>
             </div>
             <div class="watch-toolbar-row watch-toolbar-settings">
@@ -238,6 +288,25 @@
         </div>
         <button type="button" id="settings-close-button" class="close-button" aria-label="閉じる">×</button>
       </div>
+      <div class="profile-bar">
+        <label>装置
+          <select id="profile-select" aria-label="装置プロファイル">
+            <option value="">（プロファイルなし）</option>
+          </select>
+        </label>
+        <label>名前
+          <input id="profile-name" type="text" maxlength="40" placeholder="ライン1" aria-label="プロファイル名">
+        </label>
+        <button id="profile-save" type="button" class="icon-button">この名前で保存</button>
+        <button id="profile-delete" type="button" class="icon-button">削除</button>
+      </div>
+      <div class="settings-page-nav" role="tablist" aria-label="設定ページ">
+        <button type="button" class="settings-tab active" data-settings-tab="connection" aria-selected="true">接続先</button>
+        <button type="button" class="settings-tab" data-settings-tab="signals" aria-selected="false">信号</button>
+        <button type="button" class="settings-tab" data-settings-tab="ports" aria-selected="false">ポート名</button>
+        <button type="button" class="settings-tab" data-settings-tab="result" aria-selected="false">結果データ</button>
+      </div>
+      <div class="settings-scroll">
       <div class="form-section">
         <h3>通信方式</h3>
         <div class="form-grid">
@@ -251,7 +320,7 @@
         </div>
         <p id="transport-hint" class="export-note"></p>
       </div>
-      <div class="form-section">
+      <div class="form-section" data-settings-chunk="connection">
         <h3>接続先</h3>
         <div class="form-grid three">
           <label id="host-label"><span id="host-label-text">装置 IP</span><input id="host" required placeholder="192.168.0.10"></label>
@@ -259,7 +328,7 @@
           <label>タイムアウト（秒）<input id="timeout" type="number" min="0.1" max="300" step="0.1" value="5"></label>
         </div>
       </div>
-      <div id="tcp-settings" class="form-section">
+      <div id="tcp-settings" class="form-section" data-settings-chunk="connection">
         <h3>TCP プロトコル</h3>
         <div class="form-grid three">
           <label>入力終端<select id="input-terminator"><option value="CR">CR</option></select></label>
@@ -280,6 +349,7 @@
         </div>
       </div>
       <div id="plclink-settings" class="form-section hidden">
+        <div data-settings-chunk="connection">
         <h3>PLCLINK アドレス割当</h3>
         <div class="form-grid three">
           <label>コマンド先頭 D<input id="command-address" type="number" min="0" max="65535" value="4096"></label>
@@ -296,6 +366,8 @@
           <label>文字エンコード<select id="plclink-encoding"><option value="cp932">SJIS</option><option value="utf-8">UTF-8</option></select></label>
           <label>行番号の桁数<select id="plclink-line-digits"><option value="2">2 (01–99)</option><option value="3">3 (001–999)</option></select></label>
         </div>
+        </div>
+        <div data-settings-chunk="signals" class="page-off">
         <h4 class="subsection-title">ステータス信号割付</h4>
         <p class="export-note">監視表示とコマンドの BUSY 待ちに使います。割付先は仮想出力(PLO)ポートです。role=BUSY はちょうど 1 つ必要です。</p>
         <div class="status-signal-toolbar">
@@ -316,6 +388,8 @@
           </table>
         </div>
         <p id="busy-address-hint" class="export-note">BUSY 実アドレス: M1024（PLO先頭 + ポート番号 - 1）。VTV の「ステータス信号」割付と一致させてください。</p>
+        </div>
+        <div data-settings-chunk="ports" class="page-off">
         <h4 class="subsection-title">ポート名称（PLI / PLO）</h4>
         <p class="export-note">D/M 監視やローカル I/O で分かりやすい名前を付けられます。空欄は Port 番号のみ表示します。</p>
         <div class="port-name-panels">
@@ -338,6 +412,8 @@
             </div>
           </div>
         </div>
+        </div>
+        <div data-settings-chunk="result" class="page-off">
         <h3 class="subsection-title">結果データ出力</h3>
         <div class="check-grid single result-data-toggles">
           <label><input id="result-data-enabled" type="checkbox">結果データ出力を有効にする</label>
@@ -352,8 +428,10 @@
         </div>
         <p class="export-note">結果データ領域は D/M監視に常時表示されます（先頭から監視表示ワード数まで）。実数は固定小数点（整数×10^桁数）で書き込まれるため、監視の「結果データ」表記を VTV モニタに合わせて切り替えてください。</p>
         <p class="export-note">VTV の「環境設定 → PLCLINK」と同一の値にしてください。接続テストは VTV からの接続待ちになります。</p>
+        </div>
       </div>
       <div id="field-network-settings" class="form-section hidden">
+        <div data-settings-chunk="connection">
         <h3>Field Network（EtherNet/IP）</h3>
         <div class="form-grid two">
           <label class="file-button-label">EDS インポート
@@ -379,9 +457,6 @@
           </select></label>
           <label>コマンドサイズ（ワード）<input id="fn-command-size" type="number" min="4" max="512" step="2" value="64"></label>
           <label>レスポンスサイズ（ワード）<input id="fn-response-size" type="number" min="4" max="512" step="2" value="64"></label>
-          <label>結果データサイズ（ワード）<input id="fn-result-size" type="number" min="0" max="1024" step="2" value="238"></label>
-          <label>監視表示ワード数<input id="fn-result-watch-words" type="number" min="0" max="512" step="2" value="64"></label>
-          <label>小数点以下桁数<input id="fn-result-decimals" type="number" min="0" max="9" value="3"></label>
           <label>バイトオーダー<select id="fn-byte-order">
             <option value="high_low">上位→下位</option>
             <option value="low_high">下位→上位</option>
@@ -390,6 +465,8 @@
         </div>
         <label>接続パス（HEX）<input id="fn-connection-path" value="20 04 24 01 2C 14 2C 0A"></label>
         <p id="fn-layout-hint" class="export-note">割付サイズは EDS の入出力サイズと一致させる必要があります。</p>
+        </div>
+        <div data-settings-chunk="signals" class="page-off">
         <h4 class="subsection-title">ステータス信号割付</h4>
         <p class="export-note">監視表示とコマンドの BUSY 待ちに使います。割付先はステータス領域 bit、または ESO ポートです。role=busy はちょうど 1 つ必要です。</p>
         <div class="status-signal-toolbar">
@@ -410,6 +487,8 @@
             <tbody id="fn-status-signal-body"></tbody>
           </table>
         </div>
+        </div>
+        <div data-settings-chunk="ports" class="page-off">
         <h4 class="subsection-title">ポート名称（ESI / ESO）</h4>
         <p class="export-note">D/M 監視で分かりやすい名前を付けられます。空欄は ESI-N / ESO-N のみ表示します。</p>
         <div class="port-name-panels">
@@ -433,6 +512,17 @@
           </div>
         </div>
         <p class="export-note">アプリが EtherNet/IP Scanner として VTV（Adapter）へ接続します。ポートは通常 44818。PLCLINK とは併用できません。</p>
+        </div>
+        <div data-settings-chunk="result" class="page-off">
+        <h3 class="subsection-title">結果データ</h3>
+        <div class="form-grid three">
+          <label>結果データサイズ（ワード）<input id="fn-result-size" type="number" min="0" max="1024" step="2" value="238"></label>
+          <label>監視表示ワード数<input id="fn-result-watch-words" type="number" min="0" max="512" step="2" value="64"></label>
+          <label>小数点以下桁数<input id="fn-result-decimals" type="number" min="0" max="9" value="3"></label>
+        </div>
+        <p class="export-note">語数は Assembly の入力サイズに含まれます。接続先ページの割付計算と一致させてください。</p>
+        </div>
+      </div>
       </div>
       <div id="connection-test-result" class="test-result"></div>
       <div class="dialog-actions">
@@ -474,6 +564,46 @@
     </form>
   </dialog>
 
-  <script src="/app.js?v=20261102-plclink-cmd" defer></script>
+  <footer class="app-footer">
+    <span id="app-version">VTV Network Sequencer</span>
+    <span>Ctrl+Enter 実行 · Ctrl+. 停止 · Ctrl+K 検索 · Ctrl+Shift+S 書き出し</span>
+  </footer>
+
+  <dialog id="help-dialog">
+    <div class="dialog-heading">
+      <div>
+        <p class="eyebrow">GUIDE</p>
+        <h2 id="help-title" tabindex="-1">手順</h2>
+      </div>
+      <button type="button" id="help-close-button" class="close-button" aria-label="閉じる">×</button>
+    </div>
+    <div class="help-body">
+      <h3>TCP（Network I/O）</h3>
+      <p>このPCから装置の Network I/O へ接続します。装置 IP とポートを入れ、接続テストのあと実行します。</p>
+      <h3>PLCLINK（MC 3E 疑似 PLC）</h3>
+      <p>このアプリが疑似 PLC として待ち受けます。先に「疑似PLC待受開始」を押し、VTV の接続先をこの PC の LAN IP と待受ポートにします。</p>
+      <h3>Field Network（EtherNet/IP）</h3>
+      <p>このアプリが Scanner、VTV が Adapter です。ポートは通常 44818 です。PLCLINK とは同時に使いません。</p>
+      <h3>ファイアウォール</h3>
+      <p>PLCLINK の待受ポートと、Field Network の 44818 を許可します。TCP は装置側がこの PC からの接続を受け付ける必要があります。</p>
+      <h3>BUSY・AK / NK / ER</h3>
+      <ul>
+        <li>BUSY は装置が処理中の信号です。コマンドは BUSY が落ちるのを待ってから次へ進みます。</li>
+        <li>AK は受け付けました。NK は受け付けられません。ER は異常です。</li>
+      </ul>
+      <h3>実行記録</h3>
+      <div id="run-history"></div>
+    </div>
+    <div class="dialog-actions">
+      <button id="support-export-button" type="button" class="button secondary">サポート用に書き出す</button>
+      <button type="button" id="help-close-action" class="button primary">閉じる</button>
+    </div>
+  </dialog>
+
+  <div id="undo-toast" class="undo-toast hidden" role="status">
+    <span id="undo-toast-message"></span>
+    <button type="button" id="undo-toast-button" class="button secondary">取り消す</button>
+  </div>
+  <script src="/app.js?v=20261105-workshop" defer></script>
 </body>
 </html>

@@ -19,12 +19,12 @@ VSVersionInfo(
           "041104B0",
           [
             StringStruct("CompanyName", "VISCO"),
-            StringStruct("FileDescription", "VTV TCP Sequencer"),
+            StringStruct("FileDescription", "VTV Network Sequencer"),
             StringStruct("FileVersion", "1.0.0"),
             StringStruct("InternalName", "VTV_TCP_Sequencer"),
             StringStruct("LegalCopyright", "Copyright (c) VISCO"),
             StringStruct("OriginalFilename", "VTV_TCP_Sequencer.exe"),
-            StringStruct("ProductName", "VTV TCP Sequencer"),
+            StringStruct("ProductName", "VTV Network Sequencer"),
             StringStruct("ProductVersion", "1.0.0"),
           ],
         )

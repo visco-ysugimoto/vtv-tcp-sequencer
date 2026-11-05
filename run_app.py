@@ -1,4 +1,4 @@
-"""VTV TCP Sequencer の起動入口（開発・exe 共通）。"""
+"""VTV Network Sequencer の起動入口（開発・exe 共通）。"""
 
 from __future__ import annotations
 
@@ -21,6 +21,11 @@ HOST = "127.0.0.1"
 PORT = 8765
 URL = f"http://{HOST}:{PORT}"
 CATALOG_URL = f"{URL}/api/catalog"
+HEALTH_URL = f"{URL}/api/health"
+# 監視中はイベントループが一時的に埋まる。1 回の取りこぼしでは止めない。
+_HEALTH_TIMEOUT_S = 1.0
+_HEALTH_FAILURES_BEFORE_STOP = 5
+_local_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 MUTEX_NAME = "Local\\VTV_TCP_Sequencer"
 _instance_mutex: int | None = None
 _server_error: BaseException | None = None
@@ -50,7 +55,7 @@ def _log(message: str) -> None:
         pass
 
 
-def _message_box(text: str, title: str = "VTV TCP Sequencer") -> None:
+def _message_box(text: str, title: str = "VTV Network Sequencer") -> None:
     _log(f"MESSAGE: {text.replace(chr(10), ' | ')}")
     if sys.platform == "win32":
         import ctypes
@@ -129,12 +134,19 @@ def _port_listening(host: str, port: int) -> bool:
         return sock.connect_ex((host, port)) == 0
 
 
-def _is_our_server_running() -> bool:
+def _server_health_error() -> str | None:
+    """サーバーが応答していれば None。プロキシ経由で localhost を見に行かない。"""
     try:
-        with urllib.request.urlopen(CATALOG_URL, timeout=0.5) as response:
-            return response.status == 200
-    except (urllib.error.URLError, TimeoutError, OSError):
-        return False
+        with _local_opener.open(HEALTH_URL, timeout=_HEALTH_TIMEOUT_S) as response:
+            if response.status == 200:
+                return None
+            return f"HTTP {response.status}"
+    except Exception as exc:  # noqa: BLE001 - 死活確認の失敗理由をログへ残す
+        return f"{type(exc).__name__}: {exc}"
+
+
+def _is_our_server_running() -> bool:
+    return _server_health_error() is None
 
 
 def _acquire_instance_lock() -> bool:
@@ -201,6 +213,7 @@ def _run_browser_session(
         )
     _log("launching browser")
     process = _launch_browser(browser)
+    health_failures = 0
     try:
         while True:
             try:
@@ -232,16 +245,26 @@ def _run_browser_session(
                         f"ログ: {_app_data_dir() / 'startup.log'}"
                     )
                     break
-                if not _is_our_server_running():
-                    _message_box(
-                        "アプリ画面は開いていますが、ローカルサーバーが停止しました。\n"
-                        "よくある原因はウイルス対策ソフトによる隔離です。\n\n"
-                        "1. 隔離されたファイルを復元する\n"
-                        "2. VTV_TCP_Sequencer フォルダを除外設定に追加する\n"
-                        "3. exe を再度起動する\n\n"
-                        f"ログ: {_app_data_dir() / 'startup.log'}"
-                    )
-                    break
+                health_error = _server_health_error()
+                if health_error is None:
+                    health_failures = 0
+                    continue
+                health_failures += 1
+                _log(
+                    "health check failed "
+                    f"{health_failures}/{_HEALTH_FAILURES_BEFORE_STOP}: {health_error}"
+                )
+                if health_failures < _HEALTH_FAILURES_BEFORE_STOP:
+                    continue
+                _message_box(
+                    "アプリ画面は開いていますが、ローカルサーバーが応答しなくなりました。\n"
+                    "タイミングモニタの監視中は、応答が一時的に遅れることがあります。\n\n"
+                    "1. この画面を閉じたあと、アプリを再起動する\n"
+                    "2. 繰り返す場合は VTV_TCP_Sequencer フォルダを"
+                    "ウイルス対策の除外設定に追加する\n\n"
+                    f"ログ: {_app_data_dir() / 'startup.log'}"
+                )
+                break
     finally:
         if process.poll() is None:
             process.terminate()
@@ -260,7 +283,7 @@ def _attach_to_existing_server(browser: Path) -> None:
             return
         time.sleep(0.15)
     _message_box(
-        "VTV TCP Sequencer は起動処理中、または前回のプロセスが残っています。\n"
+        "VTV Network Sequencer は起動処理中、または前回のプロセスが残っています。\n"
         "タスクマネージャーで VTV_TCP_Sequencer.exe を終了し、\n"
         "少し待ってから再度実行してください。"
     )
