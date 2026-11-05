@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>VTV Network Sequencer</title>
-  <link rel="stylesheet" href="/style.css?v=20261105-workshop">
+  <link rel="stylesheet" href="/style.css?v=20261105-plo1">
 </head>
 <body>
   <header class="app-header">
@@ -60,6 +60,8 @@
           <button class="palette-card control" data-control="if">◇ 条件</button>
           <button class="palette-card control" data-control="loop">↻ ループ</button>
           <button class="palette-card control" data-control="break" title="ループの中にだけ追加できます">BREAK</button>
+          <button class="palette-card control" data-control="note">✎ メモ</button>
+          <button class="palette-card control" data-control="variable" title="結果や出力ポートを名前で残します">▣ 変数</button>
         </div>
       </div>
       <div class="palette-section grow">
@@ -76,6 +78,7 @@
         </div>
         <div class="compact-actions">
           <button id="save-button" class="icon-button" title="JSON保存" aria-label="シーケンスをJSONで保存" aria-keyshortcuts="Control+Shift+S">保存</button>
+          <button id="sequence-readable" class="icon-button" type="button" title="人が読む一覧" aria-label="シーケンスの一覧を書き出す">一覧</button>
           <label class="icon-button file-button" title="JSON読込" aria-label="シーケンスをJSONから読み込む">
             読込<input id="load-input" type="file" accept=".json">
           </label>
@@ -91,6 +94,17 @@
         <label>最近
           <select id="sequence-recent" aria-label="最近使ったシーケンス">
             <option value="">最近使ったシーケンス</option>
+          </select>
+        </label>
+      </div>
+      <div class="sequence-library">
+        <label>試験
+          <input id="trial-name" type="text" maxlength="40" placeholder="試験名" aria-label="試験名">
+        </label>
+        <button id="trial-save" type="button" class="icon-button">この試験を残す</button>
+        <label>開く
+          <select id="trial-select" aria-label="試験セット">
+            <option value="">試験セット</option>
           </select>
         </label>
       </div>
@@ -172,6 +186,24 @@
                   <span class="watch-field-unit">ms</span>
                 </span>
                 <span id="watch-actual-period" class="watch-actual-period" title="ポーリング開始間隔の実測（平滑化）。括弧内は直近の HTTP 取得時間です。">実測 —</span>
+              </label>
+              <label class="watch-field">
+                <span class="watch-field-label">コマンド表示</span>
+                <span class="watch-field-control">
+                  <input id="command-watch-words" type="number" min="4" max="512" step="2" value="64"
+                    title="コマンド領域の先頭から表示するワード数。上限は接続設定のコマンドサイズです。サイズと同じにすると、サイズを広げたときも末尾まで表示します。"
+                    aria-label="コマンド表示ワード数">
+                  <span class="watch-field-unit">ワード</span>
+                </span>
+              </label>
+              <label class="watch-field">
+                <span class="watch-field-label">レスポンス表示</span>
+                <span class="watch-field-control">
+                  <input id="response-watch-words" type="number" min="8" max="512" step="2" value="64"
+                    title="レスポンス領域の先頭から表示するワード数。上限は接続設定のレスポンスサイズです。30000 のような長い応答は、サイズとこの値を揃えて広げます。"
+                    aria-label="レスポンス表示ワード数">
+                  <span class="watch-field-unit">ワード</span>
+                </span>
               </label>
               <label class="watch-field">
                 <span class="watch-field-label">結果データ</span>
@@ -356,6 +388,8 @@
           <label>コマンドサイズ（ワード）<input id="command-size" type="number" min="4" max="256" step="2" value="64"></label>
           <label>レスポンス先頭 D<input id="response-address" type="number" min="0" max="65535" value="8192"></label>
           <label>レスポンスサイズ（ワード）<input id="response-size" type="number" min="8" max="256" step="2" value="64"></label>
+          <label>仮想入力(PLI)先頭 M<input id="pli-address" type="number" min="0" max="65535" value="0"></label>
+          <label>仮想入力ポート数<input id="pli-port-count" type="number" min="1" max="256" value="32"></label>
           <label>仮想出力(PLO)先頭 M<input id="plo-address" type="number" min="0" max="65535" value="1024"></label>
           <label>仮想出力ポート数<input id="plo-port-count" type="number" min="1" max="256" value="32"></label>
           <input id="busy-port" type="hidden" value="1">
@@ -366,6 +400,7 @@
           <label>文字エンコード<select id="plclink-encoding"><option value="cp932">SJIS</option><option value="utf-8">UTF-8</option></select></label>
           <label>行番号の桁数<select id="plclink-line-digits"><option value="2">2 (01–99)</option><option value="3">3 (001–999)</option></select></label>
         </div>
+        <p id="virtual-io-range" class="export-note">仮想入力 M0–M31 / 仮想出力 M1024–M1055。VTV の仮想I/Oと同じ先頭にしてください。</p>
         </div>
         <div data-settings-chunk="signals" class="page-off">
         <h4 class="subsection-title">ステータス信号割付</h4>
@@ -592,6 +627,7 @@
         <li>AK は受け付けました。NK は受け付けられません。ER は異常です。</li>
       </ul>
       <h3>実行記録</h3>
+      <p class="export-note">行を開くと、その回の送受信を読めます。</p>
       <div id="run-history"></div>
     </div>
     <div class="dialog-actions">
@@ -604,6 +640,6 @@
     <span id="undo-toast-message"></span>
     <button type="button" id="undo-toast-button" class="button secondary">取り消す</button>
   </div>
-  <script src="/app.js?v=20261105-workshop" defer></script>
+  <script src="/app.js?v=20261105-plo1" defer></script>
 </body>
 </html>

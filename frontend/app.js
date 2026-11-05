@@ -27,6 +27,7 @@ const state = {
     encoding: "cp932", line_number_digits: 2,
     command_address: 4096, command_size: 64,
     response_address: 8192, response_size: 64,
+    pli_address: 0, pli_port_count: 32,
     plo_address: 1024, plo_port_count: 32, busy_port: 1, byte_order: "high_low",
     result_data_enabled: false, result_data_address: 512, result_data_size: 2048,
     result_data_watch_words: 64, result_data_decimals: 3,
@@ -172,10 +173,22 @@ function bindEvents() {
   $("#settings-form").addEventListener("submit", saveSettings);
   $("#transport").addEventListener("change", syncTransportUi);
   $("#plo-address").addEventListener("input", updateBusyAddressHint);
+  $("#pli-address")?.addEventListener("input", updateVirtualIoRange);
+  $("#pli-port-count")?.addEventListener("input", () => {
+    updateVirtualIoRange();
+    renderPortNameTables();
+  });
   $("#plo-port-count").addEventListener("input", () => {
     updateBusyAddressHint();
     renderPlcLinkStatusSignalTable();
     renderPortNameTables();
+  });
+  ["pli-address", "pli-port-count", "plo-address", "plo-port-count"].forEach((id) => {
+    $(`#${id}`)?.addEventListener("change", () => {
+      refreshMappedWatchItems();
+      renderWatchList();
+      renderTimingChannelList();
+    });
   });
   $("#busy-port").addEventListener("input", updateBusyAddressHint);
   $("#result-data-enabled").addEventListener("change", () => {
@@ -207,6 +220,15 @@ function bindEvents() {
     updateWatchValueDisplays();
   });
   $("#watch-interval")?.addEventListener("change", onWatchIntervalChanged);
+  $("#command-watch-words")?.addEventListener("change", onAreaWatchWordsChanged);
+  $("#response-watch-words")?.addEventListener("change", onAreaWatchWordsChanged);
+  ["command-size", "response-size", "fn-command-size", "fn-response-size"].forEach((id) => {
+    $(`#${id}`)?.addEventListener("change", () => {
+      refreshMappedWatchItems();
+      renderWatchList();
+      renderTimingChannelList();
+    });
+  });
   $("#test-button").addEventListener("click", testConnection);
   $("#start-softplc-button")?.addEventListener("click", startSoftPlc);
   $("#fn-connect-button")?.addEventListener("click", connectFieldNetwork);
@@ -689,9 +711,10 @@ function updateWatchNote() {
   const transport = $("#transport")?.value || state.settings.transport;
   if (transport === "plclink") {
     note.textContent =
-      `接続設定のコマンド／レスポンス／PLO から自動生成。`
+      `接続設定のコマンド／レスポンス／PLO／PLI から自動生成。`
+      + `コマンド表示とレスポンス表示で、見るワード数を変えられます。`
       + `更新周期 ${readWatchIntervalMs()} ms。`
-      + `高速監視は WebSocket 配信（目標 1 ms）。項目数・結果データ監視語数を減らすほど安定します。`;
+      + `高速監視は WebSocket 配信（目標 1 ms）。項目数を減らすほど安定します。`;
     return;
   }
   if (transport === "field_network") {
@@ -802,16 +825,28 @@ function buildMappedWatchItems(settings) {
   const command = Number(settings.command_address) || 0;
   const response = Number(settings.response_address) || 0;
   const plo = Number(settings.plo_address) || 0;
+  const pli = Number(settings.pli_address) || 0;
   const portCount = Math.max(1, Number(settings.plo_port_count) || 32);
+  const pliCount = Math.max(1, Number(settings.pli_port_count) || 32);
   const busyPort = Number(settings.busy_port) || 1;
   const items = [
-    { id: "cmd-trigger", label: "トリガ", group: "コマンド領域", device: "D", address: command, format: "int32" },
-    { id: "cmd-code", label: "コマンドコード", group: "コマンド領域", device: "D", address: command + 2, format: "int32" },
-    { id: "rsp-result", label: "実行結果", group: "レスポンス領域", device: "D", address: response, format: "int32" },
-    { id: "rsp-error", label: "エラーコード", group: "レスポンス領域", device: "D", address: response + 2, format: "int32" },
-    { id: "rsp-echo", label: "コマンドエコー", group: "レスポンス領域", device: "D", address: response + 4, format: "int32" },
-    { id: "rsp-param-size", label: "パラメータ総サイズ", group: "レスポンス領域", device: "D", address: response + 6, format: "int32" },
+    { id: "cmd-trigger", label: "トリガ (+0000)", group: "コマンド領域", device: "D", address: command, format: "int32", relAddress: 0 },
+    { id: "cmd-code", label: "コマンドコード (+0002)", group: "コマンド領域", device: "D", address: command + 2, format: "int32", relAddress: 2 },
   ];
+  appendDwordSpan(items, {
+    idPrefix: "cmd-data", group: "コマンド領域", device: "D", base: command,
+    start: 4, stop: areaWatchWords("command", settings), labelWidth: 4,
+  });
+  items.push(
+    { id: "rsp-result", label: "実行結果 (+0000)", group: "レスポンス領域", device: "D", address: response, format: "int32", relAddress: 0 },
+    { id: "rsp-error", label: "エラーコード (+0002)", group: "レスポンス領域", device: "D", address: response + 2, format: "int32", relAddress: 2 },
+    { id: "rsp-echo", label: "コマンドエコー (+0004)", group: "レスポンス領域", device: "D", address: response + 4, format: "int32", relAddress: 4 },
+    { id: "rsp-param-size", label: "パラメータ総サイズ (+0006)", group: "レスポンス領域", device: "D", address: response + 6, format: "int32", relAddress: 6 },
+  );
+  appendDwordSpan(items, {
+    idPrefix: "rsp-data", group: "レスポンス領域", device: "D", base: response,
+    start: 8, stop: areaWatchWords("response", settings), labelWidth: 4,
+  });
   // 結果データ領域は監視用に常時表示（有効フラグは VTV 設定整合用）
   {
     const base = Number(settings.result_data_address) || 0;
@@ -842,6 +877,7 @@ function buildMappedWatchItems(settings) {
     );
   }
   // ステータス割付は PLO 一覧のラベルに反映（同一ポートの二重表示を避ける）
+  // PLO を PLI より上に出す（出力を先、入力を後）
   const statusSignals = normalizePlcLinkStatusSignals(
     settings.plclink_status_signals,
     busyPort,
@@ -863,6 +899,17 @@ function buildMappedWatchItems(settings) {
       address: plo + port - 1,
       format: "bit",
       busy: port === busyPort,
+    });
+  }
+  const pliNames = normalizePortNames(settings.pli_port_names);
+  for (let port = 1; port <= pliCount; port += 1) {
+    items.push({
+      id: `pli-port-${port}`,
+      label: portDisplayLabel(port, pliNames, `PLI-${port}`),
+      group: "PLI入力",
+      device: "M",
+      address: pli + port - 1,
+      format: "bit",
     });
   }
   return items;
@@ -911,10 +958,11 @@ function capturePortNameDraftFromForm() {
 
 function renderPortNameTables({ capture = true } = {}) {
   if (capture) capturePortNameDraftFromForm();
+  const pliCount = Math.max(1, Number($("#pli-port-count")?.value) || Number(state.settings.pli_port_count) || 32);
   const ploCount = Math.max(1, Number($("#plo-port-count")?.value) || Number(state.settings.plo_port_count) || 32);
   const esiCount = Number($("#fn-esi-ports")?.value ?? state.settings.fn_esi_ports) || 0;
   const esoCount = Number($("#fn-eso-ports")?.value ?? state.settings.fn_eso_ports) || 0;
-  renderPortNameTable("pli", ploCount);
+  renderPortNameTable("pli", pliCount);
   renderPortNameTable("plo", ploCount);
   renderPortNameTable("esi", esiCount);
   renderPortNameTable("eso", esoCount);
@@ -1266,13 +1314,23 @@ function buildFnMappedWatchItems(settings) {
     });
   }
   items.push(
-    { id: "rsp-result", label: "実行結果 (+0000)", group: "レスポンス領域 (Assem10)", device: "IN", address: rsp, format: "int32" },
-    { id: "rsp-error", label: "エラーコード (+0002)", group: "レスポンス領域 (Assem10)", device: "IN", address: rsp + 2, format: "int32" },
-    { id: "rsp-echo", label: "コマンドエコー (+0004)", group: "レスポンス領域 (Assem10)", device: "IN", address: rsp + 4, format: "int32" },
-    { id: "rsp-param-size", label: "パラメータ総サイズ (+0006)", group: "レスポンス領域 (Assem10)", device: "IN", address: rsp + 6, format: "int32" },
-    { id: "cmd-trigger", label: "トリガ (+0000)", group: "コマンド領域 (Assem20)", device: "OUT", address: cmd, format: "int32" },
-    { id: "cmd-code", label: "コマンドコード (+0002)", group: "コマンド領域 (Assem20)", device: "OUT", address: cmd + 2, format: "int32" },
+    { id: "rsp-result", label: "実行結果 (+0000)", group: "レスポンス領域 (Assem10)", device: "IN", address: rsp, format: "int32", relAddress: 0 },
+    { id: "rsp-error", label: "エラーコード (+0002)", group: "レスポンス領域 (Assem10)", device: "IN", address: rsp + 2, format: "int32", relAddress: 2 },
+    { id: "rsp-echo", label: "コマンドエコー (+0004)", group: "レスポンス領域 (Assem10)", device: "IN", address: rsp + 4, format: "int32", relAddress: 4 },
+    { id: "rsp-param-size", label: "パラメータ総サイズ (+0006)", group: "レスポンス領域 (Assem10)", device: "IN", address: rsp + 6, format: "int32", relAddress: 6 },
   );
+  appendDwordSpan(items, {
+    idPrefix: "rsp-data", group: "レスポンス領域 (Assem10)", device: "IN", base: rsp,
+    start: 8, stop: areaWatchWords("response", settings), labelWidth: 5,
+  });
+  items.push(
+    { id: "cmd-trigger", label: "トリガ (+0000)", group: "コマンド領域 (Assem20)", device: "OUT", address: cmd, format: "int32", relAddress: 0 },
+    { id: "cmd-code", label: "コマンドコード (+0002)", group: "コマンド領域 (Assem20)", device: "OUT", address: cmd + 2, format: "int32", relAddress: 2 },
+  );
+  appendDwordSpan(items, {
+    idPrefix: "cmd-data", group: "コマンド領域 (Assem20)", device: "OUT", base: cmd,
+    start: 4, stop: areaWatchWords("command", settings), labelWidth: 5,
+  });
   const esoNames = normalizePortNames(settings.eso_port_names);
   const esiNames = normalizePortNames(settings.esi_port_names);
   for (let port = 1; port <= esoPorts; port += 1) {
@@ -1299,11 +1357,98 @@ function buildFnMappedWatchItems(settings) {
   return items;
 }
 
+function appendDwordSpan(items, options) {
+  const start = Number(options.start) || 0;
+  const stop = Number(options.stop) || 0;
+  let offset = start + (start % 2);
+  const end = stop - (stop % 2);
+  const width = options.labelWidth || 4;
+  for (; offset + 2 <= end; offset += 2) {
+    items.push({
+      id: `${options.idPrefix}-${offset}`,
+      label: `+${String(offset).padStart(width, "0")}`,
+      group: options.group,
+      device: options.device,
+      address: options.base + offset,
+      format: "int32",
+      relAddress: offset,
+    });
+  }
+}
+
+function areaWatchLimit(kind, settings) {
+  const raw = kind === "command" ? settings.command_size : settings.response_size;
+  const size = Number(raw) || 0;
+  const even = size - (size % 2);
+  const min = kind === "command" ? 4 : 8;
+  return Math.max(min, even);
+}
+
+function areaWatchInput(kind) {
+  return $(kind === "command" ? "#command-watch-words" : "#response-watch-words");
+}
+
+function areaWatchStorageKey(kind) {
+  return kind === "command" ? "vtv-command-watch-words" : "vtv-response-watch-words";
+}
+
+function clampAreaWatchWords(kind, settings, value) {
+  const limit = areaWatchLimit(kind, settings);
+  const min = kind === "command" ? 4 : 8;
+  let number = Number(value);
+  if (!Number.isFinite(number)) number = limit;
+  number = Math.min(limit, Math.max(min, Math.round(number)));
+  if (number % 2) number -= 1;
+  if (number < min) number = min;
+  return number;
+}
+
+function syncAreaWatchInputs(settings) {
+  for (const kind of ["command", "response"]) {
+    const input = areaWatchInput(kind);
+    if (!input) continue;
+    const limit = areaWatchLimit(kind, settings);
+    const min = kind === "command" ? 4 : 8;
+    input.min = String(min);
+    input.max = String(limit);
+    let saved = null;
+    try { saved = localStorage.getItem(areaWatchStorageKey(kind)); } catch (_) {}
+    const followArea = saved == null || saved === "";
+    input.value = String(clampAreaWatchWords(kind, settings, followArea ? limit : saved));
+  }
+}
+
+function areaWatchWords(kind, settings) {
+  const input = areaWatchInput(kind);
+  return clampAreaWatchWords(kind, settings, input ? input.value : undefined);
+}
+
+function onAreaWatchWordsChanged() {
+  let settings = state.settings;
+  try {
+    settings = { ...state.settings, ...readSettingsForm() };
+  } catch (_) {}
+  for (const kind of ["command", "response"]) {
+    const value = clampAreaWatchWords(kind, settings, areaWatchInput(kind)?.value);
+    const input = areaWatchInput(kind);
+    if (input) input.value = String(value);
+    try {
+      if (value >= areaWatchLimit(kind, settings)) localStorage.removeItem(areaWatchStorageKey(kind));
+      else localStorage.setItem(areaWatchStorageKey(kind), String(value));
+    } catch (_) {}
+  }
+  refreshMappedWatchItems();
+  renderWatchList();
+  renderTimingChannelList();
+  if (state.watchRunning && state.watchMode === "websocket") startWatchSocket();
+}
+
 function refreshMappedWatchItems() {
   const settings = {
     ...state.settings,
     ...(($("#transport") && readSettingsForm()) || {}),
   };
+  syncAreaWatchInputs(settings);
   const watchable = settings.transport === "plclink" || settings.transport === "field_network";
   state.watchItems = buildMappedWatchItems(watchable ? settings : state.settings);
   rebuildWatchRequestItems();
@@ -1352,7 +1497,7 @@ function renderWatchList(changed = new Set()) {
           : formatWatchValue(snapshot.value, item);
       const valueClass = watchValueClass(snapshot, item, changed.has(item.id));
       return `<div class="watch-map-row${item.busy ? " busy" : ""}">
-        <span class="watch-map-label">${escapeHtml(item.label)}</span>
+        <span class="watch-map-label" title="${escapeHtml(item.label)}">${escapeHtml(item.label)}</span>
         <span class="watch-map-address">${formatWatchAddress(item)}</span>
         <div class="watch-value ${valueClass}" data-watch-value="${item.id}">${escapeHtml(value)}</div>
       </div>`;
@@ -1372,6 +1517,13 @@ function renderWatchList(changed = new Set()) {
 
 function watchGroupTitle(name, items) {
   if (!items.length) return name;
+  if (name.startsWith("コマンド領域") || name.startsWith("レスポンス領域")) {
+    const width = name.includes("Assem") ? 5 : 4;
+    const first = typeof items[0].relAddress === "number" ? items[0].relAddress : 0;
+    const lastItem = items[items.length - 1];
+    const last = (typeof lastItem.relAddress === "number" ? lastItem.relAddress : first) + 2;
+    return `${name}（+${String(first).padStart(width, "0")}–+${String(last).padStart(width, "0")}）`;
+  }
   if (name.startsWith("結果データ")) {
     const first = typeof items[0].relAddress === "number" ? items[0].relAddress : items[0].address;
     const lastItem = items[items.length - 1];
@@ -2426,9 +2578,8 @@ function drawTimingChart() {
   ctx.fillStyle = "#0f1724";
   ctx.fillRect(0, 0, cssW, cssH);
 
-  const selected = state.timingSelectedIds
-    .map((id) => state.watchItems.find((item) => item.id === id))
-    .filter(Boolean);
+  const selectedIds = new Set(state.timingSelectedIds);
+  const selected = timingBitItems().filter((item) => selectedIds.has(item.id));
   const showScale = !!state.timingShowScale;
   const padL = 8;
   const padR = 12;
@@ -2775,6 +2926,7 @@ function newCommand(code) {
     type: "command",
     command: code,
     arguments: args,
+    argument_variables: {},
     ignore_response: false,
   };
 }
@@ -2795,6 +2947,11 @@ function addControl(type, target) {
     }
     target.push({ id: state.nextId++, type });
   }
+  if (type === "note") target.push({ id: state.nextId++, type, text: "" });
+  if (type === "variable") target.push({
+    id: state.nextId++, type, name: "", source: "last_response",
+    card_id: "", port: 1, offset: 0, result_format: "dec", value: "",
+  });
   if (type === "loop") target.push({ id: state.nextId++, type, count: 2, steps: [] });
   if (type === "if") target.push({
     id: state.nextId++, type, source: "status", operator: "equals", value: "AK",
@@ -2837,8 +2994,11 @@ function stepHtml(step, nested = false) {
       .filter((arg) => argumentVisible(step, arg))
       .map((arg) => argumentField(step, arg))
       .join("");
+    const rawVariable = argumentVariableName(step, "raw");
     const raw = usesRaw(def) ? `
-      <label>引数文字列<input data-field="raw" value="${escapeHtml(step.arguments.raw || "")}" placeholder="別資料の構文に従って入力"></label>` : "";
+      <label>引数文字列${variableSelect("raw", rawVariable, "引数文字列")}
+        <input data-field="raw" value="${rawVariable ? `変数 ${escapeHtml(rawVariable)}` : escapeHtml(step.arguments.raw || "")}" ${rawVariable ? "disabled" : ""} placeholder="別資料の構文に従って入力">
+      </label>` : "";
     const ignoreOption = `
       <label class="step-option" title="送信後に装置応答を待たず、すぐ次のカードへ進みます">
         <input data-field="ignore_response" type="checkbox" ${step.ignore_response ? "checked" : ""}>
@@ -2867,6 +3027,70 @@ function stepHtml(step, nested = false) {
         ${unsupported ? `<p class="step-warning">${escapeHtml(unsupportedReason || "この通信方式では使用できません")}</p>` : ""}
         <p class="step-description">${escapeHtml(def.description || "")}${!isMapped && def.example ? `　例: ${escapeHtml(def.example)}` : ""}</p>
       </div>`}
+    </article>`;
+  }
+  if (step.type === "variable") {
+    const transport = $("#transport")?.value || state.settings.transport;
+    const source = step.source || "last_response";
+    const cards = collectCommandCards(state.steps);
+    const cardOptions = cards.map((item) =>
+      `<option value="${escapeHtml(item.id)}" ${String(step.card_id) === item.id ? "selected" : ""}>${escapeHtml(item.label)}</option>`
+    ).join("");
+    const missingName = !String(step.name || "").trim();
+    const title = isCompact
+      ? `<strong>VAR</strong>${escapeHtml(step.name || "変数")} ${escapeHtml(variableSourceLabel(source))}`
+      : "<strong>VAR</strong>変数";
+    const cardField = source === "card_response" || source === "card_status"
+      ? `<label>カード<select data-field="card_id"><option value="">選んでください</option>${cardOptions}</select></label>`
+      : "";
+    const portField = source === "output_port"
+      ? `<label>${escapeHtml(outputPortCaption())}<input data-field="port" type="number" min="1" max="256" step="1" value="${Number(step.port) || 1}"></label>`
+      : "";
+    const literalField = source === "literal"
+      ? `<label>入れる文字<input data-field="value" type="text" maxlength="500" value="${escapeHtml(step.value || "")}"></label>`
+      : "";
+    const resultFormat = step.result_format || "dec";
+    const resultMax = Math.max(0, resultDataSize() - 2);
+    const resultField = source === "result_data"
+      ? `<label>相対アドレス<input data-field="offset" type="number" min="0" max="${resultMax}" step="2" value="${Number(step.offset) || 0}"></label>
+        <label>表記<select data-field="result_format">
+          <option value="dec" ${resultFormat === "dec" ? "selected" : ""}>整数</option>
+          <option value="fixed" ${resultFormat === "fixed" ? "selected" : ""}>固定小数点</option>
+          <option value="hex" ${resultFormat === "hex" ? "selected" : ""}>16進</option>
+        </select></label>`
+      : "";
+    const tcpNote = transport === "tcp" && (source === "output_port" || source === "result_data")
+      ? `<p class="step-warning">${source === "output_port" ? "TCP では出力ポートを直接読めません。" : "TCP では結果データ出力を直接読めません。"}コマンドの応答を選んでください。</p>`
+      : "";
+    return `<article class="step-card variable-step generated-step${missingName ? " incomplete-step" : ""}" data-id="${step.id}">
+      ${stepHeader(step, title, nested)}
+      ${isCompact ? "" : `<div class="step-body">
+        <label class="${missingName ? "missing-arg" : ""}">名前
+          <input data-field="name" type="text" maxlength="40" value="${escapeHtml(step.name || "")}" placeholder="ロット">
+        </label>
+        <label>格納する値<select data-field="source">
+          <option value="last_response" ${source === "last_response" ? "selected" : ""}>直前のカードの応答</option>
+          <option value="last_status" ${source === "last_status" ? "selected" : ""}>直前のカードの結果（AK/NK/ER）</option>
+          <option value="card_response" ${source === "card_response" ? "selected" : ""}>指定したカードの応答</option>
+          <option value="card_status" ${source === "card_status" ? "selected" : ""}>指定したカードの結果（AK/NK/ER）</option>
+          <option value="output_port" ${source === "output_port" ? "selected" : ""}>出力ポート</option>
+          <option value="result_data" ${source === "result_data" ? "selected" : ""}>結果データ出力</option>
+          <option value="literal" ${source === "literal" ? "selected" : ""}>固定の文字</option>
+        </select></label>
+        ${cardField}${portField}${resultField}${literalField}${tcpNote}
+        <p class="step-description">名前で残します。あとのコマンド引数で、その名前を選べます。装置へは送りません。${source === "card_response" || source === "card_status" ? "指定したカードは、この変数より前に置いてください。" : ""}${source === "result_data" ? "相対アドレスは監視の +0000 と同じ位置です。" : ""}</p>
+      </div>`}
+    </article>`;
+  }
+  if (step.type === "note") {
+    const title = isCompact
+      ? `<strong>MEMO</strong>${escapeHtml(step.text || "メモ")}`
+      : "<strong>MEMO</strong>メモ";
+    return `<article class="step-card note-step generated-step" data-id="${step.id}">
+      ${stepHeader(step, title, nested)}
+      ${isCompact ? "" : `<div class="step-body"><label>メモ
+        <textarea data-field="text" maxlength="500" rows="2" placeholder="装置には送りません">${escapeHtml(step.text || "")}</textarea>
+      </label></div>`}
     </article>`;
   }
   if (step.type === "delay") {
@@ -2930,12 +3154,20 @@ function commandCompactSummary(step, def) {
   const parts = [];
   for (const arg of visibleArguments(def)) {
     if (!argumentVisible(step, arg)) continue;
+    const variableName = argumentVariableName(step, arg.key);
+    if (variableName) {
+      parts.push(`${arg.label}:変数 ${variableName}`);
+      if (parts.length >= 3) break;
+      continue;
+    }
     const value = step.arguments[arg.key];
     if (value === undefined || value === null || value === "") continue;
     parts.push(`${arg.label}:${value}`);
     if (parts.length >= 3) break;
   }
-  if (usesRaw(def) && step.arguments.raw) parts.push(`raw:${step.arguments.raw}`);
+  const rawVariable = argumentVariableName(step, "raw");
+  if (rawVariable) parts.push(`raw:変数 ${rawVariable}`);
+  else if (usesRaw(def) && step.arguments.raw) parts.push(`raw:${step.arguments.raw}`);
   if (step.ignore_response) parts.push("応答無視");
   return parts.map((part) => `<span>${escapeHtml(part)}</span>`).join("");
 }
@@ -2951,18 +3183,116 @@ function stepHeader(step, title, nested) {
   </div>`;
 }
 
+function variableSourceLabel(source) {
+  if (source === "last_status") return "直前の結果";
+  if (source === "card_response") return "指定カードの応答";
+  if (source === "card_status") return "指定カードの結果";
+  if (source === "output_port") return "出力ポート";
+  if (source === "result_data") return "結果データ出力";
+  if (source === "literal") return "固定の文字";
+  return "直前の応答";
+}
+
+function resultDataSize() {
+  const transport = $("#transport")?.value || state.settings.transport;
+  const field = transport === "field_network" ? "#fn-result-size" : "#result-data-size";
+  const fromForm = Number($(field)?.value);
+  if (Number.isFinite(fromForm) && fromForm > 0) return fromForm;
+  return Number(state.settings.result_data_size) || 0;
+}
+
+function resultFormatLabel(format) {
+  if (format === "fixed") return "固定小数点";
+  if (format === "hex") return "16進";
+  return "整数";
+}
+
+function outputPortCaption() {
+  const transport = $("#transport")?.value || state.settings.transport;
+  if (transport === "field_network") return "ESO ポート";
+  if (transport === "plclink") return "PLO ポート";
+  return "出力ポート";
+}
+
+function collectCommandCards(steps, prefix = "", found = []) {
+  (steps || []).forEach((step, index) => {
+    const mark = `${prefix}${index + 1}`;
+    if (step.type === "command") {
+      const definition = state.catalog.find((item) => item.code === step.command);
+      found.push({
+        id: String(step.id),
+        label: `${mark}. ${step.command} ${definition?.name || ""}`.trim(),
+      });
+    }
+    if (step.type === "if") {
+      collectCommandCards(step.then_steps, `${mark}-`, found);
+      collectCommandCards(step.else_steps, `${mark}-`, found);
+    }
+    if (step.type === "loop") collectCommandCards(step.steps, `${mark}-`, found);
+  });
+  return found;
+}
+
+function variableChoices() {
+  const names = [];
+  const seen = new Set();
+  const walk = (steps) => {
+    for (const step of steps || []) {
+      if (step.type === "variable") {
+        const name = String(step.name || "").trim();
+        if (name && !seen.has(name)) {
+          seen.add(name);
+          names.push(name);
+        }
+      }
+      walk(step.steps);
+      walk(step.then_steps);
+      walk(step.else_steps);
+    }
+  };
+  walk(state.steps);
+  return names;
+}
+
+function argumentVariableName(step, key) {
+  const name = step?.argument_variables?.[key];
+  return typeof name === "string" ? name.trim() : "";
+}
+
+function argumentCanUseVariable(arg) {
+  return arg.type === "string" || arg.type === "integer" || arg.type === "number";
+}
+
+function variableSelect(key, selected, label) {
+  const names = variableChoices();
+  if (selected && !names.includes(selected)) names.unshift(selected);
+  if (!names.length) return "";
+  const options = names.map((name) =>
+    `<option value="${escapeHtml(name)}" ${selected === name ? "selected" : ""}>変数 ${escapeHtml(name)}</option>`
+  ).join("");
+  return `<select class="arg-bind" data-var="${escapeHtml(key)}" aria-label="${escapeHtml(label)}に使う変数">
+    <option value="" ${selected ? "" : "selected"}>入力した値</option>${options}
+  </select>`;
+}
+
 function argumentField(step, arg) {
   const value = argumentValue(step, arg);
+  const variableName = argumentCanUseVariable(arg) ? argumentVariableName(step, arg.key) : "";
   const missingClass = argumentIsMissing(step, arg) ? "missing-arg" : "";
+  const source = argumentCanUseVariable(arg) ? variableSelect(arg.key, variableName, arg.label) : "";
   if (arg.type === "enum") {
     return `<label class="${missingClass}">${escapeHtml(arg.label)}<select data-arg="${arg.key}">
       ${arg.options.map((option) => `<option value="${escapeHtml(option.value)}" ${String(value) === String(option.value) ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
     </select></label>`;
   }
+  if (variableName) {
+    return `<label class="${missingClass}">${escapeHtml(arg.label)}${source}
+      <input data-arg="${arg.key}" type="text" value="変数 ${escapeHtml(variableName)}" disabled></label>`;
+  }
   const attrs = arg.type === "integer"
     ? `type="number" min="${arg.min}" max="${arg.max}" step="1"`
     : `type="text" maxlength="${arg.max_length || 1024}"`;
-  return `<label class="${missingClass}">${escapeHtml(arg.label)}<input data-arg="${arg.key}" ${attrs} value="${escapeHtml(value)}"></label>`;
+  return `<label class="${missingClass}">${escapeHtml(arg.label)}${source}<input data-arg="${arg.key}" ${attrs} value="${escapeHtml(value)}"></label>`;
 }
 
 function childArea(step, key, label) {
@@ -2973,6 +3303,8 @@ function childArea(step, key, label) {
       <option value="control:if">IF｜条件分岐</option>
       <option value="control:loop">LOOP｜くり返し</option>
       <option value="control:break">BREAK｜ループを抜ける</option>
+      <option value="control:note">MEMO｜メモ</option>
+      <option value="control:variable">VAR｜変数</option>
     </optgroup>`;
   const commandOptions = catalogGroups(state.catalog.filter((item) => commandAvailable(item))).map((group) =>
     `<optgroup label="${escapeHtml(group.label)}">${group.items.map(
@@ -3011,6 +3343,7 @@ function bindStepEvents() {
     if (!located) return;
     card.querySelectorAll(":scope > .step-body [data-arg]").forEach((input) => {
       const applyArg = () => {
+        if (input.disabled) return;
         located.step.arguments[input.dataset.arg] = input.value;
         const definition = state.catalog.find((item) => item.code === located.step.command);
         const controls = visibleArguments(definition).some((arg) => arg.show_if?.key === input.dataset.arg);
@@ -3024,16 +3357,39 @@ function bindStepEvents() {
       input.addEventListener("change", applyArg);
     });
     card.querySelectorAll(":scope > .step-body [data-field]").forEach((input) => {
-      const applyField = () => {
+      const applyField = (event) => {
+        if (input.disabled) return;
         if (input.type === "checkbox") located.step[input.dataset.field] = input.checked;
-        else if (input.type === "number") located.step[input.dataset.field] = Number(input.value);
+        else if (input.type === "number") {
+          let number = Number(input.value);
+          if (input.dataset.field === "offset") {
+            number = Number.isFinite(number) ? Math.max(0, number - (Math.abs(number) % 2)) : 0;
+            input.value = String(number);
+          }
+          located.step[input.dataset.field] = number;
+        }
         else if (input.dataset.field === "raw") located.step.arguments.raw = input.value;
         else located.step[input.dataset.field] = input.value;
+        if (input.dataset.field === "source" || (input.dataset.field === "name" && event.type === "change")) {
+          renderSequence();
+          return;
+        }
         refreshCardMissing(card, located.step);
         scheduleDraftSave();
       };
       input.addEventListener("input", applyField);
       input.addEventListener("change", applyField);
+    });
+    card.querySelectorAll(":scope > .step-body [data-var]").forEach((select) => {
+      select.addEventListener("change", () => {
+        if (!located.step.argument_variables || typeof located.step.argument_variables !== "object") {
+          located.step.argument_variables = {};
+        }
+        const key = select.dataset.var;
+        if (select.value) located.step.argument_variables[key] = select.value;
+        else delete located.step.argument_variables[key];
+        renderSequence();
+      });
     });
     card.querySelectorAll(":scope > .step-header [data-action]").forEach((button) => {
       button.addEventListener("click", () => stepAction(id, button.dataset.action));
@@ -3231,6 +3587,8 @@ function persistSequenceDraft() {
       steps: state.steps,
       name: state.sequenceName || "",
       libraryId: state.sequenceLibraryId || "",
+      trialId: state.trialId || "",
+      trialName: $("#trial-name")?.value || state.trialName || "",
     }));
   } catch (_) {}
 }
@@ -3252,6 +3610,8 @@ function restoreSequenceDraft() {
       state.steps = steps;
       state.sequenceName = typeof data.name === "string" ? data.name : "";
       state.sequenceLibraryId = typeof data.libraryId === "string" ? data.libraryId : "";
+      state.trialId = typeof data.trialId === "string" ? data.trialId : "";
+      state.trialName = typeof data.trialName === "string" ? data.trialName : "";
     }
   } catch (_) {}
   state.draftReady = true;
@@ -3355,6 +3715,8 @@ function readSettingsForm() {
     response_size: isFn
       ? Number($("#fn-response-size")?.value)
       : Number($("#response-size").value),
+    pli_address: Number($("#pli-address")?.value) || 0,
+    pli_port_count: Number($("#pli-port-count")?.value) || 32,
     plo_address: Number($("#plo-address").value),
     plo_port_count: Number($("#plo-port-count").value),
     busy_port: (() => {
@@ -3531,6 +3893,8 @@ function applySettingsToForm() {
   $("#command-size").value = s.command_size ?? 64;
   $("#response-address").value = s.response_address ?? 8192;
   $("#response-size").value = s.response_size ?? 64;
+  $("#pli-address").value = s.pli_address ?? 0;
+  $("#pli-port-count").value = s.pli_port_count ?? 32;
   $("#plo-address").value = s.plo_address ?? s.busy_address ?? 1024;
   $("#plo-port-count").value = s.plo_port_count ?? 32;
   $("#busy-port").value = s.busy_port ?? 1;
@@ -3790,6 +4154,17 @@ async function connectFieldNetwork() {
   }
 }
 
+function updateVirtualIoRange() {
+  const hint = $("#virtual-io-range");
+  if (!hint) return;
+  const pli = Number($("#pli-address")?.value) || 0;
+  const pliCount = Math.max(1, Number($("#pli-port-count")?.value) || 32);
+  const plo = Number($("#plo-address")?.value) || 0;
+  const ploCount = Math.max(1, Number($("#plo-port-count")?.value) || 32);
+  hint.textContent = `仮想入力 M${pli}–M${pli + pliCount - 1} / 仮想出力 M${plo}–M${plo + ploCount - 1}。`
+    + "VTV の仮想I/Oと同じ先頭にしてください。";
+}
+
 function updateBusyAddressHint() {
   const hint = $("#busy-address-hint");
   if (!hint) return;
@@ -3805,6 +4180,7 @@ function updateBusyAddressHint() {
   const count = state.plclinkStatusSignalDraft.length;
   hint.textContent = `BUSY 実アドレス: M${busy}（PLO先頭 M${plo} + Port ${port} - 1 / ポート数 ${portCount}）。`
     + `監視信号 ${count} 件。VTV の「ステータス信号」割付と一致させてください。`;
+  updateVirtualIoRange();
 }
 
 function syncResultDataUi() {
@@ -3823,6 +4199,8 @@ function settingsKey(settings) {
     settings.port,
     settings.command_address,
     settings.response_address,
+    settings.pli_address ?? 0,
+    settings.pli_port_count ?? 32,
     settings.plo_address ?? settings.busy_address,
     settings.plo_port_count ?? 32,
     settings.busy_port ?? 1,
@@ -4072,6 +4450,8 @@ function runBlockReason(settings) {
   }
   if (!state.steps.length) return "実行するカードを追加してください。";
   if (findOrphanBreak(state.steps)) return "BREAK はループの中に置いてください。";
+  const variableProblem = findVariableProblem(state.steps, settings.transport);
+  if (variableProblem) return variableProblem;
   const missing = findMissingArgument(state.steps);
   if (missing) return `${missing.command}: ${missing.label}を入力してください。`;
   if (settings.transport === "plclink" || settings.transport === "field_network") {
@@ -4219,14 +4599,21 @@ function handleEvent(event) {
     card?.classList.remove("active");
     card?.classList.add("done");
   }
-  if (event.type === "tx") addLog("tx", "TX", event.display);
+  if (event.type === "tx") addLog("tx", "TX", event.display, event.id);
   if (event.type === "rx") {
     state.lastResponse = String(event.response ?? "");
-    addLog("rx", "RX", event.response);
+    addLog("rx", "RX", event.response, event.id);
   }
-  if (event.type === "loop_iteration") addLog("info", "LOOP", `${event.iteration} / ${event.count}`);
-  if (event.type === "loop_break") addLog("info", "BREAK", "条件によりループを終了しました");
-  if (event.type === "condition") addLog("info", "IF", `${event.matched ? "一致" : "不一致"} (${event.actual || "空"})`);
+  if (event.type === "note") addLog("info", "MEMO", event.message || "メモ", event.id);
+  if (event.type === "variable") {
+    const shown = event.source === "output_port"
+      ? (String(event.value) === "1" ? "ON" : "OFF")
+      : (event.value ?? "");
+    addLog("info", "VAR", `${event.name} = ${shown}`, event.id);
+  }
+  if (event.type === "loop_iteration") addLog("info", "LOOP", `${event.iteration} / ${event.count}`, event.id);
+  if (event.type === "loop_break") addLog("info", "BREAK", "条件によりループを終了しました", event.id);
+  if (event.type === "condition") addLog("info", "IF", `${event.matched ? "一致" : "不一致"} (${event.actual || "空"})`, event.id);
   if (event.type === "sequence_completed") {
     addLog("info", "DONE", "シーケンスが完了しました");
     finishRun("success", event);
@@ -4244,7 +4631,7 @@ function handleEvent(event) {
       card.classList.add("failed");
       card.scrollIntoView({ block: "nearest" });
     }
-    addLog("error", "ERR", event.message);
+    addLog("error", "ERR", event.message, card?.dataset.id || event.id);
     showRunHint(event.message || "シーケンスが失敗しました");
     finishRun("failed", event);
     setRunning(false);
@@ -4399,9 +4786,14 @@ async function setLocalIoPorts(stateValue) {
   }
 }
 
-function addLog(_css, kind, data) {
+function addLog(_css, kind, data, stepId = "") {
   const now = new Date();
-  state.logs.push({ timestamp: formatTimestamp(now), kind, data: String(data) });
+  state.logs.push({
+    timestamp: formatTimestamp(now),
+    kind,
+    data: String(data ?? ""),
+    stepId: stepId ? String(stepId) : "",
+  });
   paintLog();
 }
 
@@ -4428,7 +4820,10 @@ function paintLog() {
     const copy = entry.kind === "ERR"
       ? `<button type="button" class="log-copy" data-log-copy="${index}">コピー</button>`
       : "";
-    return `<div class="log-row ${logCss(entry.kind)}">
+    const jump = entry.stepId
+      ? ` log-jump" data-log-step="${escapeHtml(entry.stepId)}" role="button" tabindex="0" title="このカードへ移動"`
+      : `"`;
+    return `<div class="log-row ${logCss(entry.kind)}${jump}>
       <span class="log-time">${escapeHtml(time)}</span><span class="log-kind">${escapeHtml(entry.kind)}</span><span class="log-data">${escapeHtml(entry.data)}</span>${copy}
     </div>`;
   }).join("");
@@ -4447,7 +4842,11 @@ function clearLog(options = {}) {
     });
   }
 }
-function clearExecutionStyles() { document.querySelectorAll(".step-card").forEach((card) => card.classList.remove("active", "done", "failed")); }
+function clearExecutionStyles() {
+  document.querySelectorAll(".step-card").forEach((card) => {
+    card.classList.remove("active", "done", "failed", "log-target");
+  });
+}
 
 function openLogExport() {
   if (!state.logs.length) {
@@ -4589,6 +4988,7 @@ function argumentIsRequired(step, arg) {
 }
 
 function argumentIsMissing(step, arg) {
+  if (argumentVariableName(step, arg.key)) return false;
   if (!argumentIsRequired(step, arg) || !argumentVisible(step, arg)) return false;
   const value = argumentValue(step, arg);
   return value === undefined || value === null || String(value).trim() === "";
@@ -4601,6 +5001,39 @@ function missingLabels(step) {
   return visibleArguments(definition)
     .filter((arg) => argumentIsMissing(step, arg))
     .map((arg) => arg.label);
+}
+
+function findVariableProblem(steps, transport) {
+  const names = new Set(variableChoices());
+  const walk = (items) => {
+    for (const step of items || []) {
+      if (step.type === "variable") {
+        if (!String(step.name || "").trim()) return "変数カードに名前を入力してください。";
+        if ((step.source === "card_response" || step.source === "card_status") && !step.card_id) {
+          return "変数カードで、結果を取るカードを選んでください。";
+        }
+        if (step.source === "output_port" && transport === "tcp") {
+          return "TCP では出力ポートを変数に入れられません。コマンドの応答を選んでください。";
+        }
+        if (step.source === "result_data" && transport === "tcp") {
+          return "TCP では結果データ出力を変数に入れられません。コマンドの応答を選んでください。";
+        }
+      }
+      if (step.type === "command" && step.argument_variables) {
+        for (const name of Object.values(step.argument_variables)) {
+          if (name && !names.has(String(name).trim())) return `変数「${name}」がありません。`;
+        }
+      }
+      for (const key of ["steps", "then_steps", "else_steps"]) {
+        if (step[key]) {
+          const nested = walk(step[key]);
+          if (nested) return nested;
+        }
+      }
+    }
+    return "";
+  };
+  return walk(steps);
 }
 
 function findMissingArgument(steps) {
@@ -4685,16 +5118,39 @@ function logMatches(entry, filter) {
 
 function onLogClick(event) {
   const button = event.target.closest("[data-log-copy]");
-  if (!button) return;
-  const entry = state.logs[Number(button.dataset.logCopy)];
-  if (!entry) return;
-  const text = `${entry.timestamp} ${entry.kind} ${entry.data}`;
-  const done = () => showToast("失敗行をコピーしました。");
-  if (navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(text).then(done).catch(() => showToast(text));
+  if (button) {
+    const entry = state.logs[Number(button.dataset.logCopy)];
+    if (!entry) return;
+    const text = `${entry.timestamp} ${entry.kind} ${entry.data}`;
+    const done = () => showToast("失敗行をコピーしました。");
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => showToast(text));
+      return;
+    }
+    showToast(text);
     return;
   }
-  showToast(text);
+  const row = event.target.closest("[data-log-step]");
+  if (row) focusStepCard(row.dataset.logStep);
+}
+
+function onLogKeydown(event) {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  const row = event.target.closest("[data-log-step]");
+  if (!row) return;
+  event.preventDefault();
+  focusStepCard(row.dataset.logStep);
+}
+
+function focusStepCard(id) {
+  const card = document.querySelector(`.step-card[data-id="${CSS.escape(String(id))}"]`);
+  if (!card) {
+    showToast("対応するカードが見つかりません。");
+    return;
+  }
+  document.querySelectorAll(".step-card.log-target").forEach((item) => item.classList.remove("log-target"));
+  card.classList.add("log-target");
+  card.scrollIntoView({ block: "center" });
 }
 
 function readJsonStore(key, fallback) {
@@ -4968,12 +5424,35 @@ function finishRun(kind, event = {}) {
     durationMs,
     lastResponse: event.last_response || state.lastResponse || "",
     message: event.message || "",
+    logs: snapshotRunLogs(),
   };
   const history = readRunHistory();
   history.unshift(entry);
-  try { localStorage.setItem("vtv-run-history", JSON.stringify(history.slice(0, 40))); } catch (_) {}
+  writeRunHistory(history);
   showRunSummary(entry);
   if ($("#help-dialog")?.open) renderRunHistory();
+}
+
+function snapshotRunLogs() {
+  return state.logs.slice(-200).map((entry) => ({
+    timestamp: entry.timestamp,
+    kind: entry.kind,
+    data: String(entry.data || "").slice(0, 500),
+    stepId: entry.stepId || "",
+  }));
+}
+
+function writeRunHistory(history) {
+  const trimmed = history.slice(0, 20);
+  try {
+    localStorage.setItem("vtv-run-history", JSON.stringify(trimmed));
+  } catch (_) {
+    const slim = trimmed.slice(0, 8).map((entry) => ({
+      ...entry,
+      logs: (entry.logs || []).slice(-40),
+    }));
+    try { localStorage.setItem("vtv-run-history", JSON.stringify(slim)); } catch (_) {}
+  }
 }
 
 function renderRunHistory() {
@@ -4984,13 +5463,38 @@ function renderRunHistory() {
     list.innerHTML = `<p class="export-note">まだ実行記録はありません。</p>`;
     return;
   }
-  list.innerHTML = history.slice(0, 12).map((entry) => {
+  list.innerHTML = history.slice(0, 12).map((entry, index) => {
     const outcome = entry.result === "success" ? "成功" : entry.result === "stopped" ? "停止" : "失敗";
     const when = String(entry.at || "").replace("T", " ").slice(0, 19);
     const where = entry.stoppedAt ? ` ${entry.stoppedAt}` : "";
     const last = entry.lastResponse ? ` / ${entry.lastResponse}` : "";
-    return `<div class="run-history-item">${escapeHtml(`${when} ${outcome}${where} ${formatDuration(entry.durationMs)} ${entry.destination || ""}${last}`)}</div>`;
+    const summary = `${when} ${outcome}${where} ${formatDuration(entry.durationMs)} ${entry.destination || ""}${last}`;
+    const lines = (entry.logs || []).map((line) => `${line.kind} ${line.data}`).join("\n");
+    const body = lines
+      ? `<pre class="run-log">${escapeHtml(lines)}</pre><button type="button" class="icon-button" data-history-log="${index}">この通信を表示</button>`
+      : `<p class="export-note">この記録に通信ログはありません。</p>`;
+    return `<details class="run-history-item"><summary>${escapeHtml(summary)}</summary>${body}</details>`;
   }).join("");
+}
+
+function showHistoryLog(index) {
+  const entry = readRunHistory()[index];
+  if (!entry?.logs?.length) {
+    showToast("この記録に通信はありません。");
+    return;
+  }
+  const snapshot = state.logs.map((item) => ({ ...item }));
+  state.logs = entry.logs.map((item) => ({
+    timestamp: item.timestamp,
+    kind: item.kind,
+    data: item.data,
+    stepId: item.stepId || "",
+  }));
+  paintLog();
+  showToast("この回の通信を表示しています", () => {
+    state.logs = snapshot;
+    paintLog();
+  });
 }
 
 function exportSupportBundle() {
@@ -5090,6 +5594,300 @@ async function loadAppVersion() {
     : "VTV Network Sequencer";
 }
 
+function trialStore() {
+  const data = readJsonStore("vtv-trial-sets", { items: [] });
+  if (!Array.isArray(data.items)) data.items = [];
+  return data;
+}
+
+function saveTrialStore(data) {
+  try { localStorage.setItem("vtv-trial-sets", JSON.stringify(data)); } catch (_) {}
+}
+
+function renderTrialSelect() {
+  const select = $("#trial-select");
+  if (!select) return;
+  const data = trialStore();
+  select.innerHTML = `<option value="">試験セット</option>${data.items.map((item) =>
+    `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`
+  ).join("")}`;
+  if (state.trialId && data.items.some((item) => item.id === state.trialId)) {
+    select.value = state.trialId;
+  }
+  const name = $("#trial-name");
+  if (!name || document.activeElement === name) return;
+  const current = data.items.find((item) => item.id === state.trialId);
+  if (current) name.value = current.name;
+  else if (state.trialName) name.value = state.trialName;
+}
+
+function upsertProfile(name, settings, preferredId) {
+  const data = profileStore();
+  let item = preferredId ? data.items.find((entry) => entry.id === preferredId) : null;
+  if (!item) item = data.items.find((entry) => entry.name === name);
+  if (!item) {
+    item = {
+      id: newLocalId(),
+      name,
+      settings: cloneData(settings),
+      updatedAt: new Date().toISOString(),
+    };
+    data.items.push(item);
+  } else {
+    item.name = name;
+    item.settings = cloneData(settings);
+    item.updatedAt = new Date().toISOString();
+  }
+  data.activeId = item.id;
+  saveProfileStore(data);
+  state.settings = settings;
+  localStorage.setItem("vtv-settings", JSON.stringify(settings));
+  const field = $("#profile-name");
+  if (field) field.value = name;
+  return item.id;
+}
+
+function upsertSequence(name, preferredId) {
+  const data = libraryStore();
+  let item = preferredId ? data.items.find((entry) => entry.id === preferredId) : null;
+  if (!item) item = data.items.find((entry) => entry.name === name);
+  const payload = {
+    name,
+    steps: cloneData(state.steps),
+    nextId: state.nextId,
+    updatedAt: new Date().toISOString(),
+  };
+  if (!item) {
+    item = { id: newLocalId(), ...payload };
+    data.items.unshift(item);
+  } else {
+    Object.assign(item, payload);
+  }
+  state.sequenceLibraryId = item.id;
+  state.sequenceName = name;
+  const field = $("#sequence-name");
+  if (field) field.value = name;
+  touchRecent(data, item.id);
+  try { localStorage.setItem("vtv-sequence-library", JSON.stringify(data)); } catch (_) {}
+  persistSequenceDraft();
+  return item.id;
+}
+
+function saveTrialSet() {
+  const name = ($("#trial-name")?.value || "").trim();
+  if (!name) {
+    showToast("試験名を入力してください。");
+    return;
+  }
+  let settings;
+  try {
+    settings = readSettingsForm();
+  } catch (error) {
+    showToast(error.message || "設定を確認してください。");
+    return;
+  }
+  const data = trialStore();
+  let trial = data.items.find((item) => item.id === state.trialId);
+  const sameName = data.items.find((item) => item.name === name);
+  if (sameName && (!trial || sameName.id !== trial.id)) {
+    if (!confirm(`試験「${name}」を上書きしますか？`)) return;
+    trial = sameName;
+  }
+  const profileId = upsertProfile(name, settings, trial?.profileId);
+  const sequenceId = upsertSequence(name, trial?.sequenceId);
+  const payload = {
+    name,
+    profileId,
+    sequenceId,
+    updatedAt: new Date().toISOString(),
+  };
+  if (!trial) {
+    trial = { id: newLocalId(), ...payload };
+    data.items.unshift(trial);
+  } else {
+    Object.assign(trial, payload);
+  }
+  data.items = data.items.slice(0, 40);
+  state.trialId = trial.id;
+  state.trialName = name;
+  saveTrialStore(data);
+  persistSequenceDraft();
+  renderTrialSelect();
+  renderProfileSelect();
+  renderSequenceLibrary();
+  showToast(`試験「${name}」を残しました。接続先とシーケンスを一緒に開けます。`);
+}
+
+function openTrial(id) {
+  if (!id) return;
+  const trial = trialStore().items.find((item) => item.id === id);
+  if (!trial) return;
+  const profile = profileStore().items.find((item) => item.id === trial.profileId);
+  const sequence = libraryStore().items.find((item) => item.id === trial.sequenceId);
+  if (!profile || !sequence) {
+    showToast("この試験の接続先かシーケンスが見つかりません。もう一度残してください。");
+    renderTrialSelect();
+    return;
+  }
+  if (state.steps.length && !confirm("現在のシーケンスと接続先を、この試験で置き換えますか？")) {
+    renderTrialSelect();
+    return;
+  }
+  const snapshot = {
+    steps: cloneData(state.steps),
+    nextId: state.nextId,
+    sequenceName: state.sequenceName,
+    sequenceLibraryId: state.sequenceLibraryId,
+    trialId: state.trialId || "",
+    trialName: $("#trial-name")?.value || "",
+    settings: cloneData(state.settings),
+    activeProfile: profileStore().activeId || "",
+  };
+  state.settings = { ...state.settings, ...cloneData(profile.settings) };
+  localStorage.setItem("vtv-settings", JSON.stringify(state.settings));
+  const profiles = profileStore();
+  profiles.activeId = profile.id;
+  saveProfileStore(profiles);
+  const profileName = $("#profile-name");
+  if (profileName) profileName.value = profile.name || "";
+  applySettingsToForm();
+  refreshConnectionBadge();
+  refreshMappedWatchItems();
+  renderWatchList();
+  renderTimingChannelList();
+  renderPalette();
+  syncLocalIoPanel();
+  state.steps = cloneData(sequence.steps || []);
+  const savedNext = Number(sequence.nextId);
+  if (Number.isFinite(savedNext) && savedNext > state.nextId) state.nextId = savedNext;
+  state.steps.forEach(ensureStepIds);
+  state.sequenceName = sequence.name || trial.name;
+  state.sequenceLibraryId = sequence.id;
+  state.trialId = trial.id;
+  state.trialName = trial.name;
+  const seqName = $("#sequence-name");
+  if (seqName) seqName.value = state.sequenceName;
+  const trialName = $("#trial-name");
+  if (trialName) trialName.value = trial.name;
+  const library = libraryStore();
+  touchRecent(library, sequence.id);
+  try { localStorage.setItem("vtv-sequence-library", JSON.stringify(library)); } catch (_) {}
+  renderProfileSelect();
+  renderSequenceLibrary();
+  renderTrialSelect();
+  renderSequence();
+  showToast(`試験「${trial.name}」を開きました。`, () => {
+    state.steps = snapshot.steps;
+    state.nextId = snapshot.nextId;
+    state.sequenceName = snapshot.sequenceName;
+    state.sequenceLibraryId = snapshot.sequenceLibraryId;
+    state.trialId = snapshot.trialId;
+    state.trialName = snapshot.trialName;
+    state.settings = snapshot.settings;
+    localStorage.setItem("vtv-settings", JSON.stringify(state.settings));
+    const store = profileStore();
+    store.activeId = snapshot.activeProfile;
+    saveProfileStore(store);
+    applySettingsToForm();
+    refreshConnectionBadge();
+    refreshMappedWatchItems();
+    renderWatchList();
+    renderTimingChannelList();
+    renderPalette();
+    syncLocalIoPanel();
+    const name = $("#sequence-name");
+    if (name) name.value = state.sequenceName;
+    renderProfileSelect();
+    renderSequenceLibrary();
+    renderTrialSelect();
+    renderSequence();
+  });
+}
+
+function describeSequenceText() {
+  const lines = [
+    "VTV Network Sequencer",
+    `名前: ${state.sequenceName.trim() || "（無名）"}`,
+    `接続: ${destinationText(state.settings)}`,
+    "",
+  ];
+  if (!state.steps.length) lines.push("カードはありません。");
+  else lines.push(...describeSteps(state.steps, 0));
+  return lines.join("\r\n");
+}
+
+function describeSteps(steps, depth) {
+  const pad = "  ".repeat(depth);
+  const lines = [];
+  steps.forEach((step, index) => {
+    const number = `${index + 1}.`;
+    if (step.type === "command") {
+      const definition = state.catalog.find((item) => item.code === step.command);
+      lines.push(`${pad}${number} ${step.command} ${definition?.name || ""}`.trimEnd());
+      for (const arg of visibleArguments(definition || {})) {
+        if (!argumentVisible(step, arg)) continue;
+        const variableName = argumentVariableName(step, arg.key);
+        const value = variableName ? `変数 ${variableName}` : (step.arguments?.[arg.key] ?? "");
+        lines.push(`${pad}   ${arg.label}: ${value}`);
+      }
+      const rawVariable = argumentVariableName(step, "raw");
+      if (rawVariable) lines.push(`${pad}   引数文字列: 変数 ${rawVariable}`);
+      else if (step.arguments?.raw) lines.push(`${pad}   引数文字列: ${step.arguments.raw}`);
+      if (step.ignore_response) lines.push(`${pad}   応答を待たない`);
+    } else if (step.type === "delay") {
+      lines.push(`${pad}${number} 待機 ${step.milliseconds}ms`);
+    } else if (step.type === "note") {
+      lines.push(`${pad}${number} メモ`);
+      lines.push(`${pad}   ${step.text || "（空）"}`);
+    } else if (step.type === "variable") {
+      const source = variableSourceLabel(step.source);
+      const name = step.name || "（無名）";
+      let detail = source;
+      if (step.source === "card_response" || step.source === "card_status") {
+        const card = collectCommandCards(state.steps).find((item) => item.id === String(step.card_id));
+        detail = card ? `${source} / ${card.label}` : source;
+      } else if (step.source === "output_port") {
+        detail = `${outputPortCaption()} ${step.port}`;
+      } else if (step.source === "result_data") {
+        const offset = String(Number(step.offset) || 0).padStart(4, "0");
+        detail = `結果データ +${offset} ${resultFormatLabel(step.result_format)}`;
+      } else if (step.source === "literal") {
+        detail = `固定の文字 ${step.value || "（空）"}`;
+      }
+      lines.push(`${pad}${number} 変数 ${name}`);
+      lines.push(`${pad}   ${detail}`);
+    } else if (step.type === "break") {
+      lines.push(`${pad}${number} BREAK ループを抜ける`);
+    } else if (step.type === "if") {
+      const source = step.source === "response" ? "応答全文" : "AK/NK/ER";
+      const operator = step.operator === "contains"
+        ? "含む"
+        : step.operator === "not_contains"
+          ? "含まない"
+          : "等しい";
+      lines.push(`${pad}${number} 条件 ${source} ${operator} ${step.value}`);
+      lines.push(`${pad}   一致:`);
+      lines.push(...(step.then_steps?.length ? describeSteps(step.then_steps, depth + 2) : [`${pad}     （なし）`]));
+      lines.push(`${pad}   不一致:`);
+      lines.push(...(step.else_steps?.length ? describeSteps(step.else_steps, depth + 2) : [`${pad}     （なし）`]));
+    } else if (step.type === "loop") {
+      lines.push(`${pad}${number} ループ ×${step.count}`);
+      lines.push(...(step.steps?.length ? describeSteps(step.steps, depth + 1) : [`${pad}   （なし）`]));
+    }
+  });
+  return lines;
+}
+
+function exportReadableSequence() {
+  const blob = new Blob(["\uFEFF", describeSequenceText()], { type: "text/plain;charset=utf-8" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `vtv-sequence-${fileTimestamp(new Date())}.txt`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+  showToast("一覧を書き出しました。");
+}
+
 function restoreWorkshop() {
   try {
     const favorites = JSON.parse(localStorage.getItem("vtv-palette-favorites") || "[]");
@@ -5114,6 +5912,7 @@ function restoreWorkshop() {
   if (name) name.value = state.sequenceName || "";
   renderSequenceLibrary();
   renderProfileSelect();
+  renderTrialSelect();
 }
 
 function bindWorkshopEvents() {
@@ -5131,12 +5930,22 @@ function bindWorkshopEvents() {
     scheduleDraftSave();
   });
   $("#sequence-recent")?.addEventListener("change", (event) => openLibrarySequence(event.target.value));
+  $("#sequence-readable")?.addEventListener("click", exportReadableSequence);
+  $("#trial-save")?.addEventListener("click", saveTrialSet);
+  $("#trial-name")?.addEventListener("input", scheduleDraftSave);
+  $("#trial-select")?.addEventListener("change", (event) => openTrial(event.target.value));
+  $("#run-history")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-history-log]");
+    if (!button) return;
+    showHistoryLog(Number(button.dataset.historyLog));
+  });
   $("#log-filter")?.addEventListener("change", (event) => {
     state.logFilter = event.target.value;
     localStorage.setItem("vtv-log-filter", state.logFilter);
     paintLog();
   });
   $("#log")?.addEventListener("click", onLogClick);
+  $("#log")?.addEventListener("keydown", onLogKeydown);
   $("#watch-search")?.addEventListener("input", (event) => {
     state.watchQuery = event.target.value;
     localStorage.setItem("vtv-watch-query", state.watchQuery);

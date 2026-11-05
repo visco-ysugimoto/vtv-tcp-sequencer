@@ -58,7 +58,11 @@ def test_index_is_served() -> None:
     response = client.get("/")
     assert response.status_code == 200
     assert "VTV Network Sequencer" in response.text
-    assert "/app.js?v=20261105-workshop" in response.text
+    assert "/app.js?v=20261105-plo1" in response.text
+    assert 'data-control="note"' in response.text
+    assert 'data-control="variable"' in response.text
+    assert 'id="trial-select"' in response.text
+    assert 'id="sequence-readable"' in response.text
     assert 'id="run-hint"' in response.text
     assert 'id="run-summary"' in response.text
     assert 'id="help-button"' in response.text

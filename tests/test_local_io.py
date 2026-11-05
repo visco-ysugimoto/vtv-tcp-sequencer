@@ -45,6 +45,8 @@ def test_pli_sets_multiple_ports() -> None:
     settings = ProtocolSettings(
         transport="plclink",
         host="0.0.0.0",
+        pli_address=200,
+        pli_port_count=16,
         plo_address=1024,
         plo_port_count=16,
         busy_port=1,
@@ -58,16 +60,17 @@ def test_pli_sets_multiple_ports() -> None:
             arguments={"state": "1", "ports": "1,3,5-6"},
         )
         assert result.status == "AK"
-        assert client.memory.get_bit(1024) == 1
-        assert client.memory.get_bit(1025) == 0
-        assert client.memory.get_bit(1026) == 1
-        assert client.memory.get_bit(1028) == 1
-        assert client.memory.get_bit(1029) == 1
+        assert client.memory.get_bit(200) == 1
+        assert client.memory.get_bit(201) == 0
+        assert client.memory.get_bit(202) == 1
+        assert client.memory.get_bit(204) == 1
+        assert client.memory.get_bit(205) == 1
+        assert client.memory.get_bit(1024) == 0
         await apply_local_io(
             client,
             code="PLI",
             arguments={"state": "0", "ports": "3"},
         )
-        assert client.memory.get_bit(1026) == 0
+        assert client.memory.get_bit(202) == 0
 
     asyncio.run(_run())

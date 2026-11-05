@@ -6,6 +6,11 @@ from typing import Any, Literal
 
 from ..models import MemoryWatchItem, ProtocolSettings, port_display_label
 from ..plc_link.commands import ByteOrder, words_to_dword
+from ..plc_link.monitor import (
+    COMMAND_HEADER_WORDS,
+    RESPONSE_HEADER_WORDS,
+    append_dword_span,
+)
 from .layout import (
     AssemblyLayout,
     build_layout,
@@ -100,6 +105,20 @@ def build_mapped_watch_items(settings: ProtocolSettings) -> list[MemoryWatchItem
                 address=rsp + 6,
                 format="int32",
             ),
+        ]
+    )
+    append_dword_span(
+        items,
+        id_prefix="rsp-data",
+        group="レスポンス領域 (Assem10)",
+        device="IN",
+        base=rsp,
+        start=RESPONSE_HEADER_WORDS,
+        stop=settings.response_size,
+        label_width=5,
+    )
+    items.extend(
+        [
             MemoryWatchItem(
                 id="cmd-trigger",
                 label="トリガ (+0000)",
@@ -117,6 +136,16 @@ def build_mapped_watch_items(settings: ProtocolSettings) -> list[MemoryWatchItem
                 format="int32",
             ),
         ]
+    )
+    append_dword_span(
+        items,
+        id_prefix="cmd-data",
+        group="コマンド領域 (Assem20)",
+        device="OUT",
+        base=cmd,
+        start=COMMAND_HEADER_WORDS,
+        stop=settings.command_size,
+        label_width=5,
     )
 
     for port in range(1, settings.fn_eso_ports + 1):

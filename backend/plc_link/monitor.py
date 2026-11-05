@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from ..models import MemoryWatchItem, ProtocolSettings, port_display_label
 from .commands import ByteOrder, words_to_dword
@@ -8,6 +8,36 @@ from .memory import DeviceMemory
 
 INVALID_DWORD = -(2**31)
 NOTIFY_AREA_WORDS = 8
+COMMAND_HEADER_WORDS = 4
+RESPONSE_HEADER_WORDS = 8
+
+
+def append_dword_span(
+    items: list[MemoryWatchItem],
+    *,
+    id_prefix: str,
+    group: str,
+    device: Literal["D", "M", "IN", "OUT"],
+    base: int,
+    start: int,
+    stop: int,
+    label_width: int = 4,
+) -> None:
+    """領域先頭からの相対アドレスで、残りの DWORD を監視項目にする。"""
+    offset = start + (start % 2)
+    end = stop - (stop % 2)
+    while offset + 2 <= end:
+        items.append(
+            MemoryWatchItem(
+                id=f"{id_prefix}-{offset}",
+                label=f"+{offset:0{label_width}d}",
+                group=group,
+                device=device,
+                address=base + offset,
+                format="int32",
+            )
+        )
+        offset += 2
 
 
 def build_mapped_watch_items(settings: ProtocolSettings) -> list[MemoryWatchItem]:
@@ -17,7 +47,7 @@ def build_mapped_watch_items(settings: ProtocolSettings) -> list[MemoryWatchItem
     items = [
         MemoryWatchItem(
             id="cmd-trigger",
-            label="トリガ",
+            label="トリガ (+0000)",
             group="コマンド領域",
             device="D",
             address=command,
@@ -25,45 +55,67 @@ def build_mapped_watch_items(settings: ProtocolSettings) -> list[MemoryWatchItem
         ),
         MemoryWatchItem(
             id="cmd-code",
-            label="コマンドコード",
+            label="コマンドコード (+0002)",
             group="コマンド領域",
             device="D",
             address=command + 2,
             format="int32",
         ),
-        MemoryWatchItem(
-            id="rsp-result",
-            label="実行結果",
-            group="レスポンス領域",
-            device="D",
-            address=response,
-            format="int32",
-        ),
-        MemoryWatchItem(
-            id="rsp-error",
-            label="エラーコード",
-            group="レスポンス領域",
-            device="D",
-            address=response + 2,
-            format="int32",
-        ),
-        MemoryWatchItem(
-            id="rsp-echo",
-            label="コマンドエコー",
-            group="レスポンス領域",
-            device="D",
-            address=response + 4,
-            format="int32",
-        ),
-        MemoryWatchItem(
-            id="rsp-param-size",
-            label="パラメータ総サイズ",
-            group="レスポンス領域",
-            device="D",
-            address=response + 6,
-            format="int32",
-        ),
     ]
+    append_dword_span(
+        items,
+        id_prefix="cmd-data",
+        group="コマンド領域",
+        device="D",
+        base=command,
+        start=COMMAND_HEADER_WORDS,
+        stop=settings.command_size,
+    )
+    items.extend(
+        [
+            MemoryWatchItem(
+                id="rsp-result",
+                label="実行結果 (+0000)",
+                group="レスポンス領域",
+                device="D",
+                address=response,
+                format="int32",
+            ),
+            MemoryWatchItem(
+                id="rsp-error",
+                label="エラーコード (+0002)",
+                group="レスポンス領域",
+                device="D",
+                address=response + 2,
+                format="int32",
+            ),
+            MemoryWatchItem(
+                id="rsp-echo",
+                label="コマンドエコー (+0004)",
+                group="レスポンス領域",
+                device="D",
+                address=response + 4,
+                format="int32",
+            ),
+            MemoryWatchItem(
+                id="rsp-param-size",
+                label="パラメータ総サイズ (+0006)",
+                group="レスポンス領域",
+                device="D",
+                address=response + 6,
+                format="int32",
+            ),
+        ]
+    )
+    append_dword_span(
+        items,
+        id_prefix="rsp-data",
+        group="レスポンス領域",
+        device="D",
+        base=response,
+        start=RESPONSE_HEADER_WORDS,
+        stop=settings.response_size,
+    )
     # 結果データ領域は監視用に常時マッピング（有効フラグは VTV 設定整合／重複検証用）
     watch_words = min(settings.result_data_size, settings.result_data_watch_words)
     watch_words -= watch_words % 2
@@ -119,6 +171,7 @@ def build_mapped_watch_items(settings: ProtocolSettings) -> list[MemoryWatchItem
             ]
         )
     # ステータス割付は PLO 一覧のラベルに反映（同一ポートの二重表示を避ける）
+    # PLO を PLI より上に出す（出力を先、入力を後）
     port_labels: dict[int, str] = {}
     for signal in settings.plclink_status_signals:
         port = int(signal.plo_port or 1)
@@ -141,6 +194,20 @@ def build_mapped_watch_items(settings: ProtocolSettings) -> list[MemoryWatchItem
                 id=f"plo-port-{port}",
                 label=label,
                 group="PLO出力",
+                device="M",
+                address=address,
+                format="bit",
+            )
+        )
+    for port in range(1, settings.pli_port_count + 1):
+        address = settings.pli_address + port - 1
+        items.append(
+            MemoryWatchItem(
+                id=f"pli-port-{port}",
+                label=port_display_label(
+                    port, settings.pli_port_names, fallback=f"PLI-{port}"
+                ),
+                group="PLI入力",
                 device="M",
                 address=address,
                 format="bit",

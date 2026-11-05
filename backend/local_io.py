@@ -119,11 +119,11 @@ async def apply_local_io(
     display = format_local_io_display(code, arguments)
 
     if code == "PLI":
-        max_port = max(1, int(settings.plo_port_count))
+        max_port = max(1, int(settings.pli_port_count))
         ports = parse_port_list(
             str(arguments.get("ports", "")), max_port=max_port, label="PLI"
         )
-        base = int(settings.plo_address)
+        base = int(settings.pli_address)
         memory = client.memory  # type: ignore[attr-defined]
         for port in ports:
             memory.set_bit(base + port - 1, state)

@@ -122,9 +122,12 @@ def test_plo_port_names_override_watch_labels() -> None:
     assert settings.plo_port_names == {"1": "準備完了"}
     assert settings.pli_port_names == {"1": "起動要求"}
     items = build_mapped_watch_items(settings)
-    by_id = {item.id: item for item in items if item.group == "PLO出力"}
+    by_id = {item.id: item for item in items}
     assert by_id["plo-port-1"].label == "Port 1: 準備完了"
     assert by_id["plo-port-2"].label == "Port 2"
+    assert by_id["pli-port-1"].label == "PLI-1: 起動要求"
+    assert by_id["pli-port-1"].address == 0
+    assert by_id["pli-port-2"].label == "PLI-2"
 
 
 def test_build_mapped_watch_items() -> None:
@@ -133,6 +136,8 @@ def test_build_mapped_watch_items() -> None:
         host="0.0.0.0",
         command_address=4096,
         response_address=8192,
+        pli_address=0,
+        pli_port_count=4,
         plo_address=1024,
         plo_port_count=4,
         busy_port=2,
@@ -164,6 +169,14 @@ def test_build_mapped_watch_items() -> None:
     ]
     assert by_id["result-data-0"].address == 512
     assert [item.id for item in items if item.group == "ステータス"] == []
+    assert [item.id for item in items if item.group == "PLI入力"] == [
+        "pli-port-1",
+        "pli-port-2",
+        "pli-port-3",
+        "pli-port-4",
+    ]
+    assert by_id["pli-port-1"].address == 0
+    assert by_id["pli-port-1"].format == "bit"
     assert [item.id for item in items if item.group == "PLO出力"] == [
         "plo-port-1",
         "plo-port-2",
@@ -173,6 +186,60 @@ def test_build_mapped_watch_items() -> None:
     assert by_id["plo-port-2"].label == "BUSY (Port 2)"
     assert by_id["plo-port-2"].address == 1025
     assert by_id["plo-port-2"].format == "bit"
+    assert by_id["cmd-data-4"].address == 4100
+    assert by_id["cmd-data-62"].address == 4158
+    assert "cmd-data-64" not in by_id
+    assert by_id["rsp-data-8"].address == 8200
+    assert by_id["rsp-data-62"].address == 8254
+    assert "rsp-data-6" not in by_id
+    command_ids = [item.id for item in items if item.group == "コマンド領域"]
+    assert command_ids[:3] == ["cmd-trigger", "cmd-code", "cmd-data-4"]
+    response_ids = [item.id for item in items if item.group == "レスポンス領域"]
+    assert response_ids[3:5] == ["rsp-param-size", "rsp-data-8"]
+
+
+def test_command_response_watch_stops_at_area_size() -> None:
+    settings = ProtocolSettings(
+        transport="plclink",
+        host="0.0.0.0",
+        command_address=4096,
+        command_size=16,
+        response_address=8192,
+        response_size=16,
+        result_data_size=0,
+        result_data_watch_words=0,
+        plo_port_count=1,
+    )
+    items = build_mapped_watch_items(settings)
+    by_id = {item.id: item for item in items}
+    assert by_id["cmd-data-14"].address == 4110
+    assert "cmd-data-16" not in by_id
+    assert by_id["rsp-data-14"].address == 8206
+    assert "rsp-data-16" not in by_id
+    assert by_id["rsp-data-8"].label == "+0008"
+
+
+def test_pli_and_plo_use_separate_bit_ranges() -> None:
+    settings = ProtocolSettings(transport="plclink", host="0.0.0.0")
+    assert settings.pli_address == 0
+    assert settings.pli_port_count == 32
+    assert settings.plo_address == 1024
+    items = build_mapped_watch_items(settings)
+    by_id = {item.id: item for item in items}
+    assert by_id["pli-port-1"].address == 0
+    assert by_id["pli-port-32"].address == 31
+    assert by_id["plo-port-1"].address == 1024
+    ids = [item.id for item in items]
+    assert ids.index("plo-port-1") < ids.index("pli-port-1")
+    with pytest.raises(ValueError, match="仮想入力\\(PLI\\)と仮想出力\\(PLO\\)"):
+        ProtocolSettings(
+            transport="plclink",
+            host="0.0.0.0",
+            pli_address=1024,
+            pli_port_count=8,
+            plo_address=1028,
+            plo_port_count=8,
+        )
 
 
 def test_result_data_overlap_rejected() -> None:

@@ -130,6 +130,8 @@ class ProtocolSettings(BaseModel):
     command_size: int = Field(default=64, ge=4, le=512)
     response_address: int = Field(default=8192, ge=0, le=65535)
     response_size: int = Field(default=64, ge=4, le=512)
+    pli_address: int = Field(default=0, ge=0, le=65535)
+    pli_port_count: int = Field(default=32, ge=1, le=256)
     plo_address: int = Field(default=1024, ge=0, le=65535)
     plo_port_count: int = Field(default=32, ge=1, le=256)
     busy_port: int = Field(default=1, ge=1, le=256)
@@ -275,6 +277,20 @@ class ProtocolSettings(BaseModel):
         if plo_end > 65535:
             raise ValueError(
                 "仮想出力ポート範囲がデバイス範囲を超えています"
+            )
+        pli_end = self.pli_address + self.pli_port_count - 1
+        if pli_end > 65535:
+            raise ValueError(
+                "仮想入力ポート範囲がデバイス範囲を超えています"
+            )
+        if _ranges_overlap(
+            self.pli_address,
+            self.pli_address + self.pli_port_count,
+            self.plo_address,
+            self.plo_address + self.plo_port_count,
+        ):
+            raise ValueError(
+                "仮想入力(PLI)と仮想出力(PLO)の M 範囲が重複しています"
             )
         command_start = self.command_address
         command_end = self.command_address + self.command_size
@@ -457,6 +473,8 @@ class CommandStep(_StepIdentity):
     type: Literal["command"]
     command: str = Field(min_length=3, max_length=3)
     arguments: dict[str, str | int | float] = Field(default_factory=dict)
+    # 引数名 → 変数カードの名前。指定した引数だけ、実行時にその変数で置き換える
+    argument_variables: dict[str, str] = Field(default_factory=dict)
     # True のとき送信後に装置応答を待たず、すぐ次のカードへ進む
     ignore_response: bool = False
 
@@ -468,6 +486,30 @@ class DelayStep(_StepIdentity):
 
 class BreakStep(_StepIdentity):
     type: Literal["break"]
+
+
+class NoteStep(_StepIdentity):
+    type: Literal["note"]
+    text: str = Field(default="", max_length=500)
+
+
+class VariableStep(_StepIdentity):
+    type: Literal["variable"]
+    name: str = Field(default="", max_length=40)
+    source: Literal[
+        "last_response",
+        "last_status",
+        "card_response",
+        "card_status",
+        "output_port",
+        "result_data",
+        "literal",
+    ] = "last_response"
+    card_id: str = ""
+    port: int = Field(default=1, ge=1, le=256)
+    offset: int = Field(default=0, ge=0, le=65534)
+    result_format: Literal["dec", "fixed", "hex"] = "dec"
+    value: str = Field(default="", max_length=500)
 
 
 class IfStep(_StepIdentity):
@@ -486,7 +528,7 @@ class LoopStep(_StepIdentity):
 
 
 SequenceStep = Annotated[
-    CommandStep | DelayStep | BreakStep | IfStep | LoopStep,
+    CommandStep | DelayStep | BreakStep | NoteStep | VariableStep | IfStep | LoopStep,
     Field(discriminator="type"),
 ]
 

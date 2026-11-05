@@ -152,6 +152,13 @@ def test_watch_items_and_read() -> None:
     assert items.index(next(i for i in items if i.id == "result-data-0")) < items.index(
         next(i for i in items if i.id == "cmd-trigger")
     )
+    by_id = {item.id: item for item in items}
+    assert by_id["rsp-data-8"].address == 252
+    assert by_id["cmd-data-4"].address == 8
+    assert "rsp-data-64" not in by_id
+    assert "cmd-data-64" not in by_id
+    response_ids = [item.id for item in items if item.group == "レスポンス領域 (Assem10)"]
+    assert response_ids[4] == "rsp-data-8"
 
     input_data = bytearray(616)
     output_data = bytearray(132)
