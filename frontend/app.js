@@ -1,9 +1,6 @@
 const WATCH_INTERVAL_MIN_MS = 1;
 const WATCH_INTERVAL_MAX_MS = 10_000;
 const WATCH_INTERVAL_DEFAULT_MS = 500;
-// 立下りからこの時間以内の再 ON は、同じパルスの揺れとして捨てる。幅は最初の ON のまま。
-const TIMING_ECHO_HOLD_MS = 12;
-
 const DEFAULT_FN_STATUS_SIGNALS = [
   { id: "auto", label: "自動運転中", source: "status", bit: 0, eso_port: null, plo_port: null, role: "auto" },
   { id: "busy", label: "BUSY", source: "status", bit: 1, eso_port: null, plo_port: null, role: "busy" },
@@ -751,58 +748,6 @@ function insertTimingEdge(t, edge) {
   }
   if (state.watchRunning) setTimingStatus("記録中", "running");
   queueTimingChartDraw();
-}
-
-function suppressTimingEchoes() {
-  // 最初の ON から立下りまでの幅は変えない。
-  // その立下りから 12ms 以内に戻った ON は、幅へ足さず捨てる。
-  const samples = state.timingSamples;
-  const count = samples.length;
-  if (count < 2) return;
-  const latest = samples[count - 1].t;
-  let start = count - 1;
-  while (start > 0 && samples[start - 1].t >= latest - 80) start -= 1;
-  for (const item of timingBitItems()) {
-    suppressTimingEchoesForBit(samples, item.id, start);
-  }
-}
-
-function suppressTimingEchoesForBit(samples, id, start) {
-  let onStart = null;
-  let fallT = null;
-  let dropping = false;
-  if (start > 0 && samples[start - 1].bits[id] === 1) onStart = samples[start - 1].t;
-  for (let i = start; i < samples.length; i += 1) {
-    const value = samples[i].bits[id];
-    if (value == null) continue;
-    const t = samples[i].t;
-    if (dropping) {
-      if (value === 1) {
-        samples[i].bits[id] = 0;
-        continue;
-      }
-      dropping = false;
-      fallT = null;
-      onStart = null;
-      continue;
-    }
-    if (value === 1) {
-      if (onStart == null) {
-        if (fallT != null && t - fallT <= TIMING_ECHO_HOLD_MS) {
-          dropping = true;
-          samples[i].bits[id] = 0;
-          continue;
-        }
-        onStart = t;
-        fallT = null;
-      }
-      continue;
-    }
-    if (onStart != null) {
-      fallT = t;
-      onStart = null;
-    }
-  }
 }
 
 function formatWatchActualPeriodText() {
@@ -2121,7 +2066,6 @@ function handleWatchSocketMessage(message) {
   if (changed.size) updateWatchValueDisplays(changed);
   // 値が変わらなくてもサンプルを積む（時間軸はサーバ時刻）
   recordTimingSample(sampleAt, state.watchValues);
-  suppressTimingEchoes();
   const uiNow = performance.now();
   if (uiNow - (state.watchPeriodLastAt || 0) > 100) {
     state.watchPeriodLastAt = uiNow;
@@ -2173,7 +2117,6 @@ async function pollWatchValues() {
     setWatchStatus("監視中", "running");
     updateWatchValueDisplays(changed);
     recordTimingSample(started, nextValues);
-    suppressTimingEchoes();
   } catch (error) {
     state.watchValues = {};
     updateWatchValueDisplays();
