@@ -301,6 +301,8 @@ class SequenceEngine:
             raise ProtocolError(
                 f"結果データの相対アドレス +{offset:04d} は範囲外です"
             )
+        if step.result_format == "string":
+            return self._read_result_string(offset)
         raw = self._read_result_dword(offset)
         return self._format_result_value(raw, step.result_format)
 
@@ -336,6 +338,55 @@ class SequenceEngine:
         if value & 0x80000000:
             value -= 0x100000000
         return value
+
+    def _read_result_words(self, offset: int, count: int) -> list[int]:
+        settings = self.client.settings
+        if count <= 0:
+            return []
+        if settings.transport == "plclink":
+            memory = getattr(self.client, "memory", None)
+            if memory is None:
+                raise ProtocolError("結果データ出力を読めません")
+            address = int(settings.result_data_address) + offset
+            try:
+                return [int(word) & 0xFFFF for word in memory.read_words(address, count)]
+            except (IndexError, ValueError) as exc:
+                raise ProtocolError("結果データ出力の読み出し範囲外です") from exc
+        if settings.transport != "field_network":
+            raise ProtocolError("結果データ出力を読めません")
+        from .field_network.layout import build_layout
+
+        layout = build_layout(
+            esi_ports=settings.fn_esi_ports,
+            eso_ports=settings.fn_eso_ports,
+            command_words=settings.command_size,
+            response_words=settings.response_size,
+            result_words=settings.result_data_size,
+        )
+        data = self.client.read_input()
+        pos = (layout.result_word + offset) * 2
+        words: list[int] = []
+        for index in range(count):
+            byte = pos + index * 2
+            if byte < 0 or byte + 1 >= len(data):
+                break
+            words.append(data[byte] | (data[byte + 1] << 8))
+        return words
+
+    def _read_result_string(self, offset: int) -> str:
+        from .plc_link.commands import words_to_dword
+        from .plc_link.monitor import _decode_string
+
+        settings = self.client.settings
+        count = int(settings.result_data_size) - offset
+        words = self._read_result_words(offset, count)
+        if len(words) >= 2 and words_to_dword(words[:2]) == 2_147_483_646:
+            return "No Data"
+        return _decode_string(
+            words,
+            encoding=settings.encoding,
+            byte_order=settings.byte_order,
+        )
 
     def _format_result_value(self, raw: int, fmt: str) -> str:
         if raw == 2_147_483_646:

@@ -361,6 +361,50 @@ async def test_variable_reads_result_data() -> None:
     assert stored == {"個数": "12345", "寸法": "1.500", "空き": "No Data"}
 
 
+async def test_variable_reads_result_string() -> None:
+    events: list[dict] = []
+    # "33484" を high_low でパックしたワード。先頭 dword だけ見ると 876098355 になる。
+    packed = [0x3333, 0x3438, 0x3400, 0x0000]
+
+    class Memory:
+        def read_words(self, address: int, count: int) -> list[int]:
+            assert address == 512
+            return packed[:count]
+
+    class FakeClient:
+        settings = ProtocolSettings(
+            host="127.0.0.1",
+            transport="plclink",
+            encoding="cp932",
+            byte_order="high_low",
+            result_data_address=512,
+            result_data_size=8,
+        )
+        memory = Memory()
+
+        async def send_command(self, *_args, **_kwargs) -> CommandResult:
+            raise AssertionError("変数カードは送信しない")
+
+    async def collect(event: dict) -> None:
+        events.append(event)
+
+    engine = SequenceEngine(FakeClient(), collect, asyncio.Event())
+    await engine.run(
+        [
+            VariableStep(
+                type="variable",
+                name="文字認識",
+                source="result_data",
+                offset=0,
+                result_format="string",
+            )
+        ]
+    )
+
+    stored = next(event for event in events if event["type"] == "variable")
+    assert stored["value"] == "33484"
+
+
 async def test_variable_reads_field_network_result_data() -> None:
     events: list[dict] = []
 

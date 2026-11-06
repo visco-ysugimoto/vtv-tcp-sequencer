@@ -1,6 +1,8 @@
 const WATCH_INTERVAL_MIN_MS = 1;
 const WATCH_INTERVAL_MAX_MS = 10_000;
 const WATCH_INTERVAL_DEFAULT_MS = 500;
+// 立下りからこの時間以内の再 ON は、同じパルスの揺れとして捨てる。幅は最初の ON のまま。
+const TIMING_ECHO_HOLD_MS = 12;
 
 const DEFAULT_FN_STATUS_SIGNALS = [
   { id: "auto", label: "自動運転中", source: "status", bit: 0, eso_port: null, plo_port: null, role: "auto" },
@@ -559,8 +561,8 @@ function syncTimingAxisModeUi() {
   const hint = $("#timing-measure-info");
   if (hint && !state.timingCursorA && !state.timingPulse) {
     hint.textContent = isPoll
-      ? "横軸は実時間線形。目盛りは各 poll の実時刻位置（周期がぶれると間隔が変化）。"
-      : "横軸・目盛りとも実時間（等間隔）。poll ごとのばらつき確認には「ポーリング回数」軸を推奨。";
+      ? "横軸は実時間線形。目盛りは各 poll の実時刻位置（周期がぶれると間隔が変化）。チャート外のクリックで選択解除。"
+      : "横軸・目盛りとも実時間（等間隔）。poll ごとのばらつき確認には「ポーリング回数」軸を推奨。チャート外のクリックで選択解除。";
   }
 }
 
@@ -621,6 +623,14 @@ function clampWatchIntervalMs(value) {
   return Math.min(WATCH_INTERVAL_MAX_MS, Math.max(WATCH_INTERVAL_MIN_MS, Math.round(value)));
 }
 
+const FN_RPI_MIN_US = 2000;
+
+function clampFnRpiUs(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 10000;
+  return Math.min(1_000_000, Math.max(FN_RPI_MIN_US, Math.round(n)));
+}
+
 function readWatchIntervalMs() {
   const value = Number($("#watch-interval")?.value);
   return clampWatchIntervalMs(Number.isFinite(value) ? value : state.watchIntervalMs);
@@ -655,6 +665,15 @@ function resetWatchActualPeriod() {
  * WebSocket はサーバの mono_ms（なければ t）を優先し、performance.now 系に線形写像する。
  * 受信時刻に依存しないため、ブラウザ側の処理遅れで間隔が潰れるのを防ぐ。
  */
+function serverMonoToLocal(serverMs) {
+  const localNow = performance.now();
+  if (!Number.isFinite(serverMs)) return localNow;
+  if (!state.timingTimeOrigin) {
+    state.timingTimeOrigin = { serverMs, localMs: localNow };
+  }
+  return state.timingTimeOrigin.localMs + (serverMs - state.timingTimeOrigin.serverMs);
+}
+
 function resolveWatchSampleTime(message) {
   const localNow = performance.now();
   if (!message || typeof message !== "object") return localNow;
@@ -662,10 +681,128 @@ function resolveWatchSampleTime(message) {
     Number.isFinite(Number(message.mono_ms)) ? message.mono_ms : message.t,
   );
   if (!Number.isFinite(serverMs)) return localNow;
-  if (!state.timingTimeOrigin) {
-    state.timingTimeOrigin = { serverMs, localMs: localNow };
+  return serverMonoToLocal(serverMs);
+}
+
+function recordTimingEdges(edges) {
+  if (!Array.isArray(edges) || !edges.length) return;
+  const ordered = edges
+    .filter((edge) => edge && Number.isFinite(Number(edge.mono_ms)))
+    .slice()
+    .sort((a, b) => Number(a.mono_ms) - Number(b.mono_ms));
+  const shadow = {};
+  const lastSample = state.timingSamples[state.timingSamples.length - 1];
+  if (lastSample) {
+    for (const [id, value] of Object.entries(lastSample.bits)) {
+      if (value == null) continue;
+      shadow[id] = { id, value, valid: true };
+    }
+  } else {
+    for (const item of timingBitItems()) {
+      if (state.watchValues[item.id]) shadow[item.id] = state.watchValues[item.id];
+    }
   }
-  return state.timingTimeOrigin.localMs + (serverMs - state.timingTimeOrigin.serverMs);
+  for (const edge of ordered) {
+    if (!edge.id) continue;
+    const t = serverMonoToLocal(Number(edge.mono_ms));
+    const last = state.timingSamples[state.timingSamples.length - 1];
+    if (last && t < last.t) {
+      insertTimingEdge(t, edge);
+      continue;
+    }
+    shadow[edge.id] = {
+      id: edge.id,
+      value: edge.value ? 1 : 0,
+      valid: edge.valid !== false,
+    };
+    recordTimingSample(t, shadow);
+    const appended = state.timingSamples[state.timingSamples.length - 1];
+    if (appended && appended.t === t) markSampleEdge(appended, edge.id);
+  }
+}
+
+function markSampleEdge(sample, id) {
+  if (!sample.edgeBits) sample.edgeBits = {};
+  sample.edgeBits[id] = true;
+}
+
+function insertTimingEdge(t, edge) {
+  const samples = state.timingSamples;
+  let idx = samples.length;
+  while (idx > 0 && samples[idx - 1].t > t) idx -= 1;
+  const prev = idx > 0 ? samples[idx - 1] : null;
+  const next = samples[idx];
+  const bits = prev ? { ...prev.bits } : {};
+  const value = edge.valid === false ? null : (edge.value ? 1 : 0);
+  bits[edge.id] = value;
+  let n = prev ? prev.n : 0;
+  if (prev && next && next.t > prev.t) {
+    n = prev.n + ((next.n - prev.n) * (t - prev.t)) / (next.t - prev.t);
+  }
+  const inserted = { t, n, bits };
+  markSampleEdge(inserted, edge.id);
+  samples.splice(idx, 0, inserted);
+  // 届いた瞬間に打刻したエッジが遅れて入ったら、そのあいだに拾ったポール値は
+  // すでに古い。次に「このビットで記録されたエッジ」に当たるまで同じ値へ上書きする。
+  for (let i = idx + 1; i < samples.length; i += 1) {
+    const sample = samples[i];
+    if (sample.edgeBits && sample.edgeBits[edge.id]) break;
+    sample.bits[edge.id] = value;
+  }
+  if (state.watchRunning) setTimingStatus("記録中", "running");
+  queueTimingChartDraw();
+}
+
+function suppressTimingEchoes() {
+  // 最初の ON から立下りまでの幅は変えない。
+  // その立下りから 12ms 以内に戻った ON は、幅へ足さず捨てる。
+  const samples = state.timingSamples;
+  const count = samples.length;
+  if (count < 2) return;
+  const latest = samples[count - 1].t;
+  let start = count - 1;
+  while (start > 0 && samples[start - 1].t >= latest - 80) start -= 1;
+  for (const item of timingBitItems()) {
+    suppressTimingEchoesForBit(samples, item.id, start);
+  }
+}
+
+function suppressTimingEchoesForBit(samples, id, start) {
+  let onStart = null;
+  let fallT = null;
+  let dropping = false;
+  if (start > 0 && samples[start - 1].bits[id] === 1) onStart = samples[start - 1].t;
+  for (let i = start; i < samples.length; i += 1) {
+    const value = samples[i].bits[id];
+    if (value == null) continue;
+    const t = samples[i].t;
+    if (dropping) {
+      if (value === 1) {
+        samples[i].bits[id] = 0;
+        continue;
+      }
+      dropping = false;
+      fallT = null;
+      onStart = null;
+      continue;
+    }
+    if (value === 1) {
+      if (onStart == null) {
+        if (fallT != null && t - fallT <= TIMING_ECHO_HOLD_MS) {
+          dropping = true;
+          samples[i].bits[id] = 0;
+          continue;
+        }
+        onStart = t;
+        fallT = null;
+      }
+      continue;
+    }
+    if (onStart != null) {
+      fallT = t;
+      onStart = null;
+    }
+  }
 }
 
 function formatWatchActualPeriodText() {
@@ -714,14 +851,14 @@ function updateWatchNote() {
       `接続設定のコマンド／レスポンス／PLO／PLI から自動生成。`
       + `コマンド表示とレスポンス表示で、見るワード数を変えられます。`
       + `更新周期 ${readWatchIntervalMs()} ms。`
-      + `高速監視は WebSocket 配信（目標 1 ms）。項目数を減らすほど安定します。`;
+      + `ビットのパルス幅は書込み時刻から取ります。監視周期より短い ON/OFF も、届いた幅で表示します。`;
     return;
   }
   if (transport === "field_network") {
     note.textContent =
       `「結果データ」は VTV と同じく「出力値」(生DWORD) と「データ」(解釈値) を表示します。`
       + `更新周期 ${readWatchIntervalMs()} ms（WebSocket）。`
-      + `I/O の鮮度は RPI が上限です。1 ms 分解能を狙う場合は RPI=1000μs も試せます。`;
+      + `ビット変化はパケット到達時刻で記録します。幅の分解能は RPI で、最短 2ms です。1ms の RPI 設定は無効です。`;
     return;
   }
   note.textContent = "PLCLINK / Field Network 接続時に監視が利用できます。";
@@ -862,6 +999,7 @@ function buildMappedWatchItems(settings) {
         device: "D",
         address: base + offset,
         format: "int32",
+        relAddress: offset,
         decimals: Number(settings.result_data_decimals) || 3,
         valueKind: "result_data",
       });
@@ -1566,6 +1704,120 @@ function formatWatchValue(value, item) {
 /** VTV 結果データ「No Data」センチネル (0x7FFFFFFE) */
 const RESULT_NO_DATA = 2147483646;
 
+function resultDwordBytes(value) {
+  const u = value >>> 0;
+  const low = u & 0xFFFF;
+  const high = (u >>> 16) & 0xFFFF;
+  const highLow = (state.settings.byte_order || "high_low") !== "low_high";
+  const wordBytes = (word) => (highLow
+    ? [(word >>> 8) & 0xFF, word & 0xFF]
+    : [word & 0xFF, (word >>> 8) & 0xFF]);
+  // 下位ワードが若いアドレス。各ワード内は接続設定のバイト順。
+  return [...wordBytes(low), ...wordBytes(high)];
+}
+
+function isSjisLead(byte) {
+  return (byte >= 0x81 && byte <= 0x9F) || (byte >= 0xE0 && byte <= 0xFC);
+}
+
+function isSjisTrail(byte) {
+  return (byte >= 0x40 && byte <= 0x7E) || (byte >= 0x80 && byte <= 0xFC);
+}
+
+function decodeCp932(bytes) {
+  try {
+    return new TextDecoder("shift_jis").decode(new Uint8Array(bytes));
+  } catch (_) {
+    return "";
+  }
+}
+
+function readResultDwords(startRel) {
+  const slots = [];
+  for (let rel = startRel; rel < startRel + 128; rel += 2) {
+    const snap = state.watchValues[`result-data-${rel}`];
+    if (!snap || snap.valid === false || typeof snap.value !== "number") break;
+    const raw = snap.value | 0;
+    if (raw === RESULT_NO_DATA) break;
+    slots.push(raw);
+  }
+  return slots;
+}
+
+/** 先頭スロットから NULL 終端の SJIS 文字列なら、文字と占有 dword 数を返す。 */
+function tryDecodeResultString(startRel) {
+  const slots = readResultDwords(startRel);
+  if (!slots.length) return null;
+  const bytes = slots.flatMap((slot) => resultDwordBytes(slot));
+  if (!bytes.length || bytes[0] === 0) return null;
+  let index = 0;
+  let end = -1;
+  let nulAt = -1;
+  while (index < bytes.length) {
+    const byte = bytes[index];
+    if (byte === 0) {
+      end = index;
+      nulAt = index;
+      break;
+    }
+    if (byte >= 0x20 && byte <= 0x7E) {
+      index += 1;
+      continue;
+    }
+    // 領域末尾で SJIS の先行バイトだけ書いて 0 で切っている
+    if (isSjisLead(byte) && index + 1 < bytes.length && bytes[index + 1] === 0) {
+      end = index;
+      nulAt = index + 1;
+      break;
+    }
+    if (isSjisLead(byte) && index + 1 < bytes.length && isSjisTrail(bytes[index + 1])) {
+      index += 2;
+      continue;
+    }
+    return null;
+  }
+  if (end < 2 || nulAt < 0) return null;
+  // NULL の直後に 0 以外が残る dword は、C 文字列のパディングではない。
+  // 204847 = 20 2F 00 03 のように、数値の下位バイトがたまたま文字になる。
+  const dwordEnd = Math.ceil((nulAt + 1) / 4) * 4;
+  for (let pad = nulAt + 1; pad < dwordEnd && pad < bytes.length; pad += 1) {
+    if (bytes[pad] !== 0) return null;
+  }
+  const text = decodeCp932(bytes.slice(0, end));
+  if (!text || !resultTextHasToken(text)) return null;
+  let consumed = Math.ceil((nulAt + 1) / 4);
+  // NULL の次の 0 dword も、同じ文字列枠の余りとして VTV は「>」にする
+  if (consumed < slots.length && slots[consumed] === 0) consumed += 1;
+  return { text, consumed };
+}
+
+function resultTextHasToken(text) {
+  for (const char of text) {
+    const code = char.codePointAt(0);
+    if (code >= 0x30 && code <= 0x39) return true;
+    if (code >= 0x41 && code <= 0x5A) return true;
+    if (code >= 0x61 && code <= 0x7A) return true;
+    if (code >= 0x80) return true;
+  }
+  return false;
+}
+
+function resultStringAt(item) {
+  const rel = typeof item.relAddress === "number"
+    ? item.relAddress
+    : Number(String(item.id || "").replace("result-data-", ""));
+  if (!Number.isInteger(rel)) return null;
+  for (let start = 0; start <= rel; start += 2) {
+    const decoded = tryDecodeResultString(start);
+    if (!decoded) continue;
+    const index = (rel - start) / 2;
+    if (index >= 0 && index < decoded.consumed) {
+      return { text: decoded.text, index };
+    }
+  }
+  return null;
+}
+
 function formatResultDataValue(value, item) {
   const decimals = Number(
     item.decimals ?? $("#fn-result-decimals")?.value ?? $("#result-data-decimals")?.value ?? 3,
@@ -1576,6 +1828,13 @@ function formatResultDataValue(value, item) {
   const outputText = mode === "hex"
     ? `0x${unsigned.toString(16).toUpperCase().padStart(8, "0")}`
     : String(raw);
+
+  // 文字列は整数／小数／16進のどれでも、VTV と同じく引用符と「>」で出す
+  const text = resultStringAt(item);
+  if (text) {
+    const dataText = text.index === 0 ? `"${text.text}"` : ">";
+    return `出力値 ${outputText}\nデータ ${dataText}`;
+  }
 
   // 直前が double の下位ワードなら VTV 同様「>」
   if (mode === "float" && isResultFloatContinuation(item)) {
@@ -1821,6 +2080,8 @@ function handleWatchSocketMessage(message) {
   }
   if (message.type !== "sample") return;
 
+  // ポールより前の変化時刻を先に積む。幅は隣のサンプル差なので、点がエッジ時刻にあればそのまま出る。
+  recordTimingEdges(message.edges);
   const sampleAt = resolveWatchSampleTime(message);
   if (state.watchLastCycleAt > 0) {
     const cycleMs = sampleAt - state.watchLastCycleAt;
@@ -1860,6 +2121,7 @@ function handleWatchSocketMessage(message) {
   if (changed.size) updateWatchValueDisplays(changed);
   // 値が変わらなくてもサンプルを積む（時間軸はサーバ時刻）
   recordTimingSample(sampleAt, state.watchValues);
+  suppressTimingEchoes();
   const uiNow = performance.now();
   if (uiNow - (state.watchPeriodLastAt || 0) > 100) {
     state.watchPeriodLastAt = uiNow;
@@ -1911,6 +2173,7 @@ async function pollWatchValues() {
     setWatchStatus("監視中", "running");
     updateWatchValueDisplays(changed);
     recordTimingSample(started, nextValues);
+    suppressTimingEchoes();
   } catch (error) {
     state.watchValues = {};
     updateWatchValueDisplays();
@@ -1951,6 +2214,10 @@ function updateTimingSampleInfo() {
 
 function formatTimingDuration(ms) {
   if (!Number.isFinite(ms) || ms < 0) return "—";
+  if (ms < 10) {
+    const digits = ms < 1 ? 2 : 1;
+    return `${ms.toFixed(digits)} ms`;
+  }
   if (ms < 1000) return `${Math.round(ms)} ms`;
   if (ms < 10000) return `${(ms / 1000).toFixed(3)} s`;
   return `${(ms / 1000).toFixed(2)} s`;
@@ -2286,8 +2553,8 @@ function updateTimingMeasureInfo() {
   }
   if (!parts.length) {
     el.textContent = timingIsPollAxis()
-      ? "横軸は実時間線形。目盛りは各 poll の実時刻（周期がぶれると間隔が変化）。クリックで A/B。"
-      : "横軸・目盛りとも実時間。クリックでカーソル A/B（Δt と信号長）。";
+      ? "横軸は実時間線形。目盛りは各 poll の実時刻（周期がぶれると間隔が変化）。クリックで A/B。チャート外で解除。"
+      : "横軸・目盛りとも実時間。クリックでカーソル A/B（Δt と信号長）。チャート外で解除。";
     return;
   }
   el.textContent = parts.join(" ｜ ");
@@ -2559,6 +2826,22 @@ function bindTimingChartInteractions() {
   };
   canvas.addEventListener("pointerup", endPointer);
   canvas.addEventListener("pointercancel", () => { state.timingPointer = null; });
+
+  const scrollbar = $("#timing-scrollbar");
+  scrollbar?.addEventListener("scroll", onTimingScrollbar);
+
+  // チャート外のクリックで A/B とパルス範囲を解除する。
+  // ツールバーは拡大・保存などの操作なので、選択は維持する。
+  document.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    if (state.timingCursorA == null && state.timingCursorB == null && !state.timingPulse) return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.closest(".timing-chart-wrap")) return;
+    if (target.closest(".timing-toolbar")) return;
+    if (target.closest(".timing-scrollbar")) return;
+    clearTimingMeasure();
+  }, true);
 }
 
 function drawTimingChart() {
@@ -2818,6 +3101,94 @@ function drawTimingChart() {
   }
 
   updateTimingMeasureInfo();
+  syncTimingScrollbar();
+}
+
+let timingScrollbarFromCode = false;
+
+function timingHistoryExtent() {
+  const latest = timingLatestDomain();
+  const span = timingIsPollAxis()
+    ? clampTimingWindowPolls(state.timingWindowPolls)
+    : clampTimingWindowMs(state.timingWindowMs);
+  const samples = state.timingSamples;
+  if (!samples.length) return { start: latest - span, end: latest };
+  const first = samples[0];
+  const last = samples[samples.length - 1];
+  if (timingIsPollAxis()) {
+    const start = first.n ?? 1;
+    const end = Math.max(start, last.n ?? start, latest);
+    return { start, end };
+  }
+  const start = first.t;
+  const end = Math.max(start, last.t, latest);
+  return { start, end };
+}
+
+function syncTimingScrollbar() {
+  const bar = $("#timing-scrollbar");
+  const inner = $("#timing-scrollbar-inner");
+  if (!bar || !inner) return;
+  if ($("#monitor-timing-panel")?.classList.contains("hidden")) return;
+  const client = bar.clientWidth;
+  if (client <= 0) return;
+  const extent = timingHistoryExtent();
+  const range = timingViewRange();
+  const total = Math.max(0, extent.end - extent.start);
+  const span = Math.max(1e-3, range.span);
+  if (total <= span) {
+    inner.style.width = `${client}px`;
+    if (Math.abs(bar.scrollLeft) > 1) {
+      timingScrollbarFromCode = true;
+      bar.scrollLeft = 0;
+      requestAnimationFrame(() => { timingScrollbarFromCode = false; });
+    }
+    return;
+  }
+  const innerWidth = Math.max(client + 1, Math.ceil(client * (total / span)));
+  const widthPx = `${innerWidth}px`;
+  if (inner.style.width !== widthPx) inner.style.width = widthPx;
+  const maxScroll = Math.max(1, innerWidth - client);
+  const room = total - span;
+  const fraction = Math.min(1, Math.max(0, (range.start - extent.start) / room));
+  const next = fraction * maxScroll;
+  if (Math.abs(bar.scrollLeft - next) <= 1) return;
+  timingScrollbarFromCode = true;
+  bar.scrollLeft = next;
+  requestAnimationFrame(() => { timingScrollbarFromCode = false; });
+}
+
+function onTimingScrollbar() {
+  if (timingScrollbarFromCode) return;
+  const bar = $("#timing-scrollbar");
+  if (!bar) return;
+  const extent = timingHistoryExtent();
+  const span = timingIsPollAxis()
+    ? clampTimingWindowPolls(state.timingWindowPolls)
+    : clampTimingWindowMs(state.timingWindowMs);
+  const total = Math.max(0, extent.end - extent.start);
+  const maxScroll = bar.scrollWidth - bar.clientWidth;
+  let pan = 0;
+  if (maxScroll > 1 && total > span) {
+    const atLive = maxScroll - bar.scrollLeft <= 2;
+    if (!atLive) {
+      const fraction = bar.scrollLeft / maxScroll;
+      const viewEnd = extent.start + fraction * (total - span) + span;
+      const latest = timingIsPollAxis() ? timingLatestN() : timingLatestT();
+      pan = Math.max(0, latest - viewEnd);
+    }
+  }
+  if (timingIsPollAxis()) {
+    const next = pan < 0.5 ? 0 : Math.round(pan);
+    if (next === state.timingPanPolls) return;
+    state.timingPanPolls = next;
+  } else {
+    const next = pan < 0.5 ? 0 : pan;
+    if (Math.abs(next - state.timingPanMs) < 0.5) return;
+    state.timingPanMs = next;
+  }
+  updateTimingViewSpan();
+  drawTimingChart();
 }
 
 function transportOf() {
@@ -3057,6 +3428,7 @@ function stepHtml(step, nested = false) {
           <option value="dec" ${resultFormat === "dec" ? "selected" : ""}>整数</option>
           <option value="fixed" ${resultFormat === "fixed" ? "selected" : ""}>固定小数点</option>
           <option value="hex" ${resultFormat === "hex" ? "selected" : ""}>16進</option>
+          <option value="string" ${resultFormat === "string" ? "selected" : ""}>文字列</option>
         </select></label>`
       : "";
     const tcpNote = transport === "tcp" && (source === "output_port" || source === "result_data")
@@ -3078,7 +3450,7 @@ function stepHtml(step, nested = false) {
           <option value="literal" ${source === "literal" ? "selected" : ""}>固定の文字</option>
         </select></label>
         ${cardField}${portField}${resultField}${literalField}${tcpNote}
-        <p class="step-description">名前で残します。あとのコマンド引数で、その名前を選べます。装置へは送りません。${source === "card_response" || source === "card_status" ? "指定したカードは、この変数より前に置いてください。" : ""}${source === "result_data" ? "相対アドレスは監視の +0000 と同じ位置です。" : ""}</p>
+        <p class="step-description">名前で残します。あとのコマンド引数で、その名前を選べます。装置へは送りません。${source === "card_response" || source === "card_status" ? "指定したカードは、この変数より前に置いてください。" : ""}${source === "result_data" ? "相対アドレスは監視の +0000 と同じ位置です。文字列は、引用符が付いている行の番号を指定し、表記を「文字列」にします。" : ""}</p>
       </div>`}
     </article>`;
   }
@@ -3204,6 +3576,7 @@ function resultDataSize() {
 function resultFormatLabel(format) {
   if (format === "fixed") return "固定小数点";
   if (format === "hex") return "16進";
+  if (format === "string") return "文字列";
   return "整数";
 }
 
@@ -3749,7 +4122,7 @@ function readSettingsForm() {
     fn_eso_ports: Number($("#fn-eso-ports")?.value || 0),
     fn_input_size: Number($("#fn-input-size")?.value || 612),
     fn_output_size: Number($("#fn-output-size")?.value || 132),
-    fn_rpi_us: Number($("#fn-rpi-us")?.value || 10000),
+    fn_rpi_us: clampFnRpiUs($("#fn-rpi-us")?.value || 10000),
     fn_connection_path: ($("#fn-connection-path")?.value || "20 04 24 01 2C 14 2C 0A").trim(),
     fn_o_to_t_header_bytes: Number($("#fn-o-to-t-header")?.value || 4),
     fn_eds_name: state.settings.fn_eds_name || "",
@@ -3909,7 +4282,7 @@ function applySettingsToForm() {
   if ($("#fn-input-size")) {
     $("#fn-input-size").value = s.fn_input_size ?? 612;
     $("#fn-output-size").value = s.fn_output_size ?? 132;
-    $("#fn-rpi-us").value = s.fn_rpi_us ?? 10000;
+    $("#fn-rpi-us").value = clampFnRpiUs(s.fn_rpi_us ?? 10000);
     $("#fn-esi-ports").value = String(s.fn_esi_ports ?? 0);
     $("#fn-eso-ports").value = String(s.fn_eso_ports ?? 0);
     $("#fn-o-to-t-header").value = String(s.fn_o_to_t_header_bytes ?? 4);
@@ -4080,7 +4453,7 @@ async function onEdsImport(event) {
     const s = data.suggested || {};
     if (s.fn_input_size != null) $("#fn-input-size").value = s.fn_input_size;
     if (s.fn_output_size != null) $("#fn-output-size").value = s.fn_output_size;
-    if (s.fn_rpi_us != null) $("#fn-rpi-us").value = s.fn_rpi_us;
+    if (s.fn_rpi_us != null) $("#fn-rpi-us").value = clampFnRpiUs(s.fn_rpi_us);
     if (s.fn_connection_path) $("#fn-connection-path").value = s.fn_connection_path;
     if (s.fn_o_to_t_header_bytes != null) $("#fn-o-to-t-header").value = s.fn_o_to_t_header_bytes;
     if (s.command_size != null) $("#fn-command-size").value = s.command_size;

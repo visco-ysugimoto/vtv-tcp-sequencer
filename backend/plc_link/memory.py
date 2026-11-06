@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import threading
 
+from ..bit_edges import BitEdgeLog, resolve_mono
+
 
 class DeviceMemory:
     """疑似 PLC のデータメモリ（D: ワード、M: ビット）。"""
@@ -13,11 +15,24 @@ class DeviceMemory:
         self._lock = threading.RLock()
         self._d = [0] * d_size
         self._m = [0] * m_size
+        self.edges = BitEdgeLog()
 
     def clear(self) -> None:
+        now = resolve_mono(None)
+        falling: list[int] = []
         with self._lock:
+            watched = {
+                address
+                for device, address in self.edges.watched_keys()
+                if device == "M"
+            }
+            for address in watched:
+                if 0 <= address < len(self._m) and self._m[address]:
+                    falling.append(address)
             self._d = [0] * len(self._d)
             self._m = [0] * len(self._m)
+        for address in falling:
+            self.edges.record("M", address, 0, now)
 
     def read_words(self, head: int, count: int) -> list[int]:
         with self._lock:
@@ -36,12 +51,21 @@ class DeviceMemory:
             return list(self._m[head : head + count])
 
     def write_bits(self, head: int, values: list[int]) -> None:
+        for value in values:
+            if value not in (0, 1):
+                raise ValueError("ビット値は 0 または 1 です")
+        now = resolve_mono(None)
+        changed: list[tuple[int, int]] = []
         with self._lock:
             self._ensure_m_range(head, len(values))
             for offset, value in enumerate(values):
-                if value not in (0, 1):
-                    raise ValueError("ビット値は 0 または 1 です")
-                self._m[head + offset] = value
+                address = head + offset
+                if self._m[address] == value:
+                    continue
+                self._m[address] = value
+                changed.append((address, value))
+        for address, value in changed:
+            self.edges.record("M", address, value, now)
 
     def read_bit_words(self, head: int, count: int) -> list[int]:
         """ビットデバイスをワード単位（16bit パック）で読む。"""

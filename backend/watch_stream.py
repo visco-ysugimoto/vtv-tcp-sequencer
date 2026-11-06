@@ -9,6 +9,7 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from typing import Any, Literal
 
+from .bit_edges import BitEdge
 from .models import MemoryWatchItem
 
 TransportName = Literal["plclink", "field_network"]
@@ -61,6 +62,32 @@ def compact_values(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def format_bit_edges(
+    edges: list[BitEdge],
+    items: list[MemoryWatchItem],
+) -> list[dict[str, Any]]:
+    """エッジを監視項目 id と mono_ms（sample と同じ軸）に変換する。"""
+    index: dict[tuple[str, int], list[str]] = {}
+    for item in items:
+        if item.format != "bit":
+            continue
+        if item.device not in {"M", "IN", "OUT"}:
+            continue
+        index.setdefault((item.device, item.address), []).append(item.id)
+    payload: list[dict[str, Any]] = []
+    for edge in sorted(edges, key=lambda item: (item.mono_s, item.seq)):
+        for item_id in index.get((edge.device, edge.address), ()):
+            payload.append(
+                {
+                    "id": item_id,
+                    "value": edge.value,
+                    "valid": True,
+                    "mono_ms": edge.mono_s * 1000.0,
+                }
+            )
+    return payload
+
+
 def diff_values(
     previous: dict[str, tuple[Any, bool]],
     current: list[dict[str, Any]],
@@ -87,6 +114,7 @@ async def run_watch_loop(
     read_once: Callable[[], list[dict[str, Any]]],
     send_json: Callable[[dict[str, Any]], Any],
     should_stop: Callable[[], bool],
+    take_edges: Callable[[], list[dict[str, Any]]] | None = None,
 ) -> None:
     """監視ループ。send_json は awaitable でも同期でも可。"""
     interval_s = max(0.0005, float(interval_ms) / 1000.0)
@@ -99,6 +127,9 @@ async def run_watch_loop(
         while not should_stop():
             loop_started = time.perf_counter()
             try:
+                # スナップショットより先にエッジを抜く。同じループ上の書込みは
+                # await するまで入らないので、このサンプルより新しいエッジは次周へ回る。
+                edge_rows = list(take_edges()) if take_edges is not None else []
                 rows = compact_values(read_once())
             except Exception as exc:  # noqa: BLE001 - 監視継続のため捕捉
                 payload = {"type": "error", "message": str(exc)}
@@ -123,13 +154,19 @@ async def run_watch_loop(
             # 変化がなくても毎周期送る（実測周期・タイミングチャートの時間軸を維持）
             # t: 壁時計, mono_ms: 単調時計（クライアント横軸は mono_ms を優先）
             now_perf = time.perf_counter()
+            mono_ms = now_perf * 1000.0
+            if edge_rows:
+                newest_edge = max(float(edge["mono_ms"]) for edge in edge_rows)
+                if newest_edge > mono_ms:
+                    mono_ms = newest_edge
             payload = {
                 "type": "sample",
                 "t": time.time() * 1000.0,
-                "mono_ms": now_perf * 1000.0,
+                "mono_ms": mono_ms,
                 "dt_ms": (now_perf - loop_started) * 1000.0,
                 "full": is_full,
                 "values": values,
+                "edges": edge_rows,
             }
             result = send_json(payload)
             if asyncio.iscoroutine(result):
@@ -141,4 +178,6 @@ async def run_watch_loop(
                 # 大きく遅延したらリスケジュール
                 next_deadline = time.perf_counter()
                 delay = 0
+            if should_stop():
+                break
             await precise_delay(delay)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 from backend.watch_stream import compact_values, diff_values, precise_delay
 
@@ -26,9 +27,10 @@ def test_compact_and_diff_values() -> None:
 
 def test_precise_delay_roughly_honors_interval() -> None:
     async def _run() -> float:
-        started = asyncio.get_running_loop().time()
+        # Windows の loop.time() は約 15.6ms 刻みで、5ms が 0 になる。
+        started = time.perf_counter()
         await precise_delay(0.005)
-        return asyncio.get_running_loop().time() - started
+        return time.perf_counter() - started
 
     elapsed = asyncio.run(_run())
     assert 0.003 <= elapsed <= 0.05
@@ -66,6 +68,7 @@ def test_watch_loop_sends_heartbeat_when_unchanged() -> None:
     assert sent[0]["full"] is True
     assert sent[1]["full"] is False
     assert sent[1]["values"] == []  # 変化なしでも送る
+    assert sent[1]["edges"] == []
     assert isinstance(sent[0]["t"], (int, float))
     assert isinstance(sent[0]["mono_ms"], (int, float))
     assert sent[1]["mono_ms"] >= sent[0]["mono_ms"]

@@ -10,6 +10,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+from ..bit_edges import BitEdgeLog, resolve_mono
 from ..protocol import ProtocolError
 from .eds import parse_connection_path
 
@@ -68,26 +69,38 @@ class IoBuffers:
     _last_input_at: float = field(default=0.0, init=False, repr=False)
     _packets_rx: int = field(default=0, init=False, repr=False)
     _packets_tx: int = field(default=0, init=False, repr=False)
+    edges: BitEdgeLog = field(default_factory=BitEdgeLog, repr=False)
 
     def __post_init__(self) -> None:
         self._output = bytearray(self.output_size)
         self._input = bytearray(self.input_size)
 
     def clear(self) -> None:
+        now = resolve_mono(None)
         with self._lock:
+            previous_output = bytes(self._output)
+            previous_input = bytes(self._input)
             self._output[:] = b"\x00" * self.output_size
             self._input[:] = b"\x00" * self.input_size
             self._packets_rx = 0
             self._packets_tx = 0
             self._last_input_at = 0.0
+            cleared_output = bytes(self._output)
+            cleared_input = bytes(self._input)
+        self._record_bit_changes("OUT", previous_output, cleared_output, now)
+        self._record_bit_changes("IN", previous_input, cleared_input, now)
 
     def write_output(self, data: bytes | bytearray) -> None:
         if len(data) != self.output_size:
             raise ValueError(
                 f"出力サイズ不一致: {len(data)} != {self.output_size}"
             )
+        now = resolve_mono(None)
+        incoming = bytes(data)
         with self._lock:
-            self._output[:] = data
+            previous = bytes(self._output)
+            self._output[:] = incoming
+        self._record_bit_changes("OUT", previous, incoming, now)
 
     def read_output(self) -> bytes:
         with self._lock:
@@ -97,25 +110,69 @@ class IoBuffers:
         """出力バッファの 1 bit をアトミックに更新（ESI 割り込み用）。"""
         byte_index = int(bit_index) // 8
         bit = int(bit_index) % 8
+        now = resolve_mono(None)
+        new_bit = 1 if int(value) else 0
         with self._lock:
             if byte_index < 0 or byte_index >= len(self._output):
                 raise ValueError(f"出力アセンブリ範囲外の bit です: {bit_index}")
-            if int(value):
-                self._output[byte_index] |= 1 << bit
+            mask = 1 << bit
+            old_bit = 1 if self._output[byte_index] & mask else 0
+            if old_bit == new_bit:
+                return
+            if new_bit:
+                self._output[byte_index] |= mask
             else:
-                self._output[byte_index] &= ~(1 << bit)
+                self._output[byte_index] &= ~mask
+        self.edges.record("OUT", int(bit_index), new_bit, now)
 
-    def write_input(self, data: bytes | bytearray, *, sequence: int | None = None) -> None:
+    def write_input(
+        self,
+        data: bytes | bytearray,
+        *,
+        sequence: int | None = None,
+        mono_s: float | None = None,
+    ) -> None:
         if len(data) != self.input_size:
             raise ValueError(
                 f"入力サイズ不一致: {len(data)} != {self.input_size}"
             )
+        # mono_s は recvfrom 直後の時刻。処理が遅れてもパケット到達時刻を使う。
+        arrived = resolve_mono(mono_s)
+        incoming = bytes(data)
         with self._lock:
-            self._input[:] = data
+            previous = bytes(self._input)
+            self._input[:] = incoming
             if sequence is not None:
                 self._input_seq = sequence & 0xFFFF
             self._last_input_at = time.monotonic()
             self._packets_rx += 1
+        self._record_bit_changes("IN", previous, incoming, arrived)
+
+    def _record_bit_changes(
+        self,
+        device: str,
+        previous: bytes,
+        incoming: bytes,
+        mono_s: float,
+    ) -> None:
+        watched = [
+            address
+            for watched_device, address in self.edges.watched_keys()
+            if watched_device == device
+        ]
+        for address in watched:
+            byte_index = address // 8
+            if (
+                byte_index < 0
+                or byte_index >= len(previous)
+                or byte_index >= len(incoming)
+            ):
+                continue
+            mask = 1 << (address % 8)
+            old_bit = 1 if previous[byte_index] & mask else 0
+            new_bit = 1 if incoming[byte_index] & mask else 0
+            if old_bit != new_bit:
+                self.edges.record(device, address, new_bit, mono_s)
 
     def read_input(self) -> bytes:
         with self._lock:
@@ -162,11 +219,13 @@ class EipClass1Scanner:
         self.tcp_port = tcp_port
         self.input_size = input_size
         self.output_size = output_size
-        self.rpi_us = max(1000, int(rpi_us))
+        self.rpi_us = max(2000, int(rpi_us))
         self.connection_path = connection_path
         self.o_to_t_header_bytes = o_to_t_header_bytes
         self.timeout = timeout
         self.buffers = IoBuffers(output_size=output_size, input_size=input_size)
+        # 幅の量子は RPI。装置下限の 2ms 未満は出さない。
+        self.buffers.edges.min_interval_s = self.rpi_us / 1_000_000
 
         self._tcp: socket.socket | None = None
         self._udp: socket.socket | None = None
@@ -179,7 +238,7 @@ class EipClass1Scanner:
         self._connected = False
         self._local_udp_port = 0
         self._error: str | None = None
-        self._rx_queue: queue.Queue[bytes] = queue.Queue()
+        self._rx_queue: queue.Queue[tuple[float, bytes]] = queue.Queue()
         self._rx_thread: threading.Thread | None = None
 
     @property
@@ -469,8 +528,9 @@ class EipClass1Scanner:
                     self._error = str(exc)
                     self._connected = False
                 break
+            arrived = time.perf_counter()
             try:
-                self._rx_queue.put_nowait(data)
+                self._rx_queue.put_nowait((arrived, data))
             except queue.Full:
                 pass
 
@@ -484,12 +544,7 @@ class EipClass1Scanner:
 
         while not self._stop.is_set():
             try:
-                while True:
-                    try:
-                        data = self._rx_queue.get_nowait()
-                    except queue.Empty:
-                        break
-                    self._handle_input_packet(data)
+                self._drain_input_queue()
 
                 now = loop.time()
                 if now >= next_send:
@@ -503,7 +558,15 @@ class EipClass1Scanner:
                 self._connected = False
                 break
 
-    def _handle_input_packet(self, packet: bytes) -> None:
+    def _drain_input_queue(self) -> None:
+        while True:
+            try:
+                mono_s, data = self._rx_queue.get_nowait()
+            except queue.Empty:
+                return
+            self._handle_input_packet(data, mono_s=mono_s)
+
+    def _handle_input_packet(self, packet: bytes, *, mono_s: float) -> None:
         conn = self._connection
         if conn is None or len(packet) < 20:
             return
@@ -534,7 +597,11 @@ class EipClass1Scanner:
         seq, data = payload
         if len(data) < self.input_size:
             return
-        self.buffers.write_input(data[: self.input_size], sequence=seq)
+        self.buffers.write_input(
+            data[: self.input_size],
+            sequence=seq,
+            mono_s=mono_s,
+        )
 
     def _send_output(self) -> None:
         conn = self._connection

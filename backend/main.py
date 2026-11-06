@@ -5,17 +5,26 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    File,
+    HTTPException,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
 from . import __version__
+from .bit_edges import BitEdgeLog
 from .catalog import load_catalog
 from .engine import DeviceClient, SequenceEngine, create_client
 from .field_network import FieldNetworkClient, parse_eds_text
 from .field_network.layout import build_layout
 from .field_network.monitor import read_assembly_items
+from .local_io import apply_local_io
 from .models import (
     LocalIoRequest,
     MemoryReadRequest,
@@ -28,9 +37,8 @@ from .paths import frontend_dir
 from .plc_link import PlcLinkClient
 from .plc_link.commands import command_metadata
 from .plc_link.monitor import read_memory_items
-from .local_io import apply_local_io
 from .protocol import ProtocolError
-from .watch_stream import run_watch_loop
+from .watch_stream import format_bit_edges, run_watch_loop
 
 _plclink_client: PlcLinkClient | None = None
 _field_network_client: FieldNetworkClient | None = None
@@ -441,12 +449,49 @@ async def read_field_network_memory(request: MemoryReadRequest) -> dict[str, obj
     return {"values": values, "stats": client.scanner.buffers.stats}
 
 
+def _watch_edge_log(transport: str) -> BitEdgeLog | None:
+    if transport == "plclink":
+        client = _plclink_client
+        if client is None:
+            return None
+        return client.memory.edges
+    if transport == "field_network":
+        client = _field_network_client
+        if client is None:
+            return None
+        return client.scanner.buffers.edges
+    return None
+
+
+def _watch_edge_keys(
+    transport: str,
+    items: list[MemoryWatchItem],
+) -> set[tuple[str, int]]:
+    keys: set[tuple[str, int]] = set()
+    for item in items:
+        if item.format != "bit":
+            continue
+        if transport == "plclink" and item.device == "M":
+            keys.add(("M", item.address))
+        elif transport == "field_network" and item.device in {"IN", "OUT"}:
+            keys.add((item.device, item.address))
+    return keys
+
+
 @app.websocket("/ws/watch")
 async def watch_websocket(websocket: WebSocket) -> None:
     """高速監視ストリーム。items を登録後、interval_ms でサンプルを push する。"""
     await websocket.accept()
     stop_event = asyncio.Event()
     loop_task: asyncio.Task[None] | None = None
+    armed_edges: BitEdgeLog | None = None
+
+    def disarm_edges() -> None:
+        nonlocal armed_edges
+        log = armed_edges
+        armed_edges = None
+        if log is not None:
+            log.disarm()
 
     async def stop_loop() -> None:
         stop_event.set()
@@ -455,6 +500,7 @@ async def watch_websocket(websocket: WebSocket) -> None:
             loop_task.cancel()
             await asyncio.gather(loop_task, return_exceptions=True)
         loop_task = None
+        disarm_edges()
         stop_event.clear()
 
     try:
@@ -524,6 +570,24 @@ async def watch_websocket(websocket: WebSocket) -> None:
                 return read_once
 
             stop_event.clear()
+            disarm_edges()
+            edge_log = _watch_edge_log(transport)
+            edge_cursor = {"seq": 0}
+            if edge_log is not None:
+                edge_cursor["seq"] = edge_log.arm(_watch_edge_keys(transport, items))
+                armed_edges = edge_log
+
+            def take_edges(
+                selected_transport: str = transport,
+                cursor: dict[str, int] = edge_cursor,
+                selected_items: list[MemoryWatchItem] = items,
+            ) -> list[dict[str, object]]:
+                active = _watch_edge_log(selected_transport)
+                if active is None:
+                    return []
+                seq, edges = active.take(cursor["seq"])
+                cursor["seq"] = seq
+                return format_bit_edges(edges, selected_items)
 
             async def send_json(payload: dict[str, object]) -> None:
                 await websocket.send_json(payload)
@@ -536,6 +600,7 @@ async def watch_websocket(websocket: WebSocket) -> None:
                     read_once=make_reader(transport, items),
                     send_json=send_json,
                     should_stop=stop_event.is_set,
+                    take_edges=take_edges,
                 )
             )
             await websocket.send_json(

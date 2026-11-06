@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>VTV Network Sequencer</title>
-  <link rel="stylesheet" href="/style.css?v=20261105-plo1">
+  <link rel="stylesheet" href="/style.css?v=20261106-timing-scroll2">
 </head>
 <body>
   <header class="app-header">
@@ -301,11 +301,16 @@
               <div class="timing-channel-title">信号選択（bit）</div>
               <div id="timing-channel-list" class="timing-channel-list"></div>
             </aside>
-            <div class="timing-chart-wrap">
-              <canvas id="timing-chart" width="800" height="320" aria-label="タイミングチャート"></canvas>
+            <div class="timing-chart-column">
+              <div class="timing-chart-wrap">
+                <canvas id="timing-chart" width="800" height="320" aria-label="タイミングチャート"></canvas>
+              </div>
+              <div id="timing-scrollbar" class="timing-scrollbar" aria-label="タイミングの表示位置">
+                <div id="timing-scrollbar-inner"></div>
+              </div>
             </div>
           </div>
-          <p class="watch-note">クリックで測定、ホイールで時間軸ズーム。記録は監視ポールと同期します。</p>
+          <p class="watch-note">クリックで測定、ホイールで時間軸ズーム、下のバーで表示位置を移動。ビットの幅は変化した時刻、その他の値は監視周期です。立下りから 12ms 以内の再 ON は、幅に足しません。</p>
         </div>
       </div>
     </aside>
@@ -477,7 +482,7 @@
         <div class="form-grid three">
           <label>入力サイズ（byte）<input id="fn-input-size" type="number" min="4" max="1444" step="2" value="612"></label>
           <label>出力サイズ（byte）<input id="fn-output-size" type="number" min="4" max="1444" step="2" value="136"></label>
-          <label>RPI（μs）<input id="fn-rpi-us" type="number" min="1000" max="1000000" step="1000" value="10000" title="I/O 更新周期。1ms 分解能を狙う場合は 1000 を試してください（装置側の対応範囲内で）。"></label>
+          <label>RPI（μs）<input id="fn-rpi-us" type="number" min="2000" max="1000000" step="1000" value="10000" title="I/O 更新周期（μs）。装置の下限は 2000（2ms）です。1000（1ms）は無効です。"></label>
           <label>ESI ポート数<select id="fn-esi-ports">
             <option value="0">なし</option><option value="32" selected>32</option>
             <option value="64">64</option><option value="96">96</option><option value="128">128</option>
@@ -640,6 +645,6 @@
     <span id="undo-toast-message"></span>
     <button type="button" id="undo-toast-button" class="button secondary">取り消す</button>
   </div>
-  <script src="/app.js?v=20261105-plo1" defer></script>
+  <script src="/app.js?v=20261106-result-var-string" defer></script>
 </body>
 </html>

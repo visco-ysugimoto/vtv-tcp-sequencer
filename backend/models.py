@@ -150,7 +150,7 @@ class ProtocolSettings(BaseModel):
     fn_eso_ports: Literal[0, 32, 64, 96, 128] = 32
     fn_input_size: int = Field(default=612, ge=4, le=1444)
     fn_output_size: int = Field(default=136, ge=4, le=1444)
-    fn_rpi_us: int = Field(default=10_000, ge=1_000, le=1_000_000)
+    fn_rpi_us: int = Field(default=10_000, ge=2_000, le=1_000_000)
     fn_connection_path: str = "20 04 24 01 2C 14 2C 0A"
     fn_o_to_t_header_bytes: Literal[0, 4] = 4
     fn_eds_name: str = ""
@@ -205,6 +205,14 @@ class ProtocolSettings(BaseModel):
                 item.model_dump()
                 for item in default_plclink_status_signals(busy_port=busy_port)
             ]
+        rpi = values.get("fn_rpi_us")
+        if rpi is not None and not isinstance(rpi, bool):
+            try:
+                if int(rpi) < 2000:
+                    # VTV EDS の RPI 下限は 2000μs。1ms 設定は接続できない。
+                    values["fn_rpi_us"] = 2000
+            except (TypeError, ValueError):
+                pass
         if values.get("transport") == "field_network":
             values.setdefault("port", 44818)
             # VTV 典型設定: ESI/ESO 32, コマンド64, 結果238, レスポンス64
@@ -508,7 +516,7 @@ class VariableStep(_StepIdentity):
     card_id: str = ""
     port: int = Field(default=1, ge=1, le=256)
     offset: int = Field(default=0, ge=0, le=65534)
-    result_format: Literal["dec", "fixed", "hex"] = "dec"
+    result_format: Literal["dec", "fixed", "hex", "string"] = "dec"
     value: str = Field(default="", max_length=500)
 
 

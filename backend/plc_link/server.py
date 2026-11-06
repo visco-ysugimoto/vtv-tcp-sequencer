@@ -1,13 +1,163 @@
 from __future__ import annotations
 
 import asyncio
+import select
 import socket
+import sys
+import threading
+import time
 from collections.abc import Awaitable, Callable
 
+from ..bit_edges import stamp_bit_edges
 from . import mc3e
 from .memory import DeviceMemory
 
 ConnectionHandler = Callable[[str], Awaitable[None] | None]
+Arrival = tuple[float, bytes] | None
+
+# 受信スレッドが GIL を取り直すまでの上限。
+# 既定の 5ms だと、ループが Python 処理を抱えているあいだ立下りが数 ms 遅れる。
+_STAMP_SWITCH_S = 0.0001
+_stamp_guard = threading.Lock()
+_stamp_users = 0
+_stamp_previous: float | None = None
+
+
+def _acquire_stamp_window() -> None:
+    """待受中だけ、受信スレッドが時刻を残せる間隔まで GIL の占有を短くする。"""
+    global _stamp_users, _stamp_previous
+    with _stamp_guard:
+        if _stamp_users == 0:
+            _stamp_previous = sys.getswitchinterval()
+            if _stamp_previous > _STAMP_SWITCH_S:
+                sys.setswitchinterval(_STAMP_SWITCH_S)
+        _stamp_users += 1
+
+
+def _release_stamp_window() -> None:
+    global _stamp_users, _stamp_previous
+    with _stamp_guard:
+        if _stamp_users == 0:
+            return
+        _stamp_users -= 1
+        if _stamp_users == 0 and _stamp_previous is not None:
+            sys.setswitchinterval(_stamp_previous)
+            _stamp_previous = None
+
+
+class _ListenSocket:
+    """asyncio.Server と同じ参照箇所（sockets / close / wait_closed）だけを持つ。"""
+
+    def __init__(self, sock: socket.socket) -> None:
+        self.sockets = [sock]
+
+    def close(self) -> None:
+        try:
+            self.sockets[0].close()
+        except OSError:
+            pass
+
+    async def wait_closed(self) -> None:
+        return None
+
+
+class _SocketWriter:
+    """受信用スレッドとは別スレッドで、短い MC 応答を送る。"""
+
+    def __init__(self, sock: socket.socket, recv_thread: threading.Thread) -> None:
+        self._sock = sock
+        self._recv_thread = recv_thread
+        self._outgoing = bytearray()
+        self._closed = False
+
+    def write(self, data: bytes) -> None:
+        self._outgoing.extend(data)
+
+    async def drain(self) -> None:
+        if not self._outgoing:
+            return
+        payload = bytes(self._outgoing)
+        self._outgoing.clear()
+        await asyncio.to_thread(self._sock.sendall, payload)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    async def wait_closed(self) -> None:
+        if self._recv_thread.is_alive():
+            await asyncio.to_thread(self._recv_thread.join, 2.0)
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+
+    def get_extra_info(self, name: str) -> object:
+        if name == "socket":
+            return self._sock
+        if name == "peername":
+            try:
+                return self._sock.getpeername()
+            except OSError:
+                return None
+        return None
+
+
+def _prepare_accepted(conn: socket.socket) -> None:
+    """小さい MC 応答を溜めず、アイドル切断も減らす。"""
+    try:
+        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except OSError:
+        pass
+    try:
+        conn.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        if hasattr(socket, "TCP_KEEPIDLE"):
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)
+        if hasattr(socket, "TCP_KEEPINTVL"):
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
+        if hasattr(socket, "TCP_KEEPCNT"):
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+        if hasattr(socket, "SIO_KEEPALIVE_VALS"):
+            conn.ioctl(socket.SIO_KEEPALIVE_VALS, (1, 30_000, 10_000))
+    except (OSError, AttributeError, ValueError):
+        pass
+
+
+def _recv_loop(
+    loop: asyncio.AbstractEventLoop,
+    conn: socket.socket,
+    arrivals: asyncio.Queue[Arrival],
+) -> None:
+    """recv が戻った時刻を、イベントループが空くのを待たずに残す。"""
+    try:
+        while True:
+            try:
+                ready, _, _ = select.select([conn], [], [], 0.5)
+            except OSError:
+                break
+            if not ready:
+                continue
+            try:
+                data = conn.recv(65536)
+            except OSError:
+                break
+            if not data:
+                break
+            arrived = time.perf_counter()
+            try:
+                loop.call_soon_threadsafe(arrivals.put_nowait, (arrived, data))
+            except RuntimeError:
+                break
+    finally:
+        try:
+            loop.call_soon_threadsafe(arrivals.put_nowait, None)
+        except RuntimeError:
+            pass
 
 
 class SoftPlcServer:
@@ -26,8 +176,13 @@ class SoftPlcServer:
         self.port = port
         self.on_connect = on_connect
         self.on_disconnect = on_disconnect
-        self._server: asyncio.Server | None = None
-        self._clients: set[asyncio.StreamWriter] = set()
+        self._server: _ListenSocket | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._clients: set[_SocketWriter] = set()
+        self._tasks: set[asyncio.Task[None]] = set()
+        self._accept_stop = threading.Event()
+        self._accept_thread: threading.Thread | None = None
+        self._stamp_held = False
         self._connected = asyncio.Event()
         self._communicated = asyncio.Event()
 
@@ -42,24 +197,52 @@ class SoftPlcServer:
     async def start(self) -> None:
         if self._server is not None:
             return
-        self._server = await asyncio.start_server(
-            self._handle_client, self.host, self.port
+        self._loop = asyncio.get_running_loop()
+        _acquire_stamp_window()
+        self._stamp_held = True
+        try:
+            listener = socket.create_server((self.host, self.port))
+        except Exception:
+            self._stamp_held = False
+            _release_stamp_window()
+            raise
+        listener.settimeout(0.2)
+        self._server = _ListenSocket(listener)
+        self._accept_stop.clear()
+        self._accept_thread = threading.Thread(
+            target=self._accept_loop,
+            name="plclink-accept",
+            daemon=True,
         )
+        self._accept_thread.start()
 
     async def stop(self) -> None:
-        for writer in list(self._clients):
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except OSError:
-                pass
-        self._clients.clear()
-        self._connected.clear()
-        self._communicated.clear()
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
-            self._server = None
+        try:
+            self._accept_stop.set()
+            for writer in list(self._clients):
+                writer.close()
+            for writer in list(self._clients):
+                try:
+                    await writer.wait_closed()
+                except OSError:
+                    pass
+            self._clients.clear()
+            self._connected.clear()
+            self._communicated.clear()
+            if self._server is not None:
+                self._server.close()
+                await self._server.wait_closed()
+                self._server = None
+            thread = self._accept_thread
+            self._accept_thread = None
+            if thread is not None and thread.is_alive():
+                await asyncio.to_thread(thread.join, 2.0)
+            if self._tasks:
+                await asyncio.gather(*list(self._tasks), return_exceptions=True)
+        finally:
+            if self._stamp_held:
+                self._stamp_held = False
+                _release_stamp_window()
 
     async def wait_for_client(self, timeout: float) -> None:
         await asyncio.wait_for(self._connected.wait(), timeout=timeout)
@@ -75,49 +258,75 @@ class SoftPlcServer:
     async def __aexit__(self, *_: object) -> None:
         await self.stop()
 
-    async def _handle_client(
-        self,
-        reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
-    ) -> None:
-        peer = writer.get_extra_info("peername")
+    def _accept_loop(self) -> None:
+        listener = self._server.sockets[0] if self._server is not None else None
+        if listener is None:
+            return
+        while not self._accept_stop.is_set():
+            try:
+                conn, _addr = listener.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                break
+            loop = self._loop
+            if loop is None:
+                conn.close()
+                break
+            try:
+                loop.call_soon_threadsafe(self._on_accept, conn)
+            except RuntimeError:
+                conn.close()
+                break
+
+    def _on_accept(self, conn: socket.socket) -> None:
+        loop = self._loop
+        if loop is None:
+            conn.close()
+            return
+        task = loop.create_task(self._handle_socket(conn))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _handle_socket(self, conn: socket.socket) -> None:
+        loop = self._loop
+        if loop is None:
+            conn.close()
+            return
+        _prepare_accepted(conn)
+        try:
+            peer = conn.getpeername()
+        except OSError:
+            peer = None
         peer_text = f"{peer[0]}:{peer[1]}" if peer else "unknown"
+        arrivals: asyncio.Queue[Arrival] = asyncio.Queue()
+        recv_thread = threading.Thread(
+            target=_recv_loop,
+            args=(loop, conn, arrivals),
+            name="plclink-recv",
+            daemon=True,
+        )
+        writer = _SocketWriter(conn, recv_thread)
         self._clients.add(writer)
         self._connected.set()
-        self._enable_keepalive(writer)
-        if self.on_connect is not None:
-            result = self.on_connect(peer_text)
-            if asyncio.iscoroutine(result):
-                await result
+        recv_thread.start()
         buffer = bytearray()
         try:
+            if self.on_connect is not None:
+                result = self.on_connect(peer_text)
+                if asyncio.iscoroutine(result):
+                    await result
             while True:
-                chunk = await reader.read(4096)
-                if not chunk:
+                item = await arrivals.get()
+                if item is None:
                     break
+                arrived, chunk = item
                 buffer.extend(chunk)
-                while True:
-                    needed = mc3e.minimum_frame_length(buffer)
-                    if needed is None:
-                        break
-                    if needed == 2 and int.from_bytes(buffer[0:2], "big") != (
-                        mc3e.SUBHEADER_REQUEST
-                    ):
-                        del buffer[0]
-                        continue
-                    if len(buffer) < needed:
-                        break
-                    frame = bytes(buffer[:needed])
-                    del buffer[:needed]
-                    try:
-                        response = mc3e.handle_request(self.memory, frame)
-                    except Exception:
-                        # handle_request は原則例外を返さないが、接続維持を優先する。
-                        response = mc3e.error_response(frame)
-                    writer.write(response)
-                    await writer.drain()
-                    if mc3e.decode_u16(response, 9) == 0:
-                        self._communicated.set()
+                wrote, accepted = self._consume_frames(buffer, arrived, writer)
+                if wrote:
+                    await self._drain_writer(writer)
+                if accepted:
+                    self._communicated.set()
         except (asyncio.IncompleteReadError, ConnectionResetError, OSError):
             pass
         except Exception:
@@ -138,22 +347,40 @@ class SoftPlcServer:
                 if asyncio.iscoroutine(result):
                     await result
 
-    @staticmethod
-    def _enable_keepalive(writer: asyncio.StreamWriter) -> None:
-        """アイドル切断を減らすため TCP keepalive を有効化する。"""
-        sock = writer.get_extra_info("socket")
-        if sock is None:
-            return
-        try:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-            if hasattr(socket, "TCP_KEEPIDLE"):
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)
-            if hasattr(socket, "TCP_KEEPINTVL"):
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
-            if hasattr(socket, "TCP_KEEPCNT"):
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
-            # Windows
-            if hasattr(socket, "SIO_KEEPALIVE_VALS"):
-                sock.ioctl(socket.SIO_KEEPALIVE_VALS, (1, 30_000, 10_000))
-        except (OSError, AttributeError, ValueError):
-            pass
+    def _consume_frames(
+        self,
+        buffer: bytearray,
+        arrived: float,
+        writer: _SocketWriter,
+    ) -> tuple[bool, bool]:
+        """届いたバイト列のうち、完結した要求を受信時刻のまま処理する。"""
+        wrote = False
+        accepted = False
+        while True:
+            needed = mc3e.minimum_frame_length(buffer)
+            if needed is None:
+                break
+            if needed == 2 and int.from_bytes(buffer[0:2], "big") != (
+                mc3e.SUBHEADER_REQUEST
+            ):
+                del buffer[0]
+                continue
+            if len(buffer) < needed:
+                break
+            frame = bytes(buffer[:needed])
+            del buffer[:needed]
+            try:
+                with stamp_bit_edges(arrived):
+                    response = mc3e.handle_request(self.memory, frame)
+            except Exception:
+                # handle_request は原則例外を返さないが、接続維持を優先する。
+                response = mc3e.error_response(frame)
+            writer.write(response)
+            wrote = True
+            if mc3e.decode_u16(response, 9) == 0:
+                accepted = True
+        return wrote, accepted
+
+    async def _drain_writer(self, writer: _SocketWriter) -> None:
+        """応答を送り切る。エッジ時刻はこの待ちの前に確定している。"""
+        await writer.drain()
