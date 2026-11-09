@@ -87,24 +87,13 @@
         </div>
       </div>
       <div class="sequence-library">
-        <label>名前
-          <input id="sequence-name" type="text" maxlength="40" placeholder="シーケンス名" aria-label="シーケンス名">
+        <label>保存セット
+          <input id="trial-name" type="text" maxlength="40" placeholder="保存セット名" aria-label="保存セット名">
         </label>
-        <button id="sequence-save-library" type="button" class="icon-button">この名前で残す</button>
-        <label>最近
-          <select id="sequence-recent" aria-label="最近使ったシーケンス">
-            <option value="">最近使ったシーケンス</option>
-          </select>
-        </label>
-      </div>
-      <div class="sequence-library">
-        <label>試験
-          <input id="trial-name" type="text" maxlength="40" placeholder="試験名" aria-label="試験名">
-        </label>
-        <button id="trial-save" type="button" class="icon-button">この試験を残す</button>
+        <button id="trial-save" type="button" class="icon-button">このセットを残す</button>
         <label>開く
-          <select id="trial-select" aria-label="試験セット">
-            <option value="">試験セット</option>
+          <select id="trial-select" aria-label="保存セット">
+            <option value="">保存セット</option>
           </select>
         </label>
       </div>
@@ -629,7 +618,7 @@
       <h3>BUSY・AK / NK / ER</h3>
       <ul>
         <li>BUSY は装置が処理中の信号です。コマンドは BUSY が落ちるのを待ってから次へ進みます。</li>
-        <li>AK は受け付けました。NK は受け付けられません。ER は異常です。</li>
+        <li>AK は応答完了。NK は応答なし。ER は異常です。</li>
       </ul>
       <h3>実行記録</h3>
       <p class="export-note">行を開くと、その回の送受信を読めます。</p>
@@ -645,6 +634,6 @@
     <span id="undo-toast-message"></span>
     <button type="button" id="undo-toast-button" class="button secondary">取り消す</button>
   </div>
-  <script src="/app.js?v=20261106-noecho1" defer></script>
+  <script src="/app.js?v=20261109-saveset1" defer></script>
 </body>
 </html>

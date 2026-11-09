@@ -5924,7 +5924,7 @@ function renderTrialSelect() {
   const select = $("#trial-select");
   if (!select) return;
   const data = trialStore();
-  select.innerHTML = `<option value="">試験セット</option>${data.items.map((item) =>
+  select.innerHTML = `<option value="">保存セット</option>${data.items.map((item) =>
     `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`
   ).join("")}`;
   if (state.trialId && data.items.some((item) => item.id === state.trialId)) {
@@ -5992,7 +5992,7 @@ function upsertSequence(name, preferredId) {
 function saveTrialSet() {
   const name = ($("#trial-name")?.value || "").trim();
   if (!name) {
-    showToast("試験名を入力してください。");
+    showToast("保存セット名を入力してください。");
     return;
   }
   let settings;
@@ -6006,7 +6006,7 @@ function saveTrialSet() {
   let trial = data.items.find((item) => item.id === state.trialId);
   const sameName = data.items.find((item) => item.name === name);
   if (sameName && (!trial || sameName.id !== trial.id)) {
-    if (!confirm(`試験「${name}」を上書きしますか？`)) return;
+    if (!confirm(`保存セット「${name}」を上書きしますか？`)) return;
     trial = sameName;
   }
   const profileId = upsertProfile(name, settings, trial?.profileId);
@@ -6031,7 +6031,7 @@ function saveTrialSet() {
   renderTrialSelect();
   renderProfileSelect();
   renderSequenceLibrary();
-  showToast(`試験「${name}」を残しました。接続先とシーケンスを一緒に開けます。`);
+  showToast(`保存セット「${name}」を残しました。接続先とシーケンスを一緒に開けます。`);
 }
 
 function openTrial(id) {
@@ -6041,11 +6041,11 @@ function openTrial(id) {
   const profile = profileStore().items.find((item) => item.id === trial.profileId);
   const sequence = libraryStore().items.find((item) => item.id === trial.sequenceId);
   if (!profile || !sequence) {
-    showToast("この試験の接続先かシーケンスが見つかりません。もう一度残してください。");
+    showToast("この保存セットの接続先かシーケンスが見つかりません。もう一度残してください。");
     renderTrialSelect();
     return;
   }
-  if (state.steps.length && !confirm("現在のシーケンスと接続先を、この試験で置き換えますか？")) {
+  if (state.steps.length && !confirm("現在のシーケンスと接続先を、この保存セットで置き換えますか？")) {
     renderTrialSelect();
     return;
   }
@@ -6092,7 +6092,7 @@ function openTrial(id) {
   renderSequenceLibrary();
   renderTrialSelect();
   renderSequence();
-  showToast(`試験「${trial.name}」を開きました。`, () => {
+  showToast(`保存セット「${trial.name}」を開きました。`, () => {
     state.steps = snapshot.steps;
     state.nextId = snapshot.nextId;
     state.sequenceName = snapshot.sequenceName;
