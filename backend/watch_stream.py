@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from typing import Any, Literal
 
 from .bit_edges import BitEdge
+from .i18n import DEFAULT_LANG, error_message
 from .models import MemoryWatchItem
 
 TransportName = Literal["plclink", "field_network"]
@@ -115,6 +116,7 @@ async def run_watch_loop(
     send_json: Callable[[dict[str, Any]], Any],
     should_stop: Callable[[], bool],
     take_edges: Callable[[], list[dict[str, Any]]] | None = None,
+    lang: str = DEFAULT_LANG,
 ) -> None:
     """監視ループ。send_json は awaitable でも同期でも可。"""
     interval_s = max(0.0005, float(interval_ms) / 1000.0)
@@ -132,7 +134,7 @@ async def run_watch_loop(
                 edge_rows = list(take_edges()) if take_edges is not None else []
                 rows = compact_values(read_once())
             except Exception as exc:  # noqa: BLE001 - 監視継続のため捕捉
-                payload = {"type": "error", "message": str(exc)}
+                payload = {"type": "error", "message": error_message(exc, lang)}
                 result = send_json(payload)
                 if asyncio.iscoroutine(result):
                     await result

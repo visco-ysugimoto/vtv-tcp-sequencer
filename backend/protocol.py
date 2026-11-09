@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
+from .i18n import LocalizedMixin
 from .models import ProtocolSettings
 
 SEPARATORS = {
@@ -18,8 +19,12 @@ TCP_CONNECT_SETTLE_SECONDS = 0.5
 TCP_DISCONNECT_GRACE_SECONDS = 0.5
 
 
-class ProtocolError(RuntimeError):
-    """VTV-9000 との通信プロトコルが成立しなかった場合の例外。"""
+class ProtocolError(LocalizedMixin, RuntimeError):
+    """VTV-9000 との通信プロトコルが成立しなかった場合の例外。
+
+    ``ProtocolError(<メッセージキー>, name=value)`` のようにキーを渡すと、
+    ``str(exc)`` は日本語、``exc.localize(lang)`` で言語別に取得できる。
+    """
 
 
 @dataclass(slots=True)
@@ -60,24 +65,28 @@ def remove_and_verify_checksum(
 ) -> str:
     if not separator:
         if len(line) < 2:
-            raise ProtocolError("チェックサムがありません")
+            raise ProtocolError("protocol.checksumMissing")
         payload, received = line[:-2], line[-2:]
         calculated = xor_checksum(payload.encode(encoding))
         if received.upper() != calculated:
             raise ProtocolError(
-                f"チェックサム不一致: 受信={received}, 計算={calculated}"
+                "protocol.checksumMismatch",
+                received=received,
+                calculated=calculated,
             )
         return payload
 
     marker = line.rfind(separator)
     if marker < 0 or len(line[marker + len(separator) :]) != 2:
-        raise ProtocolError("チェックサムの形式が不正です")
+        raise ProtocolError("protocol.checksumFormat")
     payload_with_separator = line[: marker + len(separator)]
     received = line[marker + len(separator) :]
     calculated = xor_checksum(payload_with_separator.encode(encoding))
     if received.upper() != calculated:
         raise ProtocolError(
-            f"チェックサム不一致: 受信={received}, 計算={calculated}"
+            "protocol.checksumMismatch",
+            received=received,
+            calculated=calculated,
         )
     return line[:marker]
 
@@ -104,7 +113,7 @@ class VtvTcpClient:
             # VTV は TCP 接続直後にはコマンド受付準備が完了していない。
             await asyncio.sleep(TCP_CONNECT_SETTLE_SECONDS)
         except (TimeoutError, OSError) as exc:
-            raise ProtocolError(f"接続できません: {exc}") from exc
+            raise ProtocolError("protocol.connectFailed", detail=str(exc)) from exc
 
     async def close(self) -> None:
         if self.writer is not None:
@@ -130,7 +139,7 @@ class VtvTcpClient:
     ) -> CommandResult:
         del tcp_code, arguments
         if self.reader is None or self.writer is None:
-            raise ProtocolError("装置に接続されていません")
+            raise ProtocolError("protocol.notConnected")
 
         # 前回「応答無視」で残った受信データを捨ててから送信する
         if not ignore_response:
@@ -144,7 +153,7 @@ class VtvTcpClient:
                 self.writer.drain(), timeout=self.settings.timeout
             )
         except (TimeoutError, OSError) as exc:
-            raise ProtocolError(f"送信に失敗しました: {exc}") from exc
+            raise ProtocolError("protocol.sendFailed", detail=str(exc)) from exc
 
         if ignore_response:
             return CommandResult(framed, "AK", ["(応答無視)"])
@@ -159,7 +168,7 @@ class VtvTcpClient:
             if status in {"NK", "ER"}:
                 return CommandResult(framed, status, responses)
             if status != "AK":
-                raise ProtocolError(f"不明な入力応答です: {line}")
+                raise ProtocolError("protocol.unknownInputResponse", line=line)
 
         if expect_result:
             line = await self._read_line()
@@ -202,18 +211,19 @@ class VtvTcpClient:
             if timeout_is_end:
                 return None
             raise ProtocolError(
-                f"{self.settings.timeout:g}秒以内に応答がありません"
+                "protocol.responseTimeout",
+                timeout=f"{self.settings.timeout:g}",
             ) from exc
         except asyncio.IncompleteReadError as exc:
-            raise ProtocolError("応答の途中で接続が切断されました") from exc
+            raise ProtocolError("protocol.disconnectedMidResponse") from exc
         except (asyncio.LimitOverrunError, OSError) as exc:
-            raise ProtocolError(f"受信に失敗しました: {exc}") from exc
+            raise ProtocolError("protocol.receiveFailed", detail=str(exc)) from exc
 
         raw = raw[: -len(terminator)]
         try:
             line = raw.decode(self.settings.encoding)
         except UnicodeDecodeError as exc:
-            raise ProtocolError("応答を指定文字コードで解釈できません") from exc
+            raise ProtocolError("protocol.decodeFailed") from exc
 
         if self.settings.checksum:
             separator = SEPARATORS[self.settings.separator]

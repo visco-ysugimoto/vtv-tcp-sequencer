@@ -61,6 +61,26 @@ class _ListenSocket:
         return None
 
 
+def format_socket_address(addr: object) -> str | None:
+    """接続が着地したローカルアドレスを host:port にする。
+
+    待受が 0.0.0.0 でも、accept 済みソケットの getsockname は
+    VTV が指定した接続先（127.0.0.1 や LAN IP）になる。
+    """
+    if not isinstance(addr, tuple) or len(addr) < 2:
+        return None
+    host, port = addr[0], addr[1]
+    if not isinstance(host, str) or isinstance(port, bool) or not isinstance(port, int):
+        return None
+    if host.startswith("::ffff:"):
+        host = host.removeprefix("::ffff:")
+    if host in {"0.0.0.0", "::", ""}:
+        return None
+    if ":" in host:
+        return f"[{host}]:{port}"
+    return f"{host}:{port}"
+
+
 class _SocketWriter:
     """受信用スレッドとは別スレッドで、短い MC 応答を送る。"""
 
@@ -69,6 +89,11 @@ class _SocketWriter:
         self._recv_thread = recv_thread
         self._outgoing = bytearray()
         self._closed = False
+        try:
+            local_addr = sock.getsockname()
+        except OSError:
+            local_addr = None
+        self.local_endpoint = format_socket_address(local_addr)
 
     def write(self, data: bytes) -> None:
         self._outgoing.extend(data)
@@ -193,6 +218,16 @@ class SoftPlcServer:
     @property
     def client_count(self) -> int:
         return len(self._clients)
+
+    @property
+    def connected_targets(self) -> list[str]:
+        """いま繋がっている VTV が実際に指定した接続先。"""
+        targets: list[str] = []
+        for writer in tuple(self._clients):
+            endpoint = writer.local_endpoint
+            if endpoint and endpoint not in targets:
+                targets.append(endpoint)
+        return targets
 
     async def start(self) -> None:
         if self._server is not None:

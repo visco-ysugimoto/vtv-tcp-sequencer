@@ -537,6 +537,24 @@ async def test_softplc_tcp_read_write() -> None:
                 ),
             )
             assert memory.get_bit(7) == 1
+            assert server.connected_targets == [f"127.0.0.1:{port}"]
+        finally:
+            writer.close()
+            await writer.wait_closed()
+    finally:
+        await server.stop()
+
+
+async def test_softplc_reports_localhost_when_vtv_uses_loopback() -> None:
+    server = SoftPlcServer(DeviceMemory(), host="0.0.0.0", port=0)
+    await server.start()
+    assert server._server is not None
+    port = server._server.sockets[0].getsockname()[1]
+    try:
+        _reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        try:
+            await server.wait_for_client(1)
+            assert server.connected_targets == [f"127.0.0.1:{port}"]
         finally:
             writer.close()
             await writer.wait_closed()

@@ -4,33 +4,38 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>VTV Network Sequencer</title>
-  <link rel="stylesheet" href="/style.css?v=20261106-timing-scroll2">
+  <link rel="stylesheet" href="/style.css?v=20261109-tours4">
+  <link rel="stylesheet" href="/vendor/driver.js/driver.css">
 </head>
 <body>
   <header class="app-header">
     <div>
-      <p class="eyebrow">VTV-9000 NETWORK I/O</p>
-      <h1>VTV Network Sequencer</h1>
+      <p class="eyebrow" data-i18n="header.eyebrow">VTV-9000 NETWORK I/O</p>
+      <h1 data-i18n="header.title">VTV Network Sequencer</h1>
     </div>
     <div class="header-actions">
-      <label class="header-timeout" title="コマンド応答の待ち時間（秒）。重い処理の前に延ばしてください。">
-        <span class="header-timeout-label">TO</span>
-        <input id="header-timeout" type="number" min="0.1" max="300" step="0.1" value="5" aria-label="タイムアウト（秒）">
-        <span class="header-timeout-unit">秒</span>
+      <select id="locale-select" class="locale-select" data-i18n-title="header.language" data-i18n-aria-label="header.languageAria">
+        <option value="ja" data-i18n="header.langJa">日本語</option>
+        <option value="en" data-i18n="header.langEn">English</option>
+      </select>
+      <label class="header-timeout" title="コマンド応答の待ち時間（秒）。重い処理の前に延ばしてください。" data-i18n-title="header.timeoutTitle">
+        <span class="header-timeout-label" data-i18n="header.timeoutLabel">TO</span>
+        <input id="header-timeout" type="number" min="0.1" max="300" step="0.1" value="5" aria-label="タイムアウト（秒）" data-i18n-aria-label="header.timeoutAria">
+        <span class="header-timeout-unit" data-i18n="header.timeoutUnit">秒</span>
       </label>
-      <span id="connection-badge" class="badge disconnected">未接続</span>
+      <span id="connection-badge" class="badge disconnected" data-i18n="badge.disconnected">未接続</span>
       <span id="run-progress" class="run-progress hidden"></span>
       <span id="run-summary" class="run-summary hidden"></span>
-      <button id="layout-mode-button" class="button secondary" title="モニター専用表示に切替">モニター拡大</button>
-      <button id="help-button" class="button secondary" title="接続と信号の短い手順">手順</button>
-      <button id="settings-button" class="button secondary">接続設定</button>
-      <button id="run-button" class="button primary" title="実行（Ctrl+Enter）" aria-keyshortcuts="Control+Enter">▶ 実行</button>
-      <button id="stop-button" class="button danger" disabled title="停止（Ctrl+.）" aria-keyshortcuts="Control+.">■ 停止</button>
-      <div id="local-io-panel" class="local-io-panel hidden" title="PLI/ESI ポートを直接 ON/OFF します（タスク実行中も可）">
+      <button id="layout-mode-button" class="button secondary" title="モニター専用表示に切替" data-i18n="header.layoutMonitorExpand" data-i18n-title="header.layoutMonitorTitle">モニター拡大</button>
+      <button id="help-button" class="button secondary" title="接続と信号の短い手順" data-i18n="header.help" data-i18n-title="header.helpTitle">手順</button>
+      <button id="settings-button" class="button secondary" data-i18n="header.settings">接続設定</button>
+      <button id="run-button" class="button primary" title="実行（Ctrl+Enter）" aria-keyshortcuts="Control+Enter" data-i18n="header.run" data-i18n-title="header.runTitle">▶ 実行</button>
+      <button id="stop-button" class="button danger" disabled title="停止（Ctrl+.）" aria-keyshortcuts="Control+." data-i18n="header.stop" data-i18n-title="header.stopTitle">■ 停止</button>
+      <div id="local-io-panel" class="local-io-panel hidden" title="PLI/ESI ポートを直接 ON/OFF します（タスク実行中も可）" data-i18n-title="localIo.title">
         <span id="local-io-label" class="local-io-label">ESI</span>
-        <input id="local-io-ports" type="text" value="1" aria-label="ポート番号" placeholder="1,2,5-8">
-        <button id="local-io-on" type="button" class="button secondary">ON</button>
-        <button id="local-io-off" type="button" class="button secondary">OFF</button>
+        <input id="local-io-ports" type="text" value="1" aria-label="ポート番号" data-i18n-aria-label="localIo.portsAria" placeholder="1,2,5-8">
+        <button id="local-io-on" type="button" class="button secondary" data-i18n="common.on">ON</button>
+        <button id="local-io-off" type="button" class="button secondary" data-i18n="common.off">OFF</button>
       </div>
     </div>
     <p id="run-hint" class="run-hint hidden" role="status"></p>
@@ -40,32 +45,32 @@
     <aside class="palette panel">
       <div class="panel-heading">
         <div>
-          <p class="eyebrow">COMMANDS</p>
-          <h2>カード</h2>
+          <p class="eyebrow" data-i18n="palette.eyebrow">COMMANDS</p>
+          <h2 data-i18n="palette.heading">カード</h2>
         </div>
         <span id="catalog-count" class="count">0</span>
       </div>
       <label class="search">
         <span>⌕</span>
-        <input id="command-search" type="search" placeholder="コマンドを検索" aria-label="コマンドを検索" aria-keyshortcuts="Control+K">
+        <input id="command-search" type="search" placeholder="コマンドを検索" aria-label="コマンドを検索" aria-keyshortcuts="Control+K" data-i18n-placeholder="palette.searchPlaceholder" data-i18n-aria-label="palette.searchAria">
       </label>
-      <label class="palette-options">
+      <label class="palette-options" data-i18n-label="palette.foldUnsupported">
         <input id="fold-unsupported" type="checkbox" checked>
         使えないコマンドを畳む
       </label>
       <div class="palette-section">
-        <h3>制御</h3>
+        <h3 data-i18n="palette.controlHeading">制御</h3>
         <div class="control-grid">
-          <button class="palette-card control" data-control="delay">⏱ 待機</button>
-          <button class="palette-card control" data-control="if">◇ 条件</button>
-          <button class="palette-card control" data-control="loop">↻ ループ</button>
-          <button class="palette-card control" data-control="break" title="ループの中にだけ追加できます">BREAK</button>
-          <button class="palette-card control" data-control="note">✎ メモ</button>
-          <button class="palette-card control" data-control="variable" title="結果や出力ポートを名前で残します">▣ 変数</button>
+          <button class="palette-card control" data-control="delay" data-i18n="control.delay">⏱ 待機</button>
+          <button class="palette-card control" data-control="if" data-i18n="control.if">◇ 条件</button>
+          <button class="palette-card control" data-control="loop" data-i18n="control.loop">↻ ループ</button>
+          <button class="palette-card control" data-control="break" title="ループの中にだけ追加できます" data-i18n="control.break" data-i18n-title="control.breakTitle">BREAK</button>
+          <button class="palette-card control" data-control="note" data-i18n="control.note">✎ メモ</button>
+          <button class="palette-card control" data-control="variable" title="結果や出力ポートを名前で残します" data-i18n="control.variable" data-i18n-title="control.variableTitle">▣ 変数</button>
         </div>
       </div>
       <div class="palette-section grow">
-        <h3>通信コマンド</h3>
+        <h3 data-i18n="palette.commandHeading">通信コマンド</h3>
         <div id="command-palette" class="command-list"></div>
       </div>
     </aside>
@@ -73,47 +78,47 @@
     <section class="sequence panel">
       <div class="panel-heading">
         <div>
-          <p class="eyebrow">SEQUENCE</p>
-          <h2>実行シーケンス</h2>
+          <p class="eyebrow" data-i18n="sequence.eyebrow">SEQUENCE</p>
+          <h2 data-i18n="sequence.heading">実行シーケンス</h2>
         </div>
         <div class="compact-actions">
-          <button id="save-button" class="icon-button" title="JSON保存" aria-label="シーケンスをJSONで保存" aria-keyshortcuts="Control+Shift+S">保存</button>
-          <button id="sequence-readable" class="icon-button" type="button" title="人が読む一覧" aria-label="シーケンスの一覧を書き出す">一覧</button>
-          <label class="icon-button file-button" title="JSON読込" aria-label="シーケンスをJSONから読み込む">
-            読込<input id="load-input" type="file" accept=".json">
+          <button id="save-button" class="icon-button" title="JSON保存" aria-label="シーケンスをJSONで保存" aria-keyshortcuts="Control+Shift+S" data-i18n="sequence.save" data-i18n-title="sequence.saveTitle" data-i18n-aria-label="sequence.saveAria">保存</button>
+          <button id="sequence-readable" class="icon-button" type="button" title="人が読む一覧" aria-label="シーケンスの一覧を書き出す" data-i18n="sequence.list" data-i18n-title="sequence.listTitle" data-i18n-aria-label="sequence.listAria">一覧</button>
+          <label class="icon-button file-button" title="JSON読込" aria-label="シーケンスをJSONから読み込む" data-i18n-title="sequence.loadTitle" data-i18n-aria-label="sequence.loadAria">
+            <span data-i18n="sequence.load">読込</span><input id="load-input" type="file" accept=".json">
           </label>
-          <button id="clear-button" class="icon-button" title="すべて削除" aria-label="シーケンスをすべて削除">クリア</button>
-          <button id="view-mode-button" class="icon-button" title="表示モード切替" aria-label="表示モードを切り替える">コンパクト</button>
+          <button id="clear-button" class="icon-button" title="すべて削除" aria-label="シーケンスをすべて削除" data-i18n="sequence.clear" data-i18n-title="sequence.clearTitle" data-i18n-aria-label="sequence.clearAria">クリア</button>
+          <button id="view-mode-button" class="icon-button" title="表示モード切替" aria-label="表示モードを切り替える" data-i18n="sequence.viewCompact" data-i18n-title="sequence.viewModeTitle" data-i18n-aria-label="sequence.viewModeAria">コンパクト</button>
         </div>
       </div>
       <div class="sequence-library">
-        <label>保存セット
-          <input id="trial-name" type="text" maxlength="40" placeholder="保存セット名" aria-label="保存セット名">
+        <label><span data-i18n="sequence.saveSetLabel">保存セット</span>
+          <input id="trial-name" type="text" maxlength="40" placeholder="保存セット名" aria-label="保存セット名" data-i18n-placeholder="sequence.saveSetNamePlaceholder" data-i18n-aria-label="sequence.saveSetNameAria">
         </label>
-        <button id="trial-save" type="button" class="icon-button">このセットを残す</button>
-        <label>開く
-          <select id="trial-select" aria-label="保存セット">
-            <option value="">保存セット</option>
+        <button id="trial-save" type="button" class="icon-button" data-i18n="sequence.saveSetSave">このセットを残す</button>
+        <label><span data-i18n="sequence.saveSetOpen">開く</span>
+          <select id="trial-select" aria-label="保存セット" data-i18n-aria-label="sequence.saveSetSelectAria">
+            <option value="" data-i18n="sequence.saveSetOption">保存セット</option>
           </select>
         </label>
       </div>
       <div id="sequence-list" class="sequence-list drop-list" data-drop-root="true">
         <div id="empty-state" class="empty-state">
           <div class="empty-icon">＋</div>
-          <h3>カードを追加してください</h3>
-          <p>左のカードをクリックすると、ここに順番に追加されます。</p>
+          <h3 data-i18n="empty.heading">カードを追加してください</h3>
+          <p data-i18n="empty.description">左のカードをクリックすると、ここに順番に追加されます。</p>
           <ol class="setup-steps">
             <li>
-              <button type="button" id="empty-open-settings" class="link-button">接続</button>
-              <span>通信方式と接続先を保存する</span>
+              <button type="button" id="empty-open-settings" class="link-button" data-i18n="empty.stepConnect">接続</button>
+              <span data-i18n="empty.stepConnectDesc">通信方式と接続先を保存する</span>
             </li>
             <li>
-              <span class="setup-label">カード</span>
-              <span>左のコマンドをクリックして並べる</span>
+              <span class="setup-label" data-i18n="empty.stepCards">カード</span>
+              <span data-i18n="empty.stepCardsDesc">左のコマンドをクリックして並べる</span>
             </li>
             <li>
-              <span class="setup-label">実行</span>
-              <span>右上の実行で装置へ送る</span>
+              <span class="setup-label" data-i18n="empty.stepRun">実行</span>
+              <span data-i18n="empty.stepRunDesc">右上の実行で装置へ送る</span>
             </li>
           </ol>
         </div>
@@ -123,136 +128,139 @@
     <aside class="monitor panel">
       <div class="panel-heading">
         <div>
-          <p class="eyebrow">MONITOR</p>
-          <h2 id="monitor-heading-title">モニター</h2>
+          <p class="eyebrow" data-i18n="monitor.eyebrow">MONITOR</p>
+          <h2 id="monitor-heading-title" data-i18n="monitor.heading">モニター</h2>
         </div>
         <div class="compact-actions">
-          <button id="layout-mode-monitor-button" class="icon-button" title="モニター専用表示に切替" aria-label="モニター専用表示に切替">拡大</button>
+          <button id="layout-mode-monitor-button" class="icon-button" title="モニター専用表示に切替" aria-label="モニター専用表示に切替" data-i18n="monitor.expand" data-i18n-title="header.layoutMonitorTitle" data-i18n-aria-label="header.layoutMonitorTitle">拡大</button>
         </div>
       </div>
       <div class="monitor-tabs">
-        <button class="monitor-tab active" data-monitor-tab="log">通信ログ</button>
-        <button id="watch-tab-button" class="monitor-tab" data-monitor-tab="watch">監視</button>
-        <button id="timing-tab-button" class="monitor-tab" data-monitor-tab="timing" disabled>タイミング</button>
+        <button class="monitor-tab active" data-monitor-tab="log" data-i18n="monitor.tabLog">通信ログ</button>
+        <button id="watch-tab-button" class="monitor-tab" data-monitor-tab="watch" data-i18n="monitor.tabWatch">監視</button>
+        <button id="timing-tab-button" class="monitor-tab" data-monitor-tab="timing" data-i18n="monitor.tabTiming" disabled>タイミング</button>
       </div>
       <div class="monitor-panes">
         <div id="monitor-log-panel" class="monitor-content">
           <div class="monitor-toolbar log-toolbar">
             <label class="log-filter">
-              <span class="visually-hidden">通信ログの種別</span>
-              <select id="log-filter" aria-label="通信ログの種別">
-                <option value="all">すべて</option>
-                <option value="tx">送信</option>
-                <option value="rx">受信</option>
-                <option value="error">失敗</option>
-                <option value="info">情報</option>
+              <span class="visually-hidden" data-i18n="monitor.logFilterAria">通信ログの種別</span>
+              <select id="log-filter" aria-label="通信ログの種別" data-i18n-aria-label="monitor.logFilterAria">
+                <option value="all" data-i18n="monitor.filterAll">すべて</option>
+                <option value="tx" data-i18n="monitor.filterTx">送信</option>
+                <option value="rx" data-i18n="monitor.filterRx">受信</option>
+                <option value="error" data-i18n="monitor.filterError">失敗</option>
+                <option value="info" data-i18n="monitor.filterInfo">情報</option>
               </select>
             </label>
-            <span class="monitor-pane-label">通信ログ</span>
-            <button id="export-log-button" class="icon-button" aria-label="通信ログを出力">出力</button>
-            <button id="clear-log-button" class="icon-button" aria-label="通信ログを消去">消去</button>
+            <span class="monitor-pane-label" data-i18n="monitor.tabLog">通信ログ</span>
+            <button id="export-log-button" class="icon-button" aria-label="通信ログを出力" data-i18n="monitor.logExport" data-i18n-aria-label="monitor.logExportAria">出力</button>
+            <button id="clear-log-button" class="icon-button" aria-label="通信ログを消去" data-i18n="monitor.logClear" data-i18n-aria-label="monitor.logClearAria">消去</button>
           </div>
           <div id="log" class="log" aria-live="polite">
-            <div class="log-empty">実行すると送受信内容が表示されます。</div>
+            <div class="log-empty" data-i18n="log.empty">実行すると送受信内容が表示されます。</div>
           </div>
         </div>
         <div id="monitor-watch-panel" class="monitor-content hidden">
           <div class="monitor-toolbar watch-toolbar">
             <div class="watch-toolbar-row watch-toolbar-main">
-              <span id="watch-status" class="watch-status">停止中</span>
+              <span id="watch-status" class="watch-status" data-i18n="watch.statusStopped">停止中</span>
               <div class="watch-toolbar-actions">
-                <button id="refresh-map-button" class="icon-button" title="接続設定から一覧を再生成" aria-label="監視一覧を再読込">再読込</button>
-                <button id="start-watch-button" class="icon-button" aria-label="監視を開始">開始</button>
-                <button id="stop-watch-button" class="icon-button" disabled aria-label="監視を停止">停止</button>
+                <button id="refresh-map-button" class="icon-button" title="接続設定から一覧を再生成" aria-label="監視一覧を再読込" data-i18n="watch.reload" data-i18n-title="watch.reloadTitle" data-i18n-aria-label="watch.reloadAria">再読込</button>
+                <button id="start-watch-button" class="icon-button" aria-label="監視を開始" data-i18n="common.start" data-i18n-aria-label="watch.startAria">開始</button>
+                <button id="stop-watch-button" class="icon-button" disabled aria-label="監視を停止" data-i18n="common.stop" data-i18n-aria-label="watch.stopAria">停止</button>
               </div>
             </div>
             <div class="watch-toolbar-row watch-toolbar-settings">
               <label class="watch-field">
-                <span class="watch-field-label">更新周期</span>
+                <span class="watch-field-label" data-i18n="watch.intervalLabel">更新周期</span>
                 <span class="watch-field-control">
                   <input id="watch-interval" type="number" min="1" max="10000" step="1" value="500"
-                    title="監視の更新間隔（ミリ秒）。下限 1 ms。WebSocket 配信でサーバ側がこの周期で push します。" aria-label="更新周期（ミリ秒）">
+                    title="監視の更新間隔（ミリ秒）。下限 1 ms。WebSocket 配信でサーバ側がこの周期で push します。" aria-label="更新周期（ミリ秒）"
+                    data-i18n-title="watch.intervalTitle" data-i18n-aria-label="watch.intervalAria">
                   <span class="watch-field-unit">ms</span>
                 </span>
-                <span id="watch-actual-period" class="watch-actual-period" title="ポーリング開始間隔の実測（平滑化）。括弧内は直近の HTTP 取得時間です。">実測 —</span>
+                <span id="watch-actual-period" class="watch-actual-period" title="ポーリング開始間隔の実測（平滑化）。括弧内は直近の HTTP 取得時間です。" data-i18n="watch.actualUnknown" data-i18n-title="watch.actualTitle">実測 —</span>
               </label>
               <label class="watch-field">
-                <span class="watch-field-label">コマンド表示</span>
+                <span class="watch-field-label" data-i18n="watch.commandWordsLabel">コマンド表示</span>
                 <span class="watch-field-control">
                   <input id="command-watch-words" type="number" min="4" max="512" step="2" value="64"
                     title="コマンド領域の先頭から表示するワード数。上限は接続設定のコマンドサイズです。サイズと同じにすると、サイズを広げたときも末尾まで表示します。"
-                    aria-label="コマンド表示ワード数">
-                  <span class="watch-field-unit">ワード</span>
+                    aria-label="コマンド表示ワード数"
+                    data-i18n-title="watch.commandWordsTitle" data-i18n-aria-label="watch.commandWordsAria">
+                  <span class="watch-field-unit" data-i18n="watch.wordsUnit">ワード</span>
                 </span>
               </label>
               <label class="watch-field">
-                <span class="watch-field-label">レスポンス表示</span>
+                <span class="watch-field-label" data-i18n="watch.responseWordsLabel">レスポンス表示</span>
                 <span class="watch-field-control">
                   <input id="response-watch-words" type="number" min="8" max="512" step="2" value="64"
                     title="レスポンス領域の先頭から表示するワード数。上限は接続設定のレスポンスサイズです。30000 のような長い応答は、サイズとこの値を揃えて広げます。"
-                    aria-label="レスポンス表示ワード数">
-                  <span class="watch-field-unit">ワード</span>
+                    aria-label="レスポンス表示ワード数"
+                    data-i18n-title="watch.responseWordsTitle" data-i18n-aria-label="watch.responseWordsAria">
+                  <span class="watch-field-unit" data-i18n="watch.wordsUnit">ワード</span>
                 </span>
               </label>
               <label class="watch-field">
-                <span class="watch-field-label">結果データ</span>
-                <select id="result-data-display-mode" title="VTV結果データ出力モニタの『出力値／データ』列に対応">
-                  <option value="dec" selected>整数 (Dec)</option>
-                  <option value="fixed">固定小数点</option>
-                  <option value="float">浮動小数点 (double)</option>
-                  <option value="hex">16進 (Hex)</option>
+                <span class="watch-field-label" data-i18n="watch.resultDataLabel">結果データ</span>
+                <select id="result-data-display-mode" title="VTV結果データ出力モニタの『出力値／データ』列に対応" data-i18n-title="watch.resultDataTitle">
+                  <option value="dec" selected data-i18n="watch.displayDec">整数 (Dec)</option>
+                  <option value="fixed" data-i18n="watch.displayFixed">固定小数点</option>
+                  <option value="float" data-i18n="watch.displayFloat">浮動小数点 (double)</option>
+                  <option value="hex" data-i18n="watch.displayHex">16進 (Hex)</option>
                 </select>
               </label>
             </div>
           </div>
           <div class="watch-filter-bar">
-            <input id="watch-search" type="search" placeholder="信号名で検索" aria-label="監視リストの検索">
-            <label><input id="watch-changed-only" type="checkbox"> 変化した信号だけ</label>
+            <input id="watch-search" type="search" placeholder="信号名で検索" aria-label="監視リストの検索" data-i18n-placeholder="watch.searchPlaceholder" data-i18n-aria-label="watch.searchAria">
+            <label data-i18n-label="watch.changedOnly"><input id="watch-changed-only" type="checkbox"> 変化した信号だけ</label>
           </div>
           <div id="watch-list" class="watch-list"></div>
-          <p id="watch-note" class="watch-note">接続設定のコマンド／レスポンス／PLO割付から自動生成します。</p>
+          <p id="watch-note" class="watch-note" data-i18n="watch.noteStatic">接続設定のコマンド／レスポンス／PLO割付から自動生成します。</p>
         </div>
         <div id="monitor-timing-panel" class="monitor-content hidden">
           <div class="monitor-toolbar watch-toolbar timing-toolbar">
             <div class="watch-toolbar-row watch-toolbar-main">
-              <span id="timing-status" class="watch-status">監視開始後に記録します</span>
+              <span id="timing-status" class="watch-status" data-i18n="timing.statusIdle">監視開始後に記録します</span>
               <div class="watch-toolbar-actions">
-                <button id="timing-zoom-in-button" class="icon-button" title="時間軸を拡大（ホイール上でも可）" aria-label="時間軸を拡大">拡大</button>
-                <button id="timing-zoom-out-button" class="icon-button" title="時間軸を縮小（ホイール下でも可）" aria-label="時間軸を縮小">縮小</button>
-                <button id="timing-zoom-reset-button" class="icon-button" title="表示幅をリセットし最新へ追従" aria-label="表示幅をリセット">リセット</button>
-                <button id="timing-measure-clear-button" class="icon-button" title="測定カーソルを消去" aria-label="測定カーソルを消去">測定クリア</button>
-                <button id="timing-clear-button" class="icon-button" title="波形を消去" aria-label="波形を消去">消去</button>
-                <button id="timing-export-image" class="icon-button" type="button" aria-label="波形を画像で保存">画像</button>
-                <button id="timing-export-csv" class="icon-button" type="button" aria-label="波形をCSVで保存">CSV</button>
-                <button id="start-timing-button" class="icon-button" aria-label="タイミング記録を開始">開始</button>
-                <button id="stop-timing-button" class="icon-button" disabled aria-label="タイミング記録を停止">停止</button>
+                <button id="timing-zoom-in-button" class="icon-button" title="時間軸を拡大（ホイール上でも可）" aria-label="時間軸を拡大" data-i18n="timing.zoomIn" data-i18n-title="timing.zoomInTitle" data-i18n-aria-label="timing.zoomInAria">拡大</button>
+                <button id="timing-zoom-out-button" class="icon-button" title="時間軸を縮小（ホイール下でも可）" aria-label="時間軸を縮小" data-i18n="timing.zoomOut" data-i18n-title="timing.zoomOutTitle" data-i18n-aria-label="timing.zoomOutAria">縮小</button>
+                <button id="timing-zoom-reset-button" class="icon-button" title="表示幅をリセットし最新へ追従" aria-label="表示幅をリセット" data-i18n="timing.zoomReset" data-i18n-title="timing.zoomResetTitle" data-i18n-aria-label="timing.zoomResetAria">リセット</button>
+                <button id="timing-measure-clear-button" class="icon-button" title="測定カーソルを消去" aria-label="測定カーソルを消去" data-i18n="timing.measureClear" data-i18n-title="timing.measureClearTitle" data-i18n-aria-label="timing.measureClearAria">測定クリア</button>
+                <button id="timing-clear-button" class="icon-button" title="波形を消去" aria-label="波形を消去" data-i18n="timing.clear" data-i18n-title="timing.clearTitle" data-i18n-aria-label="timing.clearAria">消去</button>
+                <button id="timing-export-image" class="icon-button" type="button" aria-label="波形を画像で保存" data-i18n="timing.exportImage" data-i18n-aria-label="timing.exportImageAria">画像</button>
+                <button id="timing-export-csv" class="icon-button" type="button" aria-label="波形をCSVで保存" data-i18n-aria-label="timing.exportCsvAria">CSV</button>
+                <button id="start-timing-button" class="icon-button" aria-label="タイミング記録を開始" data-i18n="common.start" data-i18n-aria-label="timing.startAria">開始</button>
+                <button id="stop-timing-button" class="icon-button" disabled aria-label="タイミング記録を停止" data-i18n="common.stop" data-i18n-aria-label="timing.stopAria">停止</button>
               </div>
             </div>
             <div class="watch-toolbar-row watch-toolbar-settings">
               <label class="watch-field">
-                <span class="watch-field-label">時間軸</span>
+                <span class="watch-field-label" data-i18n="timing.axisLabel">時間軸</span>
                 <span class="watch-field-control">
-                  <select id="timing-axis-mode" aria-label="タイミング時間軸モード" title="ポーリング回数: 横軸は実時間線形、目盛りは各 poll の実時刻位置。実時間: 等間隔の時間目盛り。">
-                    <option value="time">実時間</option>
-                    <option value="poll" selected>ポーリング回数</option>
+                  <select id="timing-axis-mode" aria-label="タイミング時間軸モード" title="ポーリング回数: 横軸は実時間線形、目盛りは各 poll の実時刻位置。実時間: 等間隔の時間目盛り。" data-i18n-aria-label="timing.axisAria" data-i18n-title="timing.axisTitle">
+                    <option value="time" data-i18n="timing.axisTime">実時間</option>
+                    <option value="poll" selected data-i18n="timing.axisPoll">ポーリング回数</option>
                   </select>
                 </span>
               </label>
               <label class="watch-field">
-                <span class="watch-field-label">表示幅</span>
+                <span class="watch-field-label" data-i18n="timing.windowLabel">表示幅</span>
                 <span class="watch-field-control">
-                  <select id="timing-window-ms" class="hidden" aria-label="タイミング表示幅（実時間）">
-                    <option value="100">0.1 秒</option>
-                    <option value="200">0.2 秒</option>
-                    <option value="500">0.5 秒</option>
-                    <option value="1000">1 秒</option>
-                    <option value="2000">2 秒</option>
-                    <option value="5000" selected>5 秒</option>
-                    <option value="10000">10 秒</option>
-                    <option value="30000">30 秒</option>
-                    <option value="60000">60 秒</option>
+                  <select id="timing-window-ms" class="hidden" aria-label="タイミング表示幅（実時間）" data-i18n-aria-label="timing.windowTimeAria">
+                    <option value="100" data-i18n="timing.window0_1s">0.1 秒</option>
+                    <option value="200" data-i18n="timing.window0_2s">0.2 秒</option>
+                    <option value="500" data-i18n="timing.window0_5s">0.5 秒</option>
+                    <option value="1000" data-i18n="timing.window1s">1 秒</option>
+                    <option value="2000" data-i18n="timing.window2s">2 秒</option>
+                    <option value="5000" selected data-i18n="timing.window5s">5 秒</option>
+                    <option value="10000" data-i18n="timing.window10s">10 秒</option>
+                    <option value="30000" data-i18n="timing.window30s">30 秒</option>
+                    <option value="60000" data-i18n="timing.window60s">60 秒</option>
                   </select>
-                  <select id="timing-window-polls" aria-label="タイミング表示幅（ポーリング回数）">
+                  <select id="timing-window-polls" aria-label="タイミング表示幅（ポーリング回数）" data-i18n-aria-label="timing.windowPollsAria">
                     <option value="50">50</option>
                     <option value="100">100</option>
                     <option value="200">200</option>
@@ -266,40 +274,40 @@
                 <span id="timing-view-span" class="watch-actual-period">表示 500 poll</span>
               </label>
               <label class="watch-field timing-scale-toggle">
-                <span class="watch-field-label">目盛り</span>
+                <span class="watch-field-label" data-i18n="timing.scaleLabel">目盛り</span>
                 <span class="watch-field-control">
-                  <label class="timing-check">
+                  <label class="timing-check" data-i18n-label="timing.scaleShow">
                     <input id="timing-show-scale" type="checkbox" checked>
                     表示する
                   </label>
                 </span>
               </label>
               <div class="watch-field">
-                <span class="watch-field-label">ポーリング</span>
+                <span class="watch-field-label" data-i18n="timing.pollingLabel">ポーリング</span>
                 <span id="timing-actual-period" class="watch-actual-period"
-                  title="ポーリング開始間隔の実測（平滑化）。括弧内は直近の読取時間です。">実測 —</span>
-                <span id="timing-sample-info" class="watch-actual-period">サンプル —</span>
+                  title="ポーリング開始間隔の実測（平滑化）。括弧内は直近の読取時間です。" data-i18n="watch.actualUnknown" data-i18n-title="timing.actualTitle">実測 —</span>
+                <span id="timing-sample-info" class="watch-actual-period" data-i18n="watch.sampleUnknown">サンプル —</span>
               </div>
             </div>
-            <div id="timing-measure-info" class="timing-measure-info">
+            <div id="timing-measure-info" class="timing-measure-info" data-i18n="timing.measureInfoDefault">
               横軸は実時間線形。目盛りは各 poll の実時刻（周期がぶれると間隔が変化）。クリックで A/B。
             </div>
           </div>
           <div class="timing-layout">
             <aside class="timing-channel-panel">
-              <div class="timing-channel-title">信号選択（bit）</div>
+              <div class="timing-channel-title" data-i18n="timing.channelTitle">信号選択（bit）</div>
               <div id="timing-channel-list" class="timing-channel-list"></div>
             </aside>
             <div class="timing-chart-column">
               <div class="timing-chart-wrap">
-                <canvas id="timing-chart" width="800" height="320" aria-label="タイミングチャート"></canvas>
+                <canvas id="timing-chart" width="800" height="320" aria-label="タイミングチャート" data-i18n-aria-label="timing.chartAria"></canvas>
               </div>
-              <div id="timing-scrollbar" class="timing-scrollbar" aria-label="タイミングの表示位置">
+              <div id="timing-scrollbar" class="timing-scrollbar" aria-label="タイミングの表示位置" data-i18n-aria-label="timing.scrollbarAria">
                 <div id="timing-scrollbar-inner"></div>
               </div>
             </div>
           </div>
-          <p class="watch-note">クリックで測定、ホイールで時間軸ズーム、下のバーで表示位置を移動。ビットの幅は変化した時刻、その他の値は監視周期です。</p>
+          <p class="watch-note" data-i18n="timing.note">クリックで測定、ホイールで時間軸ズーム、下のバーで表示位置を移動。ビットの幅は変化した時刻、その他の値は監視周期です。</p>
         </div>
       </div>
     </aside>
@@ -309,133 +317,133 @@
     <form id="settings-form" novalidate>
       <div class="dialog-heading">
         <div>
-          <p class="eyebrow">CONNECTION</p>
-          <h2>接続・プロトコル設定</h2>
+          <p class="eyebrow" data-i18n="settings.eyebrow">CONNECTION</p>
+          <h2 data-i18n="settings.title">接続・プロトコル設定</h2>
         </div>
-        <button type="button" id="settings-close-button" class="close-button" aria-label="閉じる">×</button>
+        <button type="button" id="settings-close-button" class="close-button" aria-label="閉じる" data-i18n-aria-label="common.close">×</button>
       </div>
       <div class="profile-bar">
-        <label>装置
-          <select id="profile-select" aria-label="装置プロファイル">
-            <option value="">（プロファイルなし）</option>
+        <label><span data-i18n="settings.profileDevice">装置</span>
+          <select id="profile-select" aria-label="装置プロファイル" data-i18n-aria-label="settings.profileSelectAria">
+            <option value="" data-i18n="settings.profileNone">（プロファイルなし）</option>
           </select>
         </label>
-        <label>名前
-          <input id="profile-name" type="text" maxlength="40" placeholder="ライン1" aria-label="プロファイル名">
+        <label><span data-i18n="settings.profileName">名前</span>
+          <input id="profile-name" type="text" maxlength="40" placeholder="ライン1" aria-label="プロファイル名" data-i18n-placeholder="settings.profileNamePlaceholder" data-i18n-aria-label="settings.profileNameAria">
         </label>
-        <button id="profile-save" type="button" class="icon-button">この名前で保存</button>
-        <button id="profile-delete" type="button" class="icon-button">削除</button>
+        <button id="profile-save" type="button" class="icon-button" data-i18n="settings.profileSave">この名前で保存</button>
+        <button id="profile-delete" type="button" class="icon-button" data-i18n="common.delete">削除</button>
       </div>
-      <div class="settings-page-nav" role="tablist" aria-label="設定ページ">
-        <button type="button" class="settings-tab active" data-settings-tab="connection" aria-selected="true">接続先</button>
-        <button type="button" class="settings-tab" data-settings-tab="signals" aria-selected="false">信号</button>
-        <button type="button" class="settings-tab" data-settings-tab="ports" aria-selected="false">ポート名</button>
-        <button type="button" class="settings-tab" data-settings-tab="result" aria-selected="false">結果データ</button>
+      <div class="settings-page-nav" role="tablist" aria-label="設定ページ" data-i18n-aria-label="settings.pageNavAria">
+        <button type="button" class="settings-tab active" data-settings-tab="connection" aria-selected="true" data-i18n="settings.tabConnection">接続先</button>
+        <button type="button" class="settings-tab" data-settings-tab="signals" aria-selected="false" data-i18n="settings.tabSignals">信号</button>
+        <button type="button" class="settings-tab" data-settings-tab="ports" aria-selected="false" data-i18n="settings.tabPorts">ポート名</button>
+        <button type="button" class="settings-tab" data-settings-tab="result" aria-selected="false" data-i18n="settings.tabResult">結果データ</button>
       </div>
       <div class="settings-scroll">
       <div class="form-section">
-        <h3>通信方式</h3>
+        <h3 data-i18n="settings.transportHeading">通信方式</h3>
         <div class="form-grid">
-          <label>方式
+          <label data-i18n-label="settings.transportLabel">方式
             <select id="transport">
-              <option value="tcp">TCP（Network I/O）</option>
-              <option value="plclink">PLCLINK（MC 3E 疑似 PLC）</option>
-              <option value="field_network">Field Network（EtherNet/IP）</option>
+              <option value="tcp" data-i18n="settings.transportTcp">TCP（Network I/O）</option>
+              <option value="plclink" data-i18n="settings.transportPlclink">PLCLINK（MC 3E 疑似 PLC）</option>
+              <option value="field_network" data-i18n="settings.transportFieldNetwork">Field Network（EtherNet/IP）</option>
             </select>
           </label>
         </div>
         <p id="transport-hint" class="export-note"></p>
       </div>
       <div class="form-section" data-settings-chunk="connection">
-        <h3>接続先</h3>
+        <h3 data-i18n="settings.connectionHeading">接続先</h3>
         <div class="form-grid three">
-          <label id="host-label"><span id="host-label-text">装置 IP</span><input id="host" required placeholder="192.168.0.10"></label>
-          <label id="port-label"><span id="port-label-text">ポート</span><input id="port" type="number" min="1" max="65535" value="55555"></label>
-          <label>タイムアウト（秒）<input id="timeout" type="number" min="0.1" max="300" step="0.1" value="5"></label>
+          <label id="host-label"><span id="host-label-text" data-i18n="settings.hostDevice">装置 IP</span><input id="host" required placeholder="192.168.0.10"></label>
+          <label id="port-label"><span id="port-label-text" data-i18n="settings.portDefault">ポート</span><input id="port" type="number" min="1" max="65535" value="55555"></label>
+          <label data-i18n-label="settings.timeoutLabel">タイムアウト（秒）<input id="timeout" type="number" min="0.1" max="300" step="0.1" value="5"></label>
         </div>
       </div>
       <div id="tcp-settings" class="form-section" data-settings-chunk="connection">
-        <h3>TCP プロトコル</h3>
+        <h3 data-i18n="settings.tcpHeading">TCP プロトコル</h3>
         <div class="form-grid three">
-          <label>入力終端<select id="input-terminator"><option value="CR">CR</option></select></label>
-          <label>出力終端<select id="output-terminator"><option value="CR">CR</option><option value="CRLF">CR/LF</option></select></label>
-          <label>セパレータ<select id="separator">
-            <option value="space">スペース</option><option value="comma">カンマ</option>
-            <option value="tab">タブ</option><option value="underscore">アンダースコア</option>
-            <option value="hyphen">ハイフン</option><option value="none">なし</option>
+          <label data-i18n-label="settings.inputTerminator">入力終端<select id="input-terminator"><option value="CR">CR</option></select></label>
+          <label data-i18n-label="settings.outputTerminator">出力終端<select id="output-terminator"><option value="CR">CR</option><option value="CRLF">CR/LF</option></select></label>
+          <label data-i18n-label="settings.separator">セパレータ<select id="separator">
+            <option value="space" data-i18n="settings.sepSpace">スペース</option><option value="comma" data-i18n="settings.sepComma">カンマ</option>
+            <option value="tab" data-i18n="settings.sepTab">タブ</option><option value="underscore" data-i18n="settings.sepUnderscore">アンダースコア</option>
+            <option value="hyphen" data-i18n="settings.sepHyphen">ハイフン</option><option value="none" data-i18n="common.none">なし</option>
           </select></label>
-          <label>文字エンコード<select id="encoding"><option value="cp932">SJIS</option><option value="utf-8">UTF-8</option></select></label>
-          <label>行番号の桁数<select id="line-digits"><option value="2">2 (01–99)</option><option value="3">3 (001–999)</option></select></label>
+          <label data-i18n-label="settings.encoding">文字エンコード<select id="encoding"><option value="cp932">SJIS</option><option value="utf-8">UTF-8</option></select></label>
+          <label data-i18n-label="settings.lineDigits">行番号の桁数<select id="line-digits"><option value="2">2 (01–99)</option><option value="3">3 (001–999)</option></select></label>
         </div>
         <div class="check-grid">
-          <label><input id="header-separator" type="checkbox"> ヘッダにセパレータ</label>
-          <label><input id="footer-separator" type="checkbox"> フッタにセパレータ</label>
-          <label><input id="checksum" type="checkbox" checked> 受信チェックサムを検証</label>
-          <label><input id="input-response" type="checkbox" checked> AK/NK/ERを受信</label>
+          <label data-i18n-label="settings.headerSeparator"><input id="header-separator" type="checkbox"> ヘッダにセパレータ</label>
+          <label data-i18n-label="settings.footerSeparator"><input id="footer-separator" type="checkbox"> フッタにセパレータ</label>
+          <label data-i18n-label="settings.verifyChecksum"><input id="checksum" type="checkbox" checked> 受信チェックサムを検証</label>
+          <label data-i18n-label="settings.receiveAkNkEr"><input id="input-response" type="checkbox" checked> AK/NK/ERを受信</label>
         </div>
       </div>
       <div id="plclink-settings" class="form-section hidden">
         <div data-settings-chunk="connection">
-        <h3>PLCLINK アドレス割当</h3>
+        <h3 data-i18n="settings.plclinkAddressHeading">PLCLINK アドレス割当</h3>
         <div class="form-grid three">
-          <label>コマンド先頭 D<input id="command-address" type="number" min="0" max="65535" value="4096"></label>
-          <label>コマンドサイズ（ワード）<input id="command-size" type="number" min="4" max="256" step="2" value="64"></label>
-          <label>レスポンス先頭 D<input id="response-address" type="number" min="0" max="65535" value="8192"></label>
-          <label>レスポンスサイズ（ワード）<input id="response-size" type="number" min="8" max="256" step="2" value="64"></label>
-          <label>仮想入力(PLI)先頭 M<input id="pli-address" type="number" min="0" max="65535" value="0"></label>
-          <label>仮想入力ポート数<input id="pli-port-count" type="number" min="1" max="256" value="32"></label>
-          <label>仮想出力(PLO)先頭 M<input id="plo-address" type="number" min="0" max="65535" value="1024"></label>
-          <label>仮想出力ポート数<input id="plo-port-count" type="number" min="1" max="256" value="32"></label>
+          <label data-i18n-label="settings.commandAddress">コマンド先頭 D<input id="command-address" type="number" min="0" max="65535" value="4096"></label>
+          <label data-i18n-label="settings.commandSize">コマンドサイズ（ワード）<input id="command-size" type="number" min="4" max="256" step="2" value="64"></label>
+          <label data-i18n-label="settings.responseAddress">レスポンス先頭 D<input id="response-address" type="number" min="0" max="65535" value="8192"></label>
+          <label data-i18n-label="settings.responseSize">レスポンスサイズ（ワード）<input id="response-size" type="number" min="8" max="256" step="2" value="64"></label>
+          <label data-i18n-label="settings.pliAddress">仮想入力(PLI)先頭 M<input id="pli-address" type="number" min="0" max="65535" value="0"></label>
+          <label data-i18n-label="settings.pliPortCount">仮想入力ポート数<input id="pli-port-count" type="number" min="1" max="256" value="32"></label>
+          <label data-i18n-label="settings.ploAddress">仮想出力(PLO)先頭 M<input id="plo-address" type="number" min="0" max="65535" value="1024"></label>
+          <label data-i18n-label="settings.ploPortCount">仮想出力ポート数<input id="plo-port-count" type="number" min="1" max="256" value="32"></label>
           <input id="busy-port" type="hidden" value="1">
-          <label>バイトオーダー<select id="byte-order">
-            <option value="high_low">上位→下位</option>
-            <option value="low_high">下位→上位</option>
+          <label data-i18n-label="settings.byteOrder">バイトオーダー<select id="byte-order">
+            <option value="high_low" data-i18n="settings.byteHighLow">上位→下位</option>
+            <option value="low_high" data-i18n="settings.byteLowHigh">下位→上位</option>
           </select></label>
-          <label>文字エンコード<select id="plclink-encoding"><option value="cp932">SJIS</option><option value="utf-8">UTF-8</option></select></label>
-          <label>行番号の桁数<select id="plclink-line-digits"><option value="2">2 (01–99)</option><option value="3">3 (001–999)</option></select></label>
+          <label data-i18n-label="settings.encoding">文字エンコード<select id="plclink-encoding"><option value="cp932">SJIS</option><option value="utf-8">UTF-8</option></select></label>
+          <label data-i18n-label="settings.lineDigits">行番号の桁数<select id="plclink-line-digits"><option value="2">2 (01–99)</option><option value="3">3 (001–999)</option></select></label>
         </div>
-        <p id="virtual-io-range" class="export-note">仮想入力 M0–M31 / 仮想出力 M1024–M1055。VTV の仮想I/Oと同じ先頭にしてください。</p>
+        <p id="virtual-io-range" class="export-note" data-i18n="settings.virtualIoRangeDefault">仮想入力 M0–M31 / 仮想出力 M1024–M1055。VTV の仮想I/Oと同じ先頭にしてください。</p>
         </div>
         <div data-settings-chunk="signals" class="page-off">
-        <h4 class="subsection-title">ステータス信号割付</h4>
-        <p class="export-note">監視表示とコマンドの BUSY 待ちに使います。割付先は仮想出力(PLO)ポートです。role=BUSY はちょうど 1 つ必要です。</p>
+        <h4 class="subsection-title" data-i18n="settings.statusSignalsHeading">ステータス信号割付</h4>
+        <p class="export-note" data-i18n="settings.statusSignalsNotePlclink">監視表示とコマンドの BUSY 待ちに使います。割付先は仮想出力(PLO)ポートです。role=BUSY はちょうど 1 つ必要です。</p>
         <div class="status-signal-toolbar">
-          <button type="button" id="plclink-status-add" class="button secondary">信号を追加</button>
-          <button type="button" id="plclink-status-reset" class="button secondary">既定に戻す</button>
+          <button type="button" id="plclink-status-add" class="button secondary" data-i18n="settings.statusSignalAdd">信号を追加</button>
+          <button type="button" id="plclink-status-reset" class="button secondary" data-i18n="settings.statusSignalReset">既定に戻す</button>
         </div>
         <div class="status-signal-table-wrap">
           <table class="status-signal-table" id="plclink-status-signal-table">
             <thead>
               <tr>
-                <th>信号名</th>
-                <th>PLO ポート</th>
-                <th>役割</th>
+                <th data-i18n="settings.colSignalName">信号名</th>
+                <th data-i18n="settings.colPloPort">PLO ポート</th>
+                <th data-i18n="settings.colRole">役割</th>
                 <th></th>
               </tr>
             </thead>
             <tbody id="plclink-status-signal-body"></tbody>
           </table>
         </div>
-        <p id="busy-address-hint" class="export-note">BUSY 実アドレス: M1024（PLO先頭 + ポート番号 - 1）。VTV の「ステータス信号」割付と一致させてください。</p>
+        <p id="busy-address-hint" class="export-note" data-i18n="settings.busyAddressHintDefault">BUSY 実アドレス: M1024（PLO先頭 + ポート番号 - 1）。VTV の「ステータス信号」割付と一致させてください。</p>
         </div>
         <div data-settings-chunk="ports" class="page-off">
-        <h4 class="subsection-title">ポート名称（PLI / PLO）</h4>
-        <p class="export-note">D/M 監視やローカル I/O で分かりやすい名前を付けられます。空欄は Port 番号のみ表示します。</p>
+        <h4 class="subsection-title" data-i18n="settings.portNamesPlclinkHeading">ポート名称（PLI / PLO）</h4>
+        <p class="export-note" data-i18n="settings.portNamesPlclinkNote">D/M 監視やローカル I/O で分かりやすい名前を付けられます。空欄は Port 番号のみ表示します。</p>
         <div class="port-name-panels">
           <div class="port-name-panel">
-            <div class="port-name-heading">PLI（仮想入力）</div>
+            <div class="port-name-heading" data-i18n="settings.portPanelPli">PLI（仮想入力）</div>
             <div class="port-name-table-wrap">
               <table class="port-name-table">
-                <thead><tr><th>Port</th><th>名称</th></tr></thead>
+                <thead><tr><th>Port</th><th data-i18n="settings.portColName">名称</th></tr></thead>
                 <tbody id="pli-port-name-body"></tbody>
               </table>
             </div>
           </div>
           <div class="port-name-panel">
-            <div class="port-name-heading">PLO（仮想出力）</div>
+            <div class="port-name-heading" data-i18n="settings.portPanelPlo">PLO（仮想出力）</div>
             <div class="port-name-table-wrap">
               <table class="port-name-table">
-                <thead><tr><th>Port</th><th>名称</th></tr></thead>
+                <thead><tr><th>Port</th><th data-i18n="settings.portColName">名称</th></tr></thead>
                 <tbody id="plo-port-name-body"></tbody>
               </table>
             </div>
@@ -443,73 +451,73 @@
         </div>
         </div>
         <div data-settings-chunk="result" class="page-off">
-        <h3 class="subsection-title">結果データ出力</h3>
+        <h3 class="subsection-title" data-i18n="settings.resultHeading">結果データ出力</h3>
         <div class="check-grid single result-data-toggles">
-          <label><input id="result-data-enabled" type="checkbox">結果データ出力を有効にする</label>
-          <label><input id="notify-area-enabled" type="checkbox">通知エリアを有効にする</label>
+          <label data-i18n-label="settings.resultEnabled"><input id="result-data-enabled" type="checkbox">結果データ出力を有効にする</label>
+          <label data-i18n-label="settings.notifyEnabled"><input id="notify-area-enabled" type="checkbox">通知エリアを有効にする</label>
         </div>
         <div class="form-grid three" id="result-data-fields">
-          <label>結果データ先頭 D<input id="result-data-address" type="number" min="0" max="65535" value="512"></label>
-          <label>結果データサイズ（ワード）<input id="result-data-size" type="number" min="2" max="65536" step="2" value="2048"></label>
-          <label>監視表示ワード数<input id="result-data-watch-words" type="number" min="2" max="256" step="2" value="64" title="D/M監視に表示する先頭ワード数"></label>
-          <label>小数点以下桁数<input id="result-data-decimals" type="number" min="0" max="9" value="3" title="VTV 詳細設定の小数点以下桁数と一致させてください"></label>
-          <label>通知エリア先頭 D<input id="notify-address" type="number" min="0" max="65535" value="2560"></label>
+          <label data-i18n-label="settings.resultAddress">結果データ先頭 D<input id="result-data-address" type="number" min="0" max="65535" value="512"></label>
+          <label data-i18n-label="settings.resultSize">結果データサイズ（ワード）<input id="result-data-size" type="number" min="2" max="65536" step="2" value="2048"></label>
+          <label data-i18n-label="settings.resultWatchWords">監視表示ワード数<input id="result-data-watch-words" type="number" min="2" max="256" step="2" value="64" title="D/M監視に表示する先頭ワード数" data-i18n-title="settings.resultWatchWordsTitle"></label>
+          <label data-i18n-label="settings.resultDecimals">小数点以下桁数<input id="result-data-decimals" type="number" min="0" max="9" value="3" title="VTV 詳細設定の小数点以下桁数と一致させてください" data-i18n-title="settings.resultDecimalsTitle"></label>
+          <label data-i18n-label="settings.notifyAddress">通知エリア先頭 D<input id="notify-address" type="number" min="0" max="65535" value="2560"></label>
         </div>
-        <p class="export-note">結果データ領域は D/M監視に常時表示されます（先頭から監視表示ワード数まで）。実数は固定小数点（整数×10^桁数）で書き込まれるため、監視の「結果データ」表記を VTV モニタに合わせて切り替えてください。</p>
-        <p class="export-note">VTV の「環境設定 → PLCLINK」と同一の値にしてください。接続テストは VTV からの接続待ちになります。</p>
+        <p class="export-note" data-i18n="settings.resultNote1">結果データ領域は D/M監視に常時表示されます（先頭から監視表示ワード数まで）。実数は固定小数点（整数×10^桁数）で書き込まれるため、監視の「結果データ」表記を VTV モニタに合わせて切り替えてください。</p>
+        <p class="export-note" data-i18n="settings.resultNote2">VTV の「環境設定 → PLCLINK」と同一の値にしてください。接続テストは VTV からの接続待ちになります。</p>
         </div>
       </div>
       <div id="field-network-settings" class="form-section hidden">
         <div data-settings-chunk="connection">
-        <h3>Field Network（EtherNet/IP）</h3>
+        <h3 data-i18n="settings.transportFieldNetwork">Field Network（EtherNet/IP）</h3>
         <div class="form-grid two">
-          <label class="file-button-label">EDS インポート
+          <label class="file-button-label" data-i18n-label="settings.fnEdsImport">EDS インポート
             <input id="eds-import-input" type="file" accept=".eds,.EDS,text/plain">
           </label>
-          <div id="eds-import-status" class="export-note">VTV で作成した EDS を読み込み、サイズ／RPI／パスを反映します。</div>
+          <div id="eds-import-status" class="export-note" data-i18n="settings.fnEdsStatusDefault">VTV で作成した EDS を読み込み、サイズ／RPI／パスを反映します。</div>
         </div>
         <div class="form-grid three">
-          <label>入力サイズ（byte）<input id="fn-input-size" type="number" min="4" max="1444" step="2" value="612"></label>
-          <label>出力サイズ（byte）<input id="fn-output-size" type="number" min="4" max="1444" step="2" value="136"></label>
-          <label>RPI（μs）<input id="fn-rpi-us" type="number" min="2000" max="1000000" step="1000" value="10000" title="I/O 更新周期（μs）。装置の下限は 2000（2ms）です。1000（1ms）は無効です。"></label>
-          <label>ESI ポート数<select id="fn-esi-ports">
-            <option value="0">なし</option><option value="32" selected>32</option>
+          <label data-i18n-label="settings.fnInputSize">入力サイズ（byte）<input id="fn-input-size" type="number" min="4" max="1444" step="2" value="612"></label>
+          <label data-i18n-label="settings.fnOutputSize">出力サイズ（byte）<input id="fn-output-size" type="number" min="4" max="1444" step="2" value="136"></label>
+          <label data-i18n-label="settings.fnRpi">RPI（μs）<input id="fn-rpi-us" type="number" min="2000" max="1000000" step="1000" value="10000" title="I/O 更新周期（μs）。装置の下限は 2000（2ms）です。1000（1ms）は無効です。" data-i18n-title="settings.fnRpiTitle"></label>
+          <label data-i18n-label="settings.fnEsiPorts">ESI ポート数<select id="fn-esi-ports">
+            <option value="0" data-i18n="common.none">なし</option><option value="32" selected>32</option>
             <option value="64">64</option><option value="96">96</option><option value="128">128</option>
           </select></label>
-          <label>ESO ポート数<select id="fn-eso-ports">
-            <option value="0">なし</option><option value="32" selected>32</option>
+          <label data-i18n-label="settings.fnEsoPorts">ESO ポート数<select id="fn-eso-ports">
+            <option value="0" data-i18n="common.none">なし</option><option value="32" selected>32</option>
             <option value="64">64</option><option value="96">96</option><option value="128">128</option>
           </select></label>
-          <label>O→T ヘッダ<select id="fn-o-to-t-header">
+          <label data-i18n-label="settings.fnOToTHeader">O→T ヘッダ<select id="fn-o-to-t-header">
             <option value="4">4 byte (Run/Idle)</option>
-            <option value="0">なし</option>
+            <option value="0" data-i18n="common.none">なし</option>
           </select></label>
-          <label>コマンドサイズ（ワード）<input id="fn-command-size" type="number" min="4" max="512" step="2" value="64"></label>
-          <label>レスポンスサイズ（ワード）<input id="fn-response-size" type="number" min="4" max="512" step="2" value="64"></label>
-          <label>バイトオーダー<select id="fn-byte-order">
-            <option value="high_low">上位→下位</option>
-            <option value="low_high">下位→上位</option>
+          <label data-i18n-label="settings.commandSize">コマンドサイズ（ワード）<input id="fn-command-size" type="number" min="4" max="512" step="2" value="64"></label>
+          <label data-i18n-label="settings.responseSize">レスポンスサイズ（ワード）<input id="fn-response-size" type="number" min="4" max="512" step="2" value="64"></label>
+          <label data-i18n-label="settings.byteOrder">バイトオーダー<select id="fn-byte-order">
+            <option value="high_low" data-i18n="settings.byteHighLow">上位→下位</option>
+            <option value="low_high" data-i18n="settings.byteLowHigh">下位→上位</option>
           </select></label>
-          <label>文字エンコード<select id="fn-encoding"><option value="cp932">SJIS</option><option value="utf-8">UTF-8</option></select></label>
+          <label data-i18n-label="settings.encoding">文字エンコード<select id="fn-encoding"><option value="cp932">SJIS</option><option value="utf-8">UTF-8</option></select></label>
         </div>
-        <label>接続パス（HEX）<input id="fn-connection-path" value="20 04 24 01 2C 14 2C 0A"></label>
-        <p id="fn-layout-hint" class="export-note">割付サイズは EDS の入出力サイズと一致させる必要があります。</p>
+        <label data-i18n-label="settings.fnConnectionPath">接続パス（HEX）<input id="fn-connection-path" value="20 04 24 01 2C 14 2C 0A"></label>
+        <p id="fn-layout-hint" class="export-note" data-i18n="settings.fnLayoutHintDefault">割付サイズは EDS の入出力サイズと一致させる必要があります。</p>
         </div>
         <div data-settings-chunk="signals" class="page-off">
-        <h4 class="subsection-title">ステータス信号割付</h4>
-        <p class="export-note">監視表示とコマンドの BUSY 待ちに使います。割付先はステータス領域 bit、または ESO ポートです。role=busy はちょうど 1 つ必要です。</p>
+        <h4 class="subsection-title" data-i18n="settings.statusSignalsHeading">ステータス信号割付</h4>
+        <p class="export-note" data-i18n="settings.statusSignalsNoteFn">監視表示とコマンドの BUSY 待ちに使います。割付先はステータス領域 bit、または ESO ポートです。role=busy はちょうど 1 つ必要です。</p>
         <div class="status-signal-toolbar">
-          <button type="button" id="fn-status-add" class="button secondary">信号を追加</button>
-          <button type="button" id="fn-status-reset" class="button secondary">既定に戻す</button>
+          <button type="button" id="fn-status-add" class="button secondary" data-i18n="settings.statusSignalAdd">信号を追加</button>
+          <button type="button" id="fn-status-reset" class="button secondary" data-i18n="settings.statusSignalReset">既定に戻す</button>
         </div>
         <div class="status-signal-table-wrap">
           <table class="status-signal-table" id="fn-status-signal-table">
             <thead>
               <tr>
-                <th>信号名</th>
-                <th>割付先</th>
-                <th>bit / ESO</th>
-                <th>役割</th>
+                <th data-i18n="settings.colSignalName">信号名</th>
+                <th data-i18n="settings.colTarget">割付先</th>
+                <th data-i18n="settings.colBitEso">bit / ESO</th>
+                <th data-i18n="settings.colRole">役割</th>
                 <th></th>
               </tr>
             </thead>
@@ -518,47 +526,47 @@
         </div>
         </div>
         <div data-settings-chunk="ports" class="page-off">
-        <h4 class="subsection-title">ポート名称（ESI / ESO）</h4>
-        <p class="export-note">D/M 監視で分かりやすい名前を付けられます。空欄は ESI-N / ESO-N のみ表示します。</p>
+        <h4 class="subsection-title" data-i18n="settings.portNamesFnHeading">ポート名称（ESI / ESO）</h4>
+        <p class="export-note" data-i18n="settings.portNamesFnNote">D/M 監視で分かりやすい名前を付けられます。空欄は ESI-N / ESO-N のみ表示します。</p>
         <div class="port-name-panels">
           <div class="port-name-panel">
-            <div class="port-name-heading">ESI（入力）</div>
+            <div class="port-name-heading" data-i18n="settings.portPanelEsi">ESI（入力）</div>
             <div class="port-name-table-wrap">
               <table class="port-name-table">
-                <thead><tr><th>Port</th><th>名称</th></tr></thead>
+                <thead><tr><th>Port</th><th data-i18n="settings.portColName">名称</th></tr></thead>
                 <tbody id="esi-port-name-body"></tbody>
               </table>
             </div>
           </div>
           <div class="port-name-panel">
-            <div class="port-name-heading">ESO（出力）</div>
+            <div class="port-name-heading" data-i18n="settings.portPanelEso">ESO（出力）</div>
             <div class="port-name-table-wrap">
               <table class="port-name-table">
-                <thead><tr><th>Port</th><th>名称</th></tr></thead>
+                <thead><tr><th>Port</th><th data-i18n="settings.portColName">名称</th></tr></thead>
                 <tbody id="eso-port-name-body"></tbody>
               </table>
             </div>
           </div>
         </div>
-        <p class="export-note">アプリが EtherNet/IP Scanner として VTV（Adapter）へ接続します。ポートは通常 44818。PLCLINK とは併用できません。</p>
+        <p class="export-note" data-i18n="settings.fnNote">アプリが EtherNet/IP Scanner として VTV（Adapter）へ接続します。ポートは通常 44818。PLCLINK とは併用できません。</p>
         </div>
         <div data-settings-chunk="result" class="page-off">
-        <h3 class="subsection-title">結果データ</h3>
+        <h3 class="subsection-title" data-i18n="settings.fnResultHeading">結果データ</h3>
         <div class="form-grid three">
-          <label>結果データサイズ（ワード）<input id="fn-result-size" type="number" min="0" max="1024" step="2" value="238"></label>
-          <label>監視表示ワード数<input id="fn-result-watch-words" type="number" min="0" max="512" step="2" value="64"></label>
-          <label>小数点以下桁数<input id="fn-result-decimals" type="number" min="0" max="9" value="3"></label>
+          <label data-i18n-label="settings.fnResultSize">結果データサイズ（ワード）<input id="fn-result-size" type="number" min="0" max="1024" step="2" value="238"></label>
+          <label data-i18n-label="settings.resultWatchWords">監視表示ワード数<input id="fn-result-watch-words" type="number" min="0" max="512" step="2" value="64"></label>
+          <label data-i18n-label="settings.resultDecimals">小数点以下桁数<input id="fn-result-decimals" type="number" min="0" max="9" value="3"></label>
         </div>
-        <p class="export-note">語数は Assembly の入力サイズに含まれます。接続先ページの割付計算と一致させてください。</p>
+        <p class="export-note" data-i18n="settings.fnResultNote">語数は Assembly の入力サイズに含まれます。接続先ページの割付計算と一致させてください。</p>
         </div>
       </div>
       </div>
       <div id="connection-test-result" class="test-result"></div>
       <div class="dialog-actions">
-        <button id="start-softplc-button" type="button" class="button secondary hidden">疑似PLC待受開始</button>
-        <button id="fn-connect-button" type="button" class="button secondary hidden">Field Network 接続</button>
-        <button id="test-button" type="button" class="button secondary">接続テスト</button>
-        <button id="apply-settings" type="submit" class="button primary">設定を保存</button>
+        <button id="start-softplc-button" type="button" class="button secondary hidden" data-i18n="settings.startSoftPlc">疑似PLC待受開始</button>
+        <button id="fn-connect-button" type="button" class="button secondary hidden" data-i18n="settings.fnConnect">Field Network 接続</button>
+        <button id="test-button" type="button" class="button secondary" data-i18n="settings.testConnection">接続テスト</button>
+        <button id="apply-settings" type="submit" class="button primary" data-i18n="settings.apply">設定を保存</button>
       </div>
     </form>
   </dialog>
@@ -567,73 +575,100 @@
     <form method="dialog" id="log-export-form">
       <div class="dialog-heading">
         <div>
-          <p class="eyebrow">EXPORT</p>
-          <h2>通信ログを出力</h2>
+          <p class="eyebrow" data-i18n="export.eyebrow">EXPORT</p>
+          <h2 data-i18n="export.title">通信ログを出力</h2>
         </div>
-        <button value="cancel" class="close-button" aria-label="閉じる">×</button>
+        <button value="cancel" class="close-button" aria-label="閉じる" data-i18n-aria-label="common.close">×</button>
       </div>
       <div class="form-section">
         <div class="form-grid">
-          <label>ファイル形式
+          <label data-i18n-label="export.format">ファイル形式
             <select id="log-export-format">
-              <option value="csv">CSV（表計算ソフト向け）</option>
-              <option value="txt">TXT（テキストログ）</option>
+              <option value="csv" data-i18n="export.formatCsv">CSV（表計算ソフト向け）</option>
+              <option value="txt" data-i18n="export.formatTxt">TXT（テキストログ）</option>
             </select>
           </label>
         </div>
         <div class="check-grid single">
-          <label><input id="log-export-timestamp" type="checkbox" checked> 通信時刻を含める</label>
+          <label data-i18n-label="export.includeTimestamp"><input id="log-export-timestamp" type="checkbox" checked> 通信時刻を含める</label>
         </div>
-        <p class="export-note">表示中のログをすべてUTF-8で保存します。</p>
+        <p class="export-note" data-i18n="export.note">表示中のログをすべてUTF-8で保存します。</p>
       </div>
       <div class="dialog-actions">
-        <button value="cancel" class="button secondary">キャンセル</button>
-        <button id="download-log-button" value="default" class="button primary">ダウンロード</button>
+        <button value="cancel" class="button secondary" data-i18n="common.cancel">キャンセル</button>
+        <button id="download-log-button" value="default" class="button primary" data-i18n="export.download">ダウンロード</button>
       </div>
     </form>
   </dialog>
 
   <footer class="app-footer">
-    <span id="app-version">VTV Network Sequencer</span>
-    <span>Ctrl+Enter 実行 · Ctrl+. 停止 · Ctrl+K 検索 · Ctrl+Shift+S 書き出し</span>
+    <span id="app-version" data-i18n="footer.version">VTV Network Sequencer</span>
+    <span data-i18n="footer.shortcuts">Ctrl+Enter 実行 · Ctrl+. 停止 · Ctrl+K 検索 · Ctrl+Shift+S 書き出し</span>
   </footer>
 
   <dialog id="help-dialog">
     <div class="dialog-heading">
       <div>
-        <p class="eyebrow">GUIDE</p>
-        <h2 id="help-title" tabindex="-1">手順</h2>
+        <p class="eyebrow" data-i18n="help.eyebrow">GUIDE</p>
+        <h2 id="help-title" tabindex="-1" data-i18n="help.title">手順</h2>
       </div>
-      <button type="button" id="help-close-button" class="close-button" aria-label="閉じる">×</button>
+      <button type="button" id="help-close-button" class="close-button" aria-label="閉じる" data-i18n-aria-label="common.close">×</button>
     </div>
     <div class="help-body">
-      <h3>TCP（Network I/O）</h3>
-      <p>このPCから装置の Network I/O へ接続します。装置 IP とポートを入れ、接続テストのあと実行します。</p>
-      <h3>PLCLINK（MC 3E 疑似 PLC）</h3>
-      <p>このアプリが疑似 PLC として待ち受けます。先に「疑似PLC待受開始」を押し、VTV の接続先をこの PC の LAN IP と待受ポートにします。</p>
-      <h3>Field Network（EtherNet/IP）</h3>
-      <p>このアプリが Scanner、VTV が Adapter です。ポートは通常 44818 です。PLCLINK とは同時に使いません。</p>
-      <h3>ファイアウォール</h3>
-      <p>PLCLINK の待受ポートと、Field Network の 44818 を許可します。TCP は装置側がこの PC からの接続を受け付ける必要があります。</p>
-      <h3>BUSY・AK / NK / ER</h3>
+      <h3 data-i18n="tour.heading">画面ガイド</h3>
+      <p data-i18n="tour.intro">ハイライト付きの案内です。初回起動時は基本操作ガイドが自動で始まります。途中で閉じる（×）か Esc でいつでも終了できます。</p>
+      <div class="tour-list" id="tour-list">
+        <button type="button" class="tour-card" data-tour="basics">
+          <span class="tour-card-title" data-i18n="tour.basics.title">基本操作</span>
+          <span class="tour-card-desc" data-i18n="tour.basics.desc">画面構成とカード追加・実行の流れ</span>
+        </button>
+        <button type="button" class="tour-card" data-tour="tcp">
+          <span class="tour-card-title" data-i18n="tour.tcp.title">TCP 接続</span>
+          <span class="tour-card-desc" data-i18n="tour.tcp.desc">Network I/O への接続と実行</span>
+        </button>
+        <button type="button" class="tour-card" data-tour="plclink">
+          <span class="tour-card-title" data-i18n="tour.plclink.title">PLCLINK 接続</span>
+          <span class="tour-card-desc" data-i18n="tour.plclink.desc">疑似 PLC 待受と VTV 側の設定</span>
+        </button>
+        <button type="button" class="tour-card" data-tour="field_network">
+          <span class="tour-card-title" data-i18n="tour.fn.title">Field Network 接続</span>
+          <span class="tour-card-desc" data-i18n="tour.fn.desc">EtherNet/IP Scanner としての接続</span>
+        </button>
+        <button type="button" class="tour-card" data-tour="monitor">
+          <span class="tour-card-title" data-i18n="tour.monitor.title">モニター</span>
+          <span class="tour-card-desc" data-i18n="tour.monitor.desc">通信ログ・監視ポート選択・拡大表示</span>
+        </button>
+      </div>
+      <h3 data-i18n="help.tcpHeading">TCP（Network I/O）</h3>
+      <p data-i18n="help.tcpBody">このPCから装置の Network I/O へ接続します。装置 IP とポートを入れ、接続テストのあと実行します。</p>
+      <h3 data-i18n="help.plclinkHeading">PLCLINK（MC 3E 疑似 PLC）</h3>
+      <p data-i18n="help.plclinkBody">このアプリが疑似 PLC として待ち受けます。先に「疑似PLC待受開始」を押し、VTV の接続先をこの PC の LAN IP と待受ポートにします。</p>
+      <h3 data-i18n="help.fnHeading">Field Network（EtherNet/IP）</h3>
+      <p data-i18n="help.fnBody">このアプリが Scanner、VTV が Adapter です。ポートは通常 44818 です。PLCLINK とは同時に使いません。</p>
+      <h3 data-i18n="help.firewallHeading">ファイアウォール</h3>
+      <p data-i18n="help.firewallBody">PLCLINK の待受ポートと、Field Network の 44818 を許可します。TCP は装置側がこの PC からの接続を受け付ける必要があります。</p>
+      <h3 data-i18n="help.busyHeading">BUSY・AK / NK / ER</h3>
       <ul>
-        <li>BUSY は装置が処理中の信号です。コマンドは BUSY が落ちるのを待ってから次へ進みます。</li>
-        <li>AK は応答完了。NK は応答なし。ER は異常です。</li>
+        <li data-i18n="help.busyLine1">BUSY は装置が処理中の信号です。コマンドは BUSY が落ちるのを待ってから次へ進みます。</li>
+        <li data-i18n="help.busyLine2">AK は応答完了。NK は応答なし。ER は異常です。</li>
       </ul>
-      <h3>実行記録</h3>
-      <p class="export-note">行を開くと、その回の送受信を読めます。</p>
+      <h3 data-i18n="help.historyHeading">実行記録</h3>
+      <p class="export-note" data-i18n="help.historyNote">行を開くと、その回の送受信を読めます。</p>
       <div id="run-history"></div>
     </div>
     <div class="dialog-actions">
-      <button id="support-export-button" type="button" class="button secondary">サポート用に書き出す</button>
-      <button type="button" id="help-close-action" class="button primary">閉じる</button>
+      <button id="support-export-button" type="button" class="button secondary" data-i18n="help.supportExport">サポート用に書き出す</button>
+      <button type="button" id="help-close-action" class="button primary" data-i18n="common.close">閉じる</button>
     </div>
   </dialog>
 
   <div id="undo-toast" class="undo-toast hidden" role="status">
     <span id="undo-toast-message"></span>
-    <button type="button" id="undo-toast-button" class="button secondary">取り消す</button>
+    <button type="button" id="undo-toast-button" class="button secondary" data-i18n="toast.undo">取り消す</button>
   </div>
-  <script src="/app.js?v=20261109-saveset1" defer></script>
+  <script src="/vendor/driver.js/driver.js.iife.js"></script>
+  <script src="/i18n.js?v=20261109-tours5"></script>
+  <script src="/tours.js?v=20261109-tours5"></script>
+  <script src="/app.js?v=20261109-localio1" defer></script>
 </body>
 </html>

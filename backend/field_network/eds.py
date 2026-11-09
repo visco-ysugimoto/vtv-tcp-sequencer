@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..i18n import DEFAULT_LANG, t
+
 
 @dataclass(slots=True)
 class EdsConnectionInfo:
@@ -94,7 +96,9 @@ _PATH_RE = re.compile(
 _INT_LIST_RE = re.compile(r"(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)")
 
 
-def parse_eds_text(text: str, *, source_name: str = "") -> EdsConnectionInfo:
+def parse_eds_text(
+    text: str, *, source_name: str = "", lang: str = DEFAULT_LANG
+) -> EdsConnectionInfo:
     """EDS テキストから VTV Field Network 接続情報を抽出する。"""
     info = EdsConnectionInfo(source_name=source_name)
     cleaned = _strip_eds_comments(text)
@@ -182,15 +186,13 @@ def parse_eds_text(text: str, *, source_name: str = "") -> EdsConnectionInfo:
             info.assem_input_instance = in_inst
 
     if info.input_size <= 0 or info.output_size <= 0:
-        info.warnings.append("EDS から入出力サイズを取得できませんでした")
+        info.warnings.append(t("eds.sizeNotFound", lang))
     if info.input_size % 2:
-        info.warnings.append("入力サイズが奇数バイトです（ワード割付と不一致の可能性）")
+        info.warnings.append(t("eds.inputSizeOdd", lang))
     if info.output_size % 2:
-        info.warnings.append("出力サイズが奇数バイトです（ワード割付と不一致の可能性）")
+        info.warnings.append(t("eds.outputSizeOdd", lang))
     if info.output_size < 8:
-        info.warnings.append(
-            "出力アセンブリが小さいため、コマンド領域を含められない可能性があります"
-        )
+        info.warnings.append(t("eds.outputTooSmall", lang))
     return info
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from ..i18n import rebuild_error
 from ..models import ProtocolSettings
 from ..plc_link.commands import (
     build_command_words,
@@ -85,15 +86,15 @@ class FieldNetworkClient:
                 return
             if not self.scanner.is_connected:
                 raise ProtocolError(
-                    "EtherNet/IP 接続が切断されました"
-                    + (f"（{self.scanner.last_error}）" if self.scanner.last_error else "")
+                    "fn.eipDisconnectedDetail"
+                    if self.scanner.last_error
+                    else "fn.eipDisconnected",
+                    detail=str(self.scanner.last_error or ""),
                 )
             if asyncio.get_running_loop().time() >= deadline:
                 raise ProtocolError(
-                    f"{self.settings.timeout:g}秒以内に VTV からの"
-                    " Implicit I/O（T→O）を受信できませんでした。"
-                    " Field Network 有効化・EDS サイズ一致・ファイアウォール"
-                    "（UDP）を確認してください"
+                    "fn.implicitIoTimeout",
+                    timeout=f"{self.settings.timeout:g}",
                 )
             await asyncio.sleep(0.05)
 
@@ -115,7 +116,7 @@ class FieldNetworkClient:
         for offset, value in enumerate(words):
             pos = (word_index + offset) * 2
             if pos + 1 >= len(buf):
-                raise ProtocolError("出力アセンブリ範囲外への書き込みです")
+                raise ProtocolError("fn.outputWriteOutOfRange")
             unsigned = value & 0xFFFF
             buf[pos] = unsigned & 0xFF
             buf[pos + 1] = (unsigned >> 8) & 0xFF
@@ -126,13 +127,13 @@ class FieldNetworkClient:
         try:
             self.scanner.buffers.set_output_bit(bit_index, value)
         except ValueError as exc:
-            raise ProtocolError(str(exc)) from exc
+            raise rebuild_error(exc, ProtocolError) from exc
 
     def _read_input_dword(self, word_index: int) -> int:
         data = self.scanner.buffers.read_input()
         pos = word_index * 2
         if pos + 3 >= len(data):
-            raise ProtocolError("入力アセンブリ範囲外の読み出しです")
+            raise ProtocolError("fn.inputReadOutOfRange")
         low = data[pos] | (data[pos + 1] << 8)
         high = data[pos + 2] | (data[pos + 3] << 8)
         value = (high << 16) | low
@@ -149,7 +150,7 @@ class FieldNetworkClient:
     def _busy_signal(self):
         signal = self.settings.find_status_signal(role="busy")
         if signal is None:
-            raise ProtocolError("BUSY 役割のステータス信号が設定されていません")
+            raise ProtocolError("fn.busySignalMissing")
         return signal
 
     def _get_busy(self) -> int:
@@ -175,7 +176,7 @@ class FieldNetworkClient:
     ) -> CommandResult:
         del expect_result, result_mode
         if not self.scanner.is_connected:
-            raise ProtocolError("装置に接続されていません")
+            raise ProtocolError("protocol.notConnected")
 
         await self._await_ignore_task()
 
@@ -224,7 +225,7 @@ class FieldNetworkClient:
             f"cmd={echoed} param_words={param_size}"
         )
         if result_code not in (1, 8):
-            raise ProtocolError(f"不正な実行結果です: {result_code}")
+            raise ProtocolError("protocol.invalidResultCode", code=result_code)
         return CommandResult(display, status, [status, detail])
 
     async def _await_ignore_task(self) -> None:
@@ -252,12 +253,14 @@ class FieldNetworkClient:
             if self._get_busy() == expected:
                 return
             if not self.scanner.is_connected:
-                raise ProtocolError("応答の途中で接続が切断されました")
+                raise ProtocolError("protocol.disconnectedMidResponse")
             if asyncio.get_running_loop().time() >= deadline:
                 where = describe_status_signal(self._busy_signal())
                 raise ProtocolError(
-                    f"{self.settings.timeout:g}秒以内に {label} を検出できません"
-                    f"（{where}）"
+                    "fn.signalTimeout",
+                    timeout=f"{self.settings.timeout:g}",
+                    label=label,
+                    where=where,
                 )
             await asyncio.sleep(0.01)
 
@@ -268,9 +271,10 @@ class FieldNetworkClient:
             if result_code in (1, 8):
                 return
             if not self.scanner.is_connected:
-                raise ProtocolError("応答の途中で接続が切断されました")
+                raise ProtocolError("protocol.disconnectedMidResponse")
             if asyncio.get_running_loop().time() >= deadline:
                 raise ProtocolError(
-                    f"{self.settings.timeout:g}秒以内にレスポンスがありません"
+                    "protocol.noResponseWithin",
+                    timeout=f"{self.settings.timeout:g}",
                 )
             await asyncio.sleep(0.01)

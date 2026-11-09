@@ -58,7 +58,9 @@ def test_index_is_served() -> None:
     response = client.get("/")
     assert response.status_code == 200
     assert "VTV Network Sequencer" in response.text
-    assert "/app.js?v=20261109-saveset1" in response.text
+    assert "/i18n.js?v=20261109-i18n1" in response.text
+    assert "/app.js?v=20261109-i18n1" in response.text
+    assert 'id="locale-select"' in response.text
     assert 'data-control="note"' in response.text
     assert 'data-control="variable"' in response.text
     assert 'id="trial-select"' in response.text
@@ -251,8 +253,39 @@ def test_plclink_start_returns_listen_info(monkeypatch: pytest.MonkeyPatch) -> N
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "listening"
+    assert body["client_count"] == 0
+    assert "待受中" in body["message"]
     assert body["preferred_target"] == "192.168.0.100:5000"
     assert body["bind"] == "0.0.0.0:5000"
+    main_module._plclink_client = None
+
+
+def test_plclink_status_message_when_vtv_connected(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = ProtocolSettings(transport="plclink", host="0.0.0.0", port=5000)
+    fake = SimpleNamespace(
+        settings=settings,
+        server=SimpleNamespace(
+            is_running=True,
+            client_count=1,
+            connected_targets=["127.0.0.1:5000"],
+        ),
+    )
+    monkeypatch.setattr(main_module, "_plclink_client", fake)
+    monkeypatch.setattr(
+        main_module,
+        "connect_targets",
+        lambda port: [f"192.168.0.100:{port}"],
+    )
+
+    response = client.get("/api/plclink/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "listening"
+    assert body["client_count"] == 1
+    assert body["connected_targets"] == ["127.0.0.1:5000"]
+    assert body["preferred_target"] == "192.168.0.100:5000"
+    assert body["message"] == "VTV との接続が完了しました（127.0.0.1:5000）。"
     main_module._plclink_client = None
 
 

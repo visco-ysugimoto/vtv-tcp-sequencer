@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 
 from ..bit_edges import BitEdgeLog, resolve_mono
+from ..i18n import LocalizedError, LocalizedIndexError
 
 
 class DeviceMemory:
@@ -53,7 +54,7 @@ class DeviceMemory:
     def write_bits(self, head: int, values: list[int]) -> None:
         for value in values:
             if value not in (0, 1):
-                raise ValueError("ビット値は 0 または 1 です")
+                raise LocalizedError("memory.bitValue")
         now = resolve_mono(None)
         changed: list[tuple[int, int]] = []
         with self._lock:
@@ -108,22 +109,30 @@ class DeviceMemory:
 
     def _ensure_d_range(self, head: int, count: int) -> None:
         if head < 0 or count < 0:
-            raise IndexError(f"D アドレス範囲外: {head}+{count}")
+            raise LocalizedIndexError(
+                "memory.dOutOfRange", head=head, count=count
+            )
         need = head + count
         if need <= len(self._d):
             return
         if need > self.MAX_D_SIZE:
-            raise IndexError(f"D アドレス範囲外: {head}+{count}")
+            raise LocalizedIndexError(
+                "memory.dOutOfRange", head=head, count=count
+            )
         self._d.extend([0] * (need - len(self._d)))
 
     def _ensure_m_range(self, head: int, count: int) -> None:
         if head < 0 or count < 0:
-            raise IndexError(f"M アドレス範囲外: {head}+{count}")
+            raise LocalizedIndexError(
+                "memory.mOutOfRange", head=head, count=count
+            )
         need = head + count
         if need <= len(self._m):
             return
         if need > self.MAX_M_SIZE:
-            raise IndexError(f"M アドレス範囲外: {head}+{count}")
+            raise LocalizedIndexError(
+                "memory.mOutOfRange", head=head, count=count
+            )
         self._m.extend([0] * (need - len(self._m)))
 
     @staticmethod

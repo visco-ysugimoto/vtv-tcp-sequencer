@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from ..i18n import DEFAULT_LANG, Msg, t
 from ..protocol import ProtocolError
 
 ByteOrder = Literal["high_low", "low_high"]
@@ -27,6 +28,7 @@ class PlcLinkCommandSpec:
     form_arguments: tuple[dict[str, Any], ...] | None = None
     """TCP と引数の形が違うときの PLCLINK / Field Network 用入力項目。"""
     unsupported_reason: str | None = None
+    """未対応理由のメッセージキー（backend/locales の cmd.unsupported.*）。"""
 
 
 def _choice(
@@ -453,31 +455,31 @@ COMMAND_SPECS: dict[str, PlcLinkCommandSpec] = {
     ),
     "MTT": PlcLinkCommandSpec(162, ("folder_type", "folder_number", "show")),
     "SSA": PlcLinkCommandSpec(
-        0, unsupported_reason="単接点トリガ設定は PLCLINK コマンドにありません"
+        0, unsupported_reason="cmd.unsupported.singleContactTrigger"
     ),
     "SST": PlcLinkCommandSpec(
-        0, unsupported_reason="単接点トリガ設定は PLCLINK コマンドにありません"
+        0, unsupported_reason="cmd.unsupported.singleContactTrigger"
     ),
     "POA": PlcLinkCommandSpec(
-        0, unsupported_reason="DIO 操作は仮想 I/O（Phase 2）で対応予定です"
+        0, unsupported_reason="cmd.unsupported.dio"
     ),
     "POP": PlcLinkCommandSpec(
-        0, unsupported_reason="DIO 操作は仮想 I/O（Phase 2）で対応予定です"
+        0, unsupported_reason="cmd.unsupported.dio"
     ),
     "PIA": PlcLinkCommandSpec(
-        0, unsupported_reason="DIO 操作は仮想 I/O（Phase 2）で対応予定です"
+        0, unsupported_reason="cmd.unsupported.dio"
     ),
     "PIP": PlcLinkCommandSpec(
-        0, unsupported_reason="DIO 操作は仮想 I/O（Phase 2）で対応予定です"
+        0, unsupported_reason="cmd.unsupported.dio"
     ),
     "SOS": PlcLinkCommandSpec(
-        0, unsupported_reason="分散システム運用は PLCLINK では使用できません"
+        0, unsupported_reason="cmd.unsupported.distributed"
     ),
     "SOP": PlcLinkCommandSpec(
-        0, unsupported_reason="分散システム運用は PLCLINK では使用できません"
+        0, unsupported_reason="cmd.unsupported.distributed"
     ),
     "SLM": PlcLinkCommandSpec(
-        0, unsupported_reason="ロット設定画面表示は PLCLINK コマンドにありません"
+        0, unsupported_reason="cmd.unsupported.lotScreen"
     ),
     # Tools
     "ICA": PlcLinkCommandSpec(1000, ("camera", "line", "calibration_id")),
@@ -490,7 +492,7 @@ COMMAND_SPECS: dict[str, PlcLinkCommandSpec] = {
     "MAC": PlcLinkCommandSpec(16002, ("camera", "line")),
     "MMA": PlcLinkCommandSpec(
         0,
-        unsupported_reason="手動文字／パターン教示は PLCLINK コマンドにありません",
+        unsupported_reason="cmd.unsupported.manualTeachText",
     ),
     "DAA": PlcLinkCommandSpec(
         18000, ("camera", "line", "multi"), defaults=(("multi", 0),)
@@ -499,7 +501,7 @@ COMMAND_SPECS: dict[str, PlcLinkCommandSpec] = {
     "DDA": PlcLinkCommandSpec(18003, ("camera", "line")),
     "DMA": PlcLinkCommandSpec(
         0,
-        unsupported_reason="手動基準画像登録は PLCLINK コマンドにありません",
+        unsupported_reason="cmd.unsupported.manualReference",
     ),
     "KMA": PlcLinkCommandSpec(
         26000,
@@ -541,7 +543,7 @@ COMMAND_SPECS: dict[str, PlcLinkCommandSpec] = {
     ),
     "NMA": PlcLinkCommandSpec(
         0,
-        unsupported_reason="手動基準画像登録は PLCLINK コマンドにありません",
+        unsupported_reason="cmd.unsupported.manualReference",
     ),
     "DID": PlcLinkCommandSpec(
         75000,
@@ -556,18 +558,22 @@ def resolve_spec(tcp_code: str) -> PlcLinkCommandSpec:
     code = tcp_code.upper()
     spec = COMMAND_SPECS.get(code)
     if spec is None:
-        raise ProtocolError(f"PLCLINK 未対応のコマンドです: {code}")
+        raise ProtocolError("cmd.plclinkUnsupportedCommand", code=code)
     if spec.unsupported_reason:
-        raise ProtocolError(f"{code}: {spec.unsupported_reason}")
+        raise ProtocolError(
+            "cmd.unsupportedWithReason",
+            code=code,
+            reason=Msg(spec.unsupported_reason),
+        )
     return spec
 
 
-def command_metadata(tcp_code: str) -> dict[str, Any]:
+def command_metadata(tcp_code: str, lang: str = DEFAULT_LANG) -> dict[str, Any]:
     """カタログ表示用の PLCLINK 対応情報を返す。"""
     from ..local_io import local_io_metadata
 
     code = tcp_code.upper()
-    local = local_io_metadata(code)
+    local = local_io_metadata(code, lang)
     if local is not None:
         return local  # type: ignore[return-value]
     spec = COMMAND_SPECS.get(code)
@@ -576,20 +582,23 @@ def command_metadata(tcp_code: str) -> dict[str, Any]:
             "local_io": False,
             "plclink_supported": False,
             "plclink_code": None,
-            "plclink_reason": "PLCLINK 未対応のコマンドです",
+            "plclink_reason": t("cmd.plclinkUnsupported", lang),
             "field_network_supported": False,
             "field_network_code": None,
-            "field_network_reason": "Field Network 未対応のコマンドです",
+            "field_network_reason": t("cmd.fieldNetworkUnsupported", lang),
         }
     supported = spec.unsupported_reason is None
+    reason = (
+        t(spec.unsupported_reason, lang) if spec.unsupported_reason else None
+    )
     meta: dict[str, Any] = {
         "local_io": False,
         "plclink_supported": supported,
         "plclink_code": spec.code if spec.code else None,
-        "plclink_reason": spec.unsupported_reason,
+        "plclink_reason": reason,
         "field_network_supported": supported,
         "field_network_code": spec.code if spec.code else None,
-        "field_network_reason": spec.unsupported_reason,
+        "field_network_reason": reason,
     }
     if spec.form_arguments is not None:
         meta["plclink_arguments"] = list(spec.form_arguments)
@@ -669,35 +678,41 @@ def _append_str(
     encoding: str,
     byte_order: ByteOrder,
     limit: int | None = None,
-    label: str = "文字列",
+    label: str | Msg | None = None,
 ) -> None:
+    if label is None:
+        label = Msg("cmd.label.string")
     if limit is not None and len(text) > limit:
-        raise ProtocolError(f"{label}は{limit}文字以内です")
+        raise ProtocolError("cmd.maxChars", label=label, limit=limit)
     words.extend(pack_string(text, encoding=encoding, byte_order=byte_order))
 
 
 def _need(arguments: dict[str, Any], key: str) -> Any:
     if key not in arguments or str(arguments[key]) == "":
-        raise ProtocolError(f"引数 {key} が不足しています")
+        raise ProtocolError("cmd.argMissing", arg=key)
     return arguments[key]
 
 
-def _as_int(raw: Any, label: str) -> int:
+def _arg_label(key: str) -> Msg:
+    return Msg("cmd.label.argument", arg=key)
+
+
+def _as_int(raw: Any, label: str | Msg) -> int:
     try:
         return int(str(raw).strip())
     except ValueError as exc:
-        raise ProtocolError(f"{label}は整数で入力してください") from exc
+        raise ProtocolError("cmd.mustBeInteger", label=label) from exc
 
 
 def _need_int(arguments: dict[str, Any], key: str) -> int:
-    return _as_int(_need(arguments, key), f"引数 {key} ")
+    return _as_int(_need(arguments, key), _arg_label(key))
 
 
 def _opt_int(arguments: dict[str, Any], key: str, default: int = 0) -> int:
     raw = arguments.get(key, "")
     if raw is None or str(raw) == "":
         return default
-    return _as_int(raw, f"引数 {key} ")
+    return _as_int(raw, _arg_label(key))
 
 
 def _folder_code(value: Any) -> int:
@@ -708,7 +723,7 @@ def _folder_code(value: Any) -> int:
             return number
     code = _FOLDER_CODE.get(text)
     if code is None:
-        raise ProtocolError("フォルダ種類が不正です")
+        raise ProtocolError("cmd.folderKindInvalid")
     return code
 
 
@@ -731,7 +746,7 @@ def _pack_standard(
         elif missing and key in spec.blank_strings:
             raw = ""
         elif missing:
-            raise ProtocolError(f"引数 {key} が不足しています")
+            raise ProtocolError("cmd.argMissing", arg=key)
         else:
             raw = values[key]
         if key in spec.string_params or key in spec.blank_strings:
@@ -741,7 +756,7 @@ def _pack_standard(
             # 固定小数点（小数点以下 3 桁）。VTV の実数データ初期値に合わせる。
             _append_int(words, int(round(float(raw) * 1000)))
             continue
-        _append_int(words, _as_int(raw, f"引数 {key} "))
+        _append_int(words, _as_int(raw, _arg_label(key)))
 
 
 def _pack_sli(
@@ -757,24 +772,24 @@ def _pack_sli(
     if str(raw) == "":
         raw = arguments.get("raw", "")
     if str(raw) == "":
-        raise ProtocolError("増加数が不足しています")
-    value = _as_int(raw, "増加数")
+        raise ProtocolError("cmd.incrementMissing")
+    value = _as_int(raw, Msg("cmd.label.increment"))
     if value < 0 or value > 99_999_999:
-        raise ProtocolError("増加数は 0〜99999999 で入力してください")
+        raise ProtocolError("cmd.incrementRange")
     _append_int(words, value)
 
 
 def _parse_slp_raw(raw: str) -> tuple[int, str]:
     text = raw.strip()
     if not text:
-        raise ProtocolError("ロット番号またはロット名が不足しています")
+        raise ProtocolError("cmd.lotMissing")
     if text.startswith("N"):
         rest = text[1:]
         number, _, name = rest.partition("S")
-        return _as_int(number, "ロット番号"), name
+        return _as_int(number, Msg("cmd.label.lotNumber")), name
     if text.startswith("S"):
         return 0, text[1:]
-    return _as_int(text, "ロット番号"), ""
+    return _as_int(text, Msg("cmd.label.lotNumber")), ""
 
 
 def _pack_slp(
@@ -792,9 +807,9 @@ def _pack_slp(
         number = _opt_int(arguments, "lot_number", 0)
         name = str(arguments.get("lot_name", "") or "")
     if number == 0 and name == "":
-        raise ProtocolError("ロット番号とロット名の両方を未指定にはできません")
+        raise ProtocolError("cmd.lotBothEmpty")
     if number < 0 or number > 99_999_999:
-        raise ProtocolError("ロット番号は 0〜99999999 で入力してください")
+        raise ProtocolError("cmd.lotNumberRange")
     _append_int(words, number)
     _append_str(
         words,
@@ -802,7 +817,7 @@ def _pack_slp(
         encoding=encoding,
         byte_order=byte_order,
         limit=64,
-        label="ロット名",
+        label=Msg("cmd.label.lotName"),
     )
 
 
@@ -818,7 +833,7 @@ def _pack_sfs(
     _append_int(words, _folder_code(arguments.get("folder", "")))
     mode = _need_int(arguments, "mode")
     if mode not in {0, 1}:
-        raise ProtocolError("動作モードが不正です")
+        raise ProtocolError("cmd.modeInvalid")
     _append_int(words, mode)
     if mode == 0:
         path = str(_need(arguments, "path"))
@@ -828,7 +843,7 @@ def _pack_sfs(
             encoding=encoding,
             byte_order=byte_order,
             limit=200,
-            label="フォルダパス",
+            label=Msg("cmd.label.folderPath"),
         )
 
 
@@ -845,7 +860,7 @@ def _pack_dfa(
     _append_int(words, _need_int(arguments, "line"))
     mode = _need_int(arguments, "mode")
     if mode not in {0, 1}:
-        raise ProtocolError("動作モードが不正です")
+        raise ProtocolError("cmd.modeInvalid")
     _append_int(words, mode)
     if mode == 0:
         path = str(_need(arguments, "path"))
@@ -855,7 +870,7 @@ def _pack_dfa(
             encoding=encoding,
             byte_order=byte_order,
             limit=200,
-            label="フォルダパス",
+            label=Msg("cmd.label.folderPath"),
         )
 
 
@@ -871,7 +886,7 @@ def _pack_export(
     kind = _need_int(arguments, "kind")
     fields = _EXPORT_FIELDS.get(kind)
     if fields is None:
-        raise ProtocolError(f"未対応のエクスポート種類です: {kind}")
+        raise ProtocolError("cmd.exportKindUnsupported", kind=kind)
     _append_int(words, kind)
     _append_int(words, _opt_int(arguments, "progress"))
     _append_int(words, _opt_int(arguments, "version_major"))
@@ -886,7 +901,7 @@ def _pack_export(
         encoding=encoding,
         byte_order=byte_order,
         limit=200,
-        label="エクスポート先フォルダ",
+        label=Msg("cmd.label.exportFolder"),
     )
 
 
@@ -902,7 +917,7 @@ def _pack_import(
     kind = _need_int(arguments, "kind")
     fields = _IMPORT_FIELDS.get(kind)
     if fields is None:
-        raise ProtocolError(f"未対応のインポート種類です: {kind}")
+        raise ProtocolError("cmd.importKindUnsupported", kind=kind)
     use_numeric = (
         str(arguments.get("numeric_adjust_mode", "0")) == "1" and kind in _NUMERIC_KINDS
     )
@@ -921,7 +936,7 @@ def _pack_import(
         encoding=encoding,
         byte_order=byte_order,
         limit=256,
-        label="インポートファイルパス",
+        label=Msg("cmd.label.importPath"),
     )
 
 
@@ -965,40 +980,47 @@ def _parse_additional_blocks(text: str) -> list[dict[str, Any]]:
     if not raw:
         return []
     if not raw.startswith(",BL"):
-        raise ProtocolError("追加ブロックは ,BL から指定してください")
+        raise ProtocolError("cmd.blockMustStartWithBL")
     blocks: list[dict[str, Any]] = []
     for part in raw.split(",BL")[1:]:
         matched = _BLOCK_BODY.match(part)
         if matched is None:
-            raise ProtocolError(f"追加ブロックの形式が不正です: ,BL{part}")
+            raise ProtocolError("cmd.blockFormatInvalid", part=part)
         blocks.append(_ocv_block_from_groups(matched.groupdict()))
     return blocks
 
 
 def _primary_ocv_block(arguments: dict[str, Any], *, replace: bool) -> dict[str, Any]:
     enabled_raw = str(arguments.get("enabled", "") or "")
-    enabled = 1 if enabled_raw == "" else _as_int(enabled_raw, "ブロック状態")
+    enabled = 1 if enabled_raw == "" else _as_int(enabled_raw, Msg("cmd.label.blockState"))
     font_raw = arguments.get("font", "")
-    font = 0 if str(font_raw) == "" else _as_int(font_raw, "フォント番号")
+    font = 0 if str(font_raw) == "" else _as_int(font_raw, Msg("cmd.label.fontNumber"))
     text = str(arguments.get("text", "") or "")
     additions: list[tuple[int, str]] = []
     position = arguments.get("multi_position", "")
     if str(position) != "":
         chars = str(arguments.get("multi_characters", "") or "")
         if chars == "":
-            raise ProtocolError("追加する複数文字が不足しています")
-        additions.append((_as_int(position, "文字番号"), chars))
+            raise ProtocolError("cmd.multiCharsMissing")
+        additions.append(
+            (_as_int(position, Msg("cmd.label.charPosition")), chars)
+        )
     replacements: list[tuple[int, str]] = []
     replace_position = arguments.get("replace_position", "")
     if replace and enabled != 0 and str(replace_position) == "":
-        raise ProtocolError("入れ換える文字番号が不足しています")
+        raise ProtocolError("cmd.replacePositionMissing")
     if str(replace_position) != "":
         chars = str(arguments.get("replace_characters", "") or "")
         if chars == "":
-            raise ProtocolError("入れ換え文字が不足しています")
-        replacements.append((_as_int(replace_position, "入れ換える文字番号"), chars))
+            raise ProtocolError("cmd.replaceCharsMissing")
+        replacements.append(
+            (
+                _as_int(replace_position, Msg("cmd.label.replacePosition")),
+                chars,
+            )
+        )
     if not replace and enabled != 0 and text == "":
-        raise ProtocolError("文字列が不足しています")
+        raise ProtocolError("cmd.textMissing")
     return {
         "number": _need_int(arguments, "block"),
         "enabled": enabled,
@@ -1022,7 +1044,7 @@ def _pack_ocv_block(
     if replace:
         pairs = block["replacements"]
         limit = 63
-        label = "入れ換え文字"
+        label = Msg("cmd.label.replaceChars")
     else:
         _append_int(words, int(block["font"]))
         _append_str(
@@ -1031,14 +1053,14 @@ def _pack_ocv_block(
             encoding=encoding,
             byte_order=byte_order,
             limit=25,
-            label="文字列",
+            label=Msg("cmd.label.string"),
         )
         pairs = block["additions"]
         limit = 62
-        label = "追加する照合文字"
+        label = Msg("cmd.label.additionalChars")
     for position, chars in pairs:
         if len(chars) > limit:
-            raise ProtocolError(f"{label}は{limit}文字以内です")
+            raise ProtocolError("cmd.maxChars", label=label, limit=limit)
         _append_int(words, position)
         _append_str(
             words,
@@ -1073,7 +1095,7 @@ def _pack_ocv(
     extra = str(arguments.get("additional_blocks", "") or "")
     blocks.extend(_parse_additional_blocks(extra))
     if not 1 <= len(blocks) <= 20:
-        raise ProtocolError("設定ブロック個数は 1〜20 です")
+        raise ProtocolError("cmd.blockCountRange")
     _append_int(words, len(blocks))
     for block in blocks:
         _pack_ocv_block(
@@ -1110,8 +1132,7 @@ def build_command_words(
 
     if len(words) > area_size:
         raise ProtocolError(
-            f"コマンドデータが割当サイズを超過しました"
-            f"（{len(words)} > {area_size} ワード）"
+            "cmd.dataExceedsArea", words=len(words), area_size=area_size
         )
     # 残りは 0 埋め（クリア）
     words.extend([0] * (area_size - len(words)))

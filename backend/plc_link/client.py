@@ -48,28 +48,20 @@ class PlcLinkClient:
             errno = getattr(exc, "errno", None)
             if winerr == 10048 or errno in {98, 10048}:
                 raise ProtocolError(
-                    f"待受ポート {self.settings.port} は既に使用中です。"
-                    " 以前起動した VTV Network Sequencer / python.exe が"
-                    "残っている可能性があります。"
-                    " アプリウィンドウをすべて閉じ、タスクマネージャーで python.exe を終了するか、"
-                    " 接続設定の待受ポートを別番号（例: 5001）に変更してください。"
-                    f"（詳細: {exc}）"
+                    "plclink.portInUse",
+                    port=self.settings.port,
+                    detail=str(exc),
                 ) from exc
             if winerr == 10013 or errno in {13, 10013}:
                 raise ProtocolError(
-                    f"待受ポート {self.settings.port} を開けません（アクセス拒否）。"
-                    " 別のアプリケーションが同じポートを使用中か、"
-                    " ファイアウォール / ウイルス対策がブロックしている可能性があります。"
-                    " タスクマネージャーで該当ポートを使用しているプロセスを確認し、"
-                    " 止められる場合は終了するか、接続設定の待受ポートを"
-                    " 5000 など空いている番号に変更してください（VTV 側も同じポートに合わせる）。"
-                    f"（詳細: {exc}）"
+                    "plclink.portAccessDenied",
+                    port=self.settings.port,
+                    detail=str(exc),
                 ) from exc
             raise ProtocolError(
-                f"疑似 PLC を起動できません"
-                f"（0.0.0.0:{self.settings.port}）: {exc}。"
-                " 待受アドレスにはこの PC の IP または 0.0.0.0 を指定してください"
-                "（VTV / 装置側の IP ではありません）"
+                "plclink.startFailed",
+                port=self.settings.port,
+                detail=str(exc),
             ) from exc
 
     async def connect(self) -> None:
@@ -82,12 +74,9 @@ class PlcLinkClient:
             await self.server.wait_for_client(self.settings.timeout)
         except TimeoutError as exc:
             raise ProtocolError(
-                f"{self.settings.timeout:g}秒以内に VTV からの接続がありません。"
-                f" VTV の PLCLINK 通信先を"
-                f" この PC の IP:{self.settings.port} に設定し、"
-                " Windows ファイアウォールで python.exe / 待受ポートの"
-                "受信を許可してください。"
-                " 疑似 PLC は待受を継続しているので、接続後に再度テストできます"
+                "plclink.noClientTimeout",
+                timeout=f"{self.settings.timeout:g}",
+                port=self.settings.port,
             ) from exc
 
     async def close(self) -> None:
@@ -99,8 +88,8 @@ class PlcLinkClient:
             await self.server.wait_for_communication(self.settings.timeout)
         except TimeoutError as exc:
             raise ProtocolError(
-                f"{self.settings.timeout:g}秒以内に VTV からの"
-                "正常な MC 3E 通信を確認できませんでした"
+                "plclink.communicationTimeout",
+                timeout=f"{self.settings.timeout:g}",
             ) from exc
 
         # VTV が受信応答を処理して接続確認を完了する猶予を確保する。
@@ -118,7 +107,7 @@ class PlcLinkClient:
     ) -> CommandResult:
         del expect_result, result_mode  # PLCLINK は常にレスポンス領域を読む
         if self.server.client_count == 0:
-            raise ProtocolError("装置に接続されていません")
+            raise ProtocolError("protocol.notConnected")
 
         await self._await_ignore_task()
 
@@ -175,7 +164,7 @@ class PlcLinkClient:
         )
         responses = [status, detail]
         if result_code not in (1, 8):
-            raise ProtocolError(f"不正な実行結果です: {result_code}")
+            raise ProtocolError("protocol.invalidResultCode", code=result_code)
         return CommandResult(display, status, responses)
 
     async def _await_ignore_task(self) -> None:
@@ -204,12 +193,15 @@ class PlcLinkClient:
                 return
             if asyncio.get_running_loop().time() >= deadline:
                 raise ProtocolError(
-                    f"{self.settings.timeout:g}秒以内に {label} を検出できません"
-                    f"（M{address} = PLO先頭 M{self.settings.plo_address}"
-                    f" + Port {self.settings.busy_port}）"
+                    "plclink.signalTimeout",
+                    timeout=f"{self.settings.timeout:g}",
+                    label=label,
+                    address=address,
+                    plo_address=self.settings.plo_address,
+                    busy_port=self.settings.busy_port,
                 )
             if self.server.client_count == 0:
-                raise ProtocolError("応答の途中で接続が切断されました")
+                raise ProtocolError("protocol.disconnectedMidResponse")
             await asyncio.sleep(0.02)
 
     async def _wait_response_ready(self, response_base: int) -> None:
@@ -220,8 +212,9 @@ class PlcLinkClient:
                 return
             if asyncio.get_running_loop().time() >= deadline:
                 raise ProtocolError(
-                    f"{self.settings.timeout:g}秒以内にレスポンスがありません"
+                    "protocol.noResponseWithin",
+                    timeout=f"{self.settings.timeout:g}",
                 )
             if self.server.client_count == 0:
-                raise ProtocolError("応答の途中で接続が切断されました")
+                raise ProtocolError("protocol.disconnectedMidResponse")
             await asyncio.sleep(0.02)

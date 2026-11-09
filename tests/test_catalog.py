@@ -83,3 +83,36 @@ def test_was_formats_ocv_subcommands() -> None:
     assert format_command(definition("WAS"), {**values, "multi": 1}) == (
         "WAS0102,BL01,BF1,FG023,FC10,FS0123ABCabc,FM05BCDEabcde"
     )
+
+
+def test_load_catalog_en_overlay_and_ja_unchanged() -> None:
+    en = {item["code"]: item for item in load_catalog("en")}
+    ja = {item["code"]: item for item in load_catalog("ja")}
+    assert en["RRT"]["name"] == "Run specified task"
+    assert en["RRT"]["arguments"][0]["label"] == "Group number"
+    assert ja["RRT"]["name"] == "指定タスク実行"
+    assert ja["RRT"]["arguments"][0]["label"] == "グループ番号"
+    # 構文・桁数などは変更されない
+    assert en["RRT"]["arguments"][0]["digits"] == ja["RRT"]["arguments"][0]["digits"]
+    assert en["SIE"]["arguments"][0]["options"][0] == {
+        "value": "0",
+        "label": "All images",
+    }
+    assert format_command(en["RRT"], {"group": 1, "task": 2}) == "RRT0102"
+    # オーバーレイ適用後も元の ja データは汚染されない
+    assert load_catalog("ja")[0]["name"] == ja[load_catalog("ja")[0]["code"]]["name"]
+
+
+def test_en_catalog_has_no_japanese_text() -> None:
+    import re
+
+    japanese = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff\uff00-\uffef]")
+    leftovers: list[str] = []
+    for command in load_catalog("en"):
+        texts = [command["name"], command["description"], command.get("tool_name", ""),
+                 command.get("syntax", ""), command["category_name"]]
+        for argument in command.get("arguments", []):
+            texts.append(argument["label"])
+            texts.extend(option["label"] for option in argument.get("options", []))
+        leftovers += [f"{command['code']}: {x}" for x in texts if japanese.search(x)]
+    assert not leftovers

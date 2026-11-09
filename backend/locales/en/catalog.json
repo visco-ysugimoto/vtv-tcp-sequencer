@@ -1,0 +1,1061 @@
+{
+  "RRT": {
+    "name": "Run specified task",
+    "description": "Runs the specified task. Loads it if not already loaded.",
+    "arguments": {
+      "group": {
+        "label": "Group number"
+      },
+      "task": {
+        "label": "Task number"
+      }
+    }
+  },
+  "SRP": {
+    "name": "Run system command",
+    "description": "Runs the specified system command.",
+    "arguments": {
+      "system_command": {
+        "label": "System command number"
+      }
+    }
+  },
+  "RCA": {
+    "name": "Switch active task",
+    "description": "Switches the active task to the specified task.",
+    "arguments": {
+      "group": {
+        "label": "Group number"
+      },
+      "task": {
+        "label": "Task number"
+      }
+    }
+  },
+  "RLA": {
+    "name": "Load task",
+    "description": "Loads the specified task and makes it the active task.",
+    "arguments": {
+      "group": {
+        "label": "Group number"
+      },
+      "task": {
+        "label": "Task number"
+      }
+    }
+  },
+  "RUT": {
+    "name": "Unload task",
+    "description": "Unloads the specified task. Task data is not deleted.",
+    "arguments": {
+      "group": {
+        "label": "Group number"
+      },
+      "task": {
+        "label": "Task number"
+      }
+    }
+  },
+  "RRA": {
+    "name": "Run active task",
+    "description": "Runs the active task."
+  },
+  "RCC": {
+    "name": "Reset counters",
+    "description": "Resets the counters of the active task to 0."
+  },
+  "RAU": {
+    "name": "Unload all tasks",
+    "description": "Unloads all tasks."
+  },
+  "SSD": {
+    "name": "System shutdown",
+    "description": "Exits VTV-9000 and shuts down the OS."
+  },
+  "SSA": {
+    "name": "Set active task single-contact trigger",
+    "description": "Sets the single-contact trigger for the active task.",
+    "arguments": {
+      "port": {
+        "label": "Port number"
+      }
+    }
+  },
+  "SST": {
+    "name": "Set single-contact trigger",
+    "description": "Sets the single-contact trigger for the specified task.",
+    "arguments": {
+      "group": {
+        "label": "Group number"
+      },
+      "task": {
+        "label": "Task number"
+      },
+      "port": {
+        "label": "Port number"
+      }
+    }
+  },
+  "SFB": {
+    "name": "Start image saving",
+    "description": "Starts saving images."
+  },
+  "SFE": {
+    "name": "Stop image saving",
+    "description": "Stops saving images."
+  },
+  "SGI": {
+    "name": "Save image file",
+    "description": "Saves the currently displayed image to a file."
+  },
+  "SIE": {
+    "name": "Delete image files",
+    "description": "Deletes image files in the active task.",
+    "arguments": {
+      "delete_mode": {
+        "label": "Delete mode",
+        "options": {
+          "0": "All images",
+          "1": "All auto-saved images",
+          "2": "Auto-saved OK images",
+          "3": "Auto-saved NG images",
+          "4": "All manually saved images"
+        }
+      },
+      "locked": {
+        "label": "Locked images",
+        "options": {
+          "0": "Do not delete",
+          "1": "Delete"
+        }
+      }
+    }
+  },
+  "SMA": {
+    "name": "Add text to saved image",
+    "description": "Sets text information on the saved image of the active task. The number of line-number digits follows the connection settings.",
+    "arguments": {
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Line number"
+      },
+      "angle": {
+        "label": "Rotation angle",
+        "options": {
+          "0": "0 degrees",
+          "1": "90 degrees right",
+          "2": "180 degrees",
+          "3": "90 degrees left"
+        }
+      },
+      "position": {
+        "label": "Position",
+        "options": {
+          "0": "Top left",
+          "1": "Top center",
+          "2": "Top right",
+          "3": "Middle left",
+          "4": "Center",
+          "5": "Middle right",
+          "6": "Bottom left",
+          "7": "Bottom center",
+          "8": "Bottom right"
+        }
+      },
+      "font_size": {
+        "label": "Font size"
+      },
+      "color": {
+        "label": "Text color",
+        "options": {
+          "0": "Black",
+          "1": "White"
+        }
+      },
+      "outline": {
+        "label": "Outline",
+        "options": {
+          "0": "OFF",
+          "1": "ON"
+        }
+      },
+      "text": {
+        "label": "Text"
+      }
+    }
+  },
+  "SRB": {
+    "name": "Start screen saving",
+    "description": "Starts saving the screen."
+  },
+  "SRE": {
+    "name": "Stop screen saving",
+    "description": "Stops saving the screen."
+  },
+  "SGS": {
+    "name": "Save screen file",
+    "description": "Saves the displayed main screen to a file."
+  },
+  "SLM": {
+    "name": "Edit lot settings",
+    "description": "Displays the lot settings screen."
+  },
+  "SLP": {
+    "name": "Set lot",
+    "description": "Sets the lot number and lot name. Examples: 0001 / N0001 / SLotName / N0001SLotName"
+  },
+  "SLS": {
+    "name": "Start lot",
+    "description": "Starts a lot."
+  },
+  "SLE": {
+    "name": "End lot",
+    "description": "Ends the lot."
+  },
+  "SLH": {
+    "name": "Suspend lot",
+    "description": "Suspends the lot and writes the held data to a file."
+  },
+  "SLR": {
+    "name": "Resume lot",
+    "description": "Resumes the lot."
+  },
+  "SLI": {
+    "name": "Increment lot number",
+    "description": "Adds the specified value to the current lot number. The number of digits follows the lot number setting of the device."
+  },
+  "RWC": {
+    "name": "Write counter data",
+    "description": "Writes the counter values to the log or lot file."
+  },
+  "COA": {
+    "name": "Output active task parameters to CSV",
+    "description": "Outputs the setting parameters of the active task to CSV.",
+    "arguments": {
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Line number"
+      }
+    }
+  },
+  "CPO": {
+    "name": "Output task parameters to CSV",
+    "description": "Outputs the setting parameters of the specified task to CSV.",
+    "arguments": {
+      "group": {
+        "label": "Group number"
+      },
+      "task": {
+        "label": "Task number"
+      },
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Line number"
+      }
+    }
+  },
+  "CIA": {
+    "name": "Input active task parameters from CSV",
+    "description": "Inputs setting parameters to the active task from CSV.",
+    "arguments": {
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Line number"
+      }
+    }
+  },
+  "CPI": {
+    "name": "Input task parameters from CSV",
+    "description": "Inputs setting parameters to the specified task from CSV.",
+    "arguments": {
+      "group": {
+        "label": "Group number"
+      },
+      "task": {
+        "label": "Task number"
+      },
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Line number"
+      }
+    }
+  },
+  "SFS": {
+    "name": "Set / get save folder",
+    "description": "Sets or gets a system folder. Leave the path empty when getting.",
+    "arguments": {
+      "folder": {
+        "label": "Folder type",
+        "options": {
+          "M": "Manual images",
+          "I": "Auto-saved images",
+          "B": "Backup",
+          "F": "File output",
+          "L": "Lot output",
+          "O": "Operation log",
+          "S": "Screen capture",
+          "T": "Task backup",
+          "H": "Change history"
+        }
+      },
+      "mode": {
+        "label": "Operation mode",
+        "options": {
+          "0": "Set",
+          "1": "Get"
+        }
+      },
+      "path": {
+        "label": "Folder path (leave empty when getting)"
+      }
+    }
+  },
+  "SFI": {
+    "name": "Increment save folder number",
+    "description": "Increments the trailing number of the system folder name by the specified amount.",
+    "arguments": {
+      "folder": {
+        "label": "Folder type",
+        "options": {
+          "M": "Manual images",
+          "I": "Auto-saved images",
+          "B": "Backup",
+          "F": "File output",
+          "L": "Lot output",
+          "O": "Operation log",
+          "S": "Screen capture",
+          "T": "Task backup",
+          "H": "Change history"
+        }
+      },
+      "increment": {
+        "label": "Increment"
+      }
+    }
+  },
+  "SOS": {
+    "name": "Start distributed system operation",
+    "description": "Starts operation of the distributed system."
+  },
+  "SOP": {
+    "name": "Stop distributed system operation",
+    "description": "Stops operation of the distributed system."
+  },
+  "TCA": {
+    "name": "Set active task tool comment",
+    "description": "Sets the tool comment of the active task.",
+    "arguments": {
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Line number"
+      },
+      "text": {
+        "label": "Comment"
+      }
+    }
+  },
+  "POA": {
+    "name": "Get DIO output",
+    "description": "Gets the contact outputs of the specified DIO unit as an 8-digit hexadecimal number.",
+    "arguments": {
+      "unit": {
+        "label": "DIO unit",
+        "options": {
+          "0": "Built-in DIO",
+          "1": "USB DIO 1",
+          "2": "USB DIO 2"
+        }
+      }
+    }
+  },
+  "POP": {
+    "name": "Get DIO port output",
+    "description": "Gets the contact output of the specified port.",
+    "arguments": {
+      "port": {
+        "label": "Port number"
+      }
+    }
+  },
+  "PIA": {
+    "name": "Set DIO input",
+    "description": "Sets the contact inputs as an 8-digit hexadecimal number.",
+    "arguments": {
+      "data": {
+        "label": "Input data (8-digit hexadecimal)"
+      }
+    }
+  },
+  "PIP": {
+    "name": "Set DIO port input",
+    "description": "Sets the input state of the specified port.",
+    "arguments": {
+      "state": {
+        "label": "Port state",
+        "options": {
+          "0": "OFF",
+          "1": "ON"
+        }
+      },
+      "port": {
+        "label": "Port number"
+      }
+    }
+  },
+  "PLI": {
+    "name": "Set PLI ports",
+    "description": "Turns the PLCLINK virtual inputs (PLI/PLO) ON/OFF. Equivalent to PIP over TCP. Separate multiple ports with commas; specify ranges as 5-8.",
+    "arguments": {
+      "state": {
+        "label": "Port state",
+        "options": {
+          "0": "OFF",
+          "1": "ON"
+        }
+      },
+      "ports": {
+        "label": "Port numbers (e.g. 1,2,5-8)"
+      }
+    }
+  },
+  "ESI": {
+    "name": "Set ESI ports",
+    "description": "Turns the Field Network ESI ON/OFF. Equivalent to PIP over TCP. Separate multiple ports with commas; specify ranges as 5-8.",
+    "arguments": {
+      "state": {
+        "label": "Port state",
+        "options": {
+          "0": "OFF",
+          "1": "ON"
+        }
+      },
+      "ports": {
+        "label": "Port numbers (e.g. 1,2,5-8)"
+      }
+    }
+  },
+  "EXP": {
+    "name": "Export",
+    "description": "Runs an export. For TCP, this is the argument string of S002. For PLCLINK / Field Network, these are the type-specific parameters of command 70.",
+    "syntax": "See S002"
+  },
+  "IMP": {
+    "name": "Import",
+    "description": "Runs an import. For TCP, this is the argument string of S002. For PLCLINK / Field Network, these are the type-specific parameters of command 71.",
+    "syntax": "See S002"
+  },
+  "MTT": {
+    "name": "Inspection test",
+    "description": "Runs an inspection test using the inspection images in the specified folder.",
+    "arguments": {
+      "folder_type": {
+        "label": "Folder type",
+        "options": {
+          "0": "Task folder",
+          "1": "Specified folder"
+        }
+      },
+      "folder_number": {
+        "label": "Folder number"
+      },
+      "show": {
+        "label": "Screen display during automatic operation",
+        "options": {
+          "0": "Do not display",
+          "1": "Display"
+        }
+      }
+    }
+  },
+  "MCA": {
+    "name": "Set active task coordinate system count",
+    "description": "Sets the repeat count of the multi-coordinate-system tool. A camera or line number of 0 means unspecified. Not available for free placement.",
+    "tool_name": "Multi-coordinate system",
+    "arguments": {
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Line number"
+      },
+      "fixed_position": {
+        "label": "Fixed position",
+        "options": {
+          "0": "Fixed at start",
+          "1": "Fixed at both ends",
+          "2": "Fixed at center"
+        }
+      },
+      "rows": {
+        "label": "Rows"
+      },
+      "columns": {
+        "label": "Columns"
+      }
+    }
+  },
+  "MAA": {
+    "name": "Active task automatic character teaching",
+    "description": "Automatically cuts out character models with the specified character inspection tool.",
+    "tool_name": "Character inspection",
+    "arguments": {
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Line number"
+      },
+      "multi": {
+        "label": "Multi number (0 = first)"
+      }
+    }
+  },
+  "MMA": {
+    "name": "Active task manual character teaching",
+    "description": "Displays the manual character teaching screen of the specified character inspection tool.",
+    "tool_name": "Character inspection",
+    "arguments": {
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Line number"
+      }
+    }
+  },
+  "MAC": {
+    "name": "Active task delete all characters",
+    "description": "Deletes all character models and positioning models of the specified character inspection tool.",
+    "tool_name": "Character inspection",
+    "arguments": {
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Line number"
+      }
+    }
+  },
+  "DAA": {
+    "name": "Active task automatic reference image registration",
+    "description": "Adds the image captured at command execution to the reference images of the specified DefFinder.",
+    "tool_name": "DefFinder",
+    "arguments": {
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Line number"
+      },
+      "multi": {
+        "label": "Multi number (0 = first)"
+      }
+    }
+  },
+  "DMA": {
+    "name": "Active task manual reference image registration",
+    "description": "Displays the reference image settings screen of the specified DefFinder.",
+    "tool_name": "DefFinder",
+    "arguments": {
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Line number"
+      }
+    }
+  },
+  "DLA": {
+    "name": "Active task delete last reference image",
+    "description": "Deletes one reference image (the most recent) of the specified DefFinder.",
+    "tool_name": "DefFinder",
+    "arguments": {
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Line number"
+      }
+    }
+  },
+  "DDA": {
+    "name": "Active task delete all reference images",
+    "description": "Deletes all reference images of the specified DefFinder.",
+    "tool_name": "DefFinder",
+    "arguments": {
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Line number"
+      }
+    }
+  },
+  "KMA": {
+    "name": "Set active task module parameters",
+    "description": "Sets the fixed point coordinates in the composite module of the Measurement Edit tool. A camera, line, or module number of 0 means unspecified.",
+    "tool_name": "Measurement edit",
+    "syntax": "KMA[CC][RR],[t],[mm],[c],[NNN],[X value],[Y value]",
+    "arguments": {
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Line number"
+      },
+      "multi": {
+        "label": "Multi number (0 = first)"
+      },
+      "module_type": {
+        "label": "Module type",
+        "options": {
+          "2": "Composite module"
+        }
+      },
+      "module_id": {
+        "label": "Module ID",
+        "options": {
+          "09": "Fixed point"
+        }
+      },
+      "operation": {
+        "label": "Operation",
+        "options": {
+          "1": "Set fixed point coordinates"
+        }
+      },
+      "module_number": {
+        "label": "Module number"
+      },
+      "x": {
+        "label": "Coordinate X"
+      },
+      "y": {
+        "label": "Coordinate Y"
+      }
+    }
+  },
+  "DFA": {
+    "name": "Set / get active task image save folder",
+    "description": "Sets or gets the image save folder of the Image + Shape Reference Display tool. Leave the folder name empty when getting.",
+    "tool_name": "Image + shape reference display",
+    "syntax": "Set: DFA[CC][RR]0[Path] / Get: DFA[CC][RR]1",
+    "arguments": {
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Line number"
+      },
+      "mode": {
+        "label": "Operation",
+        "options": {
+          "0": "Set save folder",
+          "1": "Get save folder"
+        }
+      },
+      "path": {
+        "label": "Folder name"
+      }
+    }
+  },
+  "WAS": {
+    "name": "Reset active task text",
+    "description": "Resets the OCV tool text. The character count can also be changed. To set multiple blocks, enter them in the additional definition starting from \",BL...\".",
+    "tool_name": "OCV",
+    "syntax": "WAS[CC][RR],BL[BB][,BF...][,FG...][,FC...],FS[text][,FM...][additional blocks]",
+    "arguments": {
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Tool line number"
+      },
+      "multi": {
+        "label": "Multi number (0 = first)"
+      },
+      "block": {
+        "label": "Block number"
+      },
+      "enabled": {
+        "label": "Block state",
+        "options": {
+          "": "No change",
+          "0": "Disabled",
+          "1": "Enabled"
+        }
+      },
+      "font": {
+        "label": "Font number"
+      },
+      "character_count": {
+        "label": "Character count"
+      },
+      "text": {
+        "label": "Text"
+      },
+      "multi_position": {
+        "label": "Character position for adding multiple characters"
+      },
+      "multi_characters": {
+        "label": "Multiple characters to add"
+      },
+      "additional_blocks": {
+        "label": "Additional block definition (starting from ,BL)"
+      }
+    }
+  },
+  "WAA": {
+    "name": "Replace all active task text",
+    "description": "Replaces all of the OCV tool text without changing the character count.",
+    "tool_name": "OCV",
+    "syntax": "WAA[CC][RR],BL[BB][,BF...][,FG...],FS[text][,FM...][additional blocks]",
+    "arguments": {
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Tool line number"
+      },
+      "block": {
+        "label": "Block number"
+      },
+      "enabled": {
+        "label": "Block state",
+        "options": {
+          "": "No change",
+          "0": "Disabled",
+          "1": "Enabled"
+        }
+      },
+      "font": {
+        "label": "Font number"
+      },
+      "text": {
+        "label": "Text"
+      },
+      "multi_position": {
+        "label": "Character position for adding multiple characters"
+      },
+      "multi_characters": {
+        "label": "Multiple characters to add"
+      },
+      "additional_blocks": {
+        "label": "Additional block definition (starting from ,BL)"
+      }
+    }
+  },
+  "WAC": {
+    "name": "Replace characters at specified positions (active task)",
+    "description": "Replaces only the characters at the specified positions in the OCV tool.",
+    "tool_name": "OCV",
+    "syntax": "WAC[CC][RR],BL[BB][,BF...],FR[II][text][additional blocks]",
+    "arguments": {
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Tool line number"
+      },
+      "block": {
+        "label": "Block number"
+      },
+      "enabled": {
+        "label": "Block state",
+        "options": {
+          "": "No change",
+          "0": "Disabled",
+          "1": "Enabled"
+        }
+      },
+      "replace_position": {
+        "label": "Character position to replace"
+      },
+      "replace_characters": {
+        "label": "Replacement characters"
+      },
+      "additional_blocks": {
+        "label": "Additional block definition (starting from ,BL)"
+      }
+    }
+  },
+  "WMS": {
+    "name": "Reset specified task text",
+    "description": "Resets the OCV text of the specified task. The character count can also be changed.",
+    "tool_name": "OCV",
+    "syntax": "WMS[GG][TT][CC][RR],BL[BB][,BF...][,FG...][,FC...],FS[text][,FM...][additional blocks]",
+    "arguments": {
+      "group": {
+        "label": "Group number"
+      },
+      "task": {
+        "label": "Task number"
+      },
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Tool line number"
+      },
+      "multi": {
+        "label": "Multi number (0 = first)"
+      },
+      "block": {
+        "label": "Block number"
+      },
+      "enabled": {
+        "label": "Block state",
+        "options": {
+          "": "No change",
+          "0": "Disabled",
+          "1": "Enabled"
+        }
+      },
+      "font": {
+        "label": "Font number"
+      },
+      "character_count": {
+        "label": "Character count"
+      },
+      "text": {
+        "label": "Text"
+      },
+      "multi_position": {
+        "label": "Character position for adding multiple characters"
+      },
+      "multi_characters": {
+        "label": "Multiple characters to add"
+      },
+      "additional_blocks": {
+        "label": "Additional block definition (starting from ,BL)"
+      }
+    }
+  },
+  "WMA": {
+    "name": "Replace all specified task text",
+    "description": "Replaces all of the OCV text of the specified task without changing the character count.",
+    "tool_name": "OCV",
+    "syntax": "WMA[GG][TT][CC][RR],BL[BB][,BF...][,FG...],FS[text][,FM...][additional blocks]",
+    "arguments": {
+      "group": {
+        "label": "Group number"
+      },
+      "task": {
+        "label": "Task number"
+      },
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Tool line number"
+      },
+      "block": {
+        "label": "Block number"
+      },
+      "enabled": {
+        "label": "Block state",
+        "options": {
+          "": "No change",
+          "0": "Disabled",
+          "1": "Enabled"
+        }
+      },
+      "font": {
+        "label": "Font number"
+      },
+      "text": {
+        "label": "Text"
+      },
+      "multi_position": {
+        "label": "Character position for adding multiple characters"
+      },
+      "multi_characters": {
+        "label": "Multiple characters to add"
+      },
+      "additional_blocks": {
+        "label": "Additional block definition (starting from ,BL)"
+      }
+    }
+  },
+  "WMC": {
+    "name": "Replace characters at specified positions (specified task)",
+    "description": "Replaces only the characters at the specified positions in the OCV of the specified task.",
+    "tool_name": "OCV",
+    "syntax": "WMC[GG][TT][CC][RR],BL[BB][,BF...],FR[II][text][additional blocks]",
+    "arguments": {
+      "group": {
+        "label": "Group number"
+      },
+      "task": {
+        "label": "Task number"
+      },
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Tool line number"
+      },
+      "block": {
+        "label": "Block number"
+      },
+      "enabled": {
+        "label": "Block state",
+        "options": {
+          "": "No change",
+          "0": "Disabled",
+          "1": "Enabled"
+        }
+      },
+      "replace_position": {
+        "label": "Character position to replace"
+      },
+      "replace_characters": {
+        "label": "Replacement characters"
+      },
+      "additional_blocks": {
+        "label": "Additional block definition (starting from ,BL)"
+      }
+    }
+  },
+  "NAA": {
+    "name": "Active task automatic reference image registration",
+    "description": "Adds a reference image to the inspection point or segment of the specified MatrixDefFinder / SegmentDefFinder. A camera, line, or region number of 0 means unspecified.",
+    "tool_name": "MatrixDefFinder / SegmentDefFinder",
+    "arguments": {
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Line number"
+      },
+      "multi": {
+        "label": "Multi number (0 = first)"
+      },
+      "allow_search_ng": {
+        "label": "Register even if search is NG",
+        "options": {
+          "0": "OFF",
+          "1": "ON"
+        }
+      },
+      "region_row": {
+        "label": "Inspection point / segment row number (T058: 0-128)"
+      },
+      "region_column": {
+        "label": "Inspection point / segment column number (T058: 0-128)"
+      }
+    }
+  },
+  "NMA": {
+    "name": "Active task manual reference image registration",
+    "description": "Displays the inspection settings screen of the specified MatrixDefFinder / SegmentDefFinder.",
+    "tool_name": "MatrixDefFinder / SegmentDefFinder",
+    "arguments": {
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Line number"
+      }
+    }
+  },
+  "NLA": {
+    "name": "Active task delete last reference image",
+    "description": "Deletes one reference image (the most recent) at the inspection point or segment of the specified MatrixDefFinder / SegmentDefFinder.",
+    "tool_name": "MatrixDefFinder / SegmentDefFinder",
+    "arguments": {
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Line number"
+      },
+      "region_row": {
+        "label": "Inspection point / segment row number (T058: 0-128)"
+      },
+      "region_column": {
+        "label": "Inspection point / segment column number (T058: 0-128)"
+      }
+    }
+  },
+  "NDA": {
+    "name": "Active task delete all reference images",
+    "description": "Deletes all reference images at the inspection point or segment of the specified MatrixDefFinder / SegmentDefFinder.",
+    "tool_name": "MatrixDefFinder / SegmentDefFinder",
+    "arguments": {
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Line number"
+      },
+      "region_row": {
+        "label": "Inspection point / segment row number (T058: 0-128)"
+      },
+      "region_column": {
+        "label": "Inspection point / segment column number (T058: 0-128)"
+      }
+    }
+  },
+  "DID": {
+    "name": "Set active task distribution identifier",
+    "description": "Sets the distribution identifier of the distribution processing tool. A camera or line number of 0 means unspecified.",
+    "tool_name": "Distribution processing",
+    "arguments": {
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Line number"
+      },
+      "identifier": {
+        "label": "Distribution identifier"
+      }
+    }
+  },
+  "DDN": {
+    "name": "Set active task distribution identifier (numeric)",
+    "description": "Sets the distribution identifier of the distribution processing tool as a number. This is PLCLINK command 75001.",
+    "tool_name": "Distribution processing",
+    "arguments": {
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Line number"
+      },
+      "identifier": {
+        "label": "Distribution identifier"
+      }
+    }
+  },
+  "ICA": {
+    "name": "Set calibration data ID",
+    "description": "Sets the calibration data ID on the specified image capture tool of the active task. A camera or line number of 0 means unspecified (all targets).",
+    "tool_name": "Image capture",
+    "arguments": {
+      "camera": {
+        "label": "Camera number"
+      },
+      "line": {
+        "label": "Line number"
+      },
+      "calibration_id": {
+        "label": "Calibration data ID"
+      }
+    },
+    "category_name": "Tool"
+  }
+}

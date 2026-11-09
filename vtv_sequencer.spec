@@ -10,6 +10,7 @@ project = Path(SPECPATH)
 datas = [
     (str(project / "frontend"), "frontend"),
     (str(project / "backend" / "catalog"), "backend/catalog"),
+    (str(project / "backend" / "locales"), "backend/locales"),
 ]
 
 binaries = []
@@ -26,6 +27,7 @@ hiddenimports = [
     "uvicorn.lifespan.on",
     "backend.main",
     "backend.catalog",
+    "backend.i18n",
     "backend.engine",
     "backend.models",
     "backend.network",

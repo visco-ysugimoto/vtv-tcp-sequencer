@@ -15,6 +15,7 @@ from pathlib import Path
 
 import uvicorn
 
+from backend.i18n import DEFAULT_LANG, normalize_lang, t
 from backend.main import app
 
 HOST = "127.0.0.1"
@@ -29,6 +30,45 @@ _local_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 MUTEX_NAME = "Local\\VTV_TCP_Sequencer"
 _instance_mutex: int | None = None
 _server_error: BaseException | None = None
+_ui_lang: str = DEFAULT_LANG
+
+
+def _detect_ui_lang() -> str:
+    """OS UI 言語から ja / en を決める（英語 UI なら en、それ以外は ja）。"""
+    env = (
+        os.environ.get("VTV_LANG")
+        or os.environ.get("LANG")
+        or os.environ.get("LC_ALL")
+        or ""
+    )
+    if env:
+        primary = env.strip().lower().replace("_", "-").split(".", 1)[0]
+        if primary.startswith("en"):
+            return "en"
+        if primary.startswith("ja"):
+            return "ja"
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            # LANGID: primary language is low 10 bits. 0x09 = English, 0x11 = Japanese.
+            langid = ctypes.windll.kernel32.GetUserDefaultUILanguage()
+            primary = langid & 0x3FF
+            if primary == 0x09:
+                return "en"
+            if primary == 0x11:
+                return "ja"
+        except Exception:  # noqa: BLE001 - fall back below
+            pass
+    return DEFAULT_LANG
+
+
+def _tr(key: str, **kwargs: object) -> str:
+    return t(key, _ui_lang, **kwargs)
+
+
+def _startup_log_path() -> Path:
+    return _app_data_dir() / "startup.log"
 
 
 def _ensure_stdio() -> None:
@@ -110,7 +150,9 @@ def _wait_for_server(url: str = CATALOG_URL, timeout: float = 20.0) -> None:
     last_error = ""
     while time.monotonic() < deadline:
         if _server_error is not None:
-            raise RuntimeError(f"サーバー起動に失敗しました:\n{_server_error}") from _server_error
+            raise RuntimeError(
+                _tr("runapp.serverStartFailed", detail=_server_error)
+            ) from _server_error
         try:
             with urllib.request.urlopen(url, timeout=0.5) as response:
                 if response.status == 200:
@@ -120,11 +162,12 @@ def _wait_for_server(url: str = CATALOG_URL, timeout: float = 20.0) -> None:
             last_error = str(exc)
             time.sleep(0.1)
     raise TimeoutError(
-        f"サーバーが {timeout:.0f} 秒以内に起動しませんでした。\n"
-        f"詳細: {last_error or '不明'}\n\n"
-        "ウイルス対策ソフトが exe を隔離していないか確認し、\n"
-        "VTV_TCP_Sequencer フォルダを除外設定へ追加してください。\n"
-        f"ログ: {_app_data_dir() / 'startup.log'}"
+        _tr(
+            "runapp.serverStartTimeout",
+            timeout=f"{timeout:.0f}",
+            detail=last_error or _tr("runapp.unknownDetail"),
+            log=_startup_log_path(),
+        )
     )
 
 
@@ -206,14 +249,11 @@ def _run_browser_session(
     server_thread: threading.Thread | None = None,
 ) -> None:
     if not _is_our_server_running():
-        raise RuntimeError(
-            "ローカルサーバー（127.0.0.1:8765）に接続できません。\n"
-            "ウイルス対策ソフトがアプリを停止していないか確認し、\n"
-            "除外設定のうえ再起動してください。"
-        )
+        raise RuntimeError(_tr("runapp.serverUnreachable"))
     _log("launching browser")
     process = _launch_browser(browser)
     health_failures = 0
+    log_path = _startup_log_path()
     try:
         while True:
             try:
@@ -222,9 +262,11 @@ def _run_browser_session(
             except subprocess.TimeoutExpired:
                 if _server_error is not None:
                     _message_box(
-                        "バックエンドが異常終了しました。\n"
-                        f"{_server_error}\n\n"
-                        f"ログ: {_app_data_dir() / 'startup.log'}"
+                        _tr(
+                            "runapp.backendCrashed",
+                            detail=_server_error,
+                            log=log_path,
+                        )
                     )
                     break
                 if server_thread is not None and not server_thread.is_alive():
@@ -235,14 +277,14 @@ def _run_browser_session(
                     detail = (
                         str(_server_error)
                         if _server_error is not None
-                        else "詳細は startup.log を確認してください"
+                        else _tr("runapp.seeStartupLog")
                     )
                     _message_box(
-                        "バックエンドが異常終了しました。\n"
-                        f"{detail}\n\n"
-                        "タスクマネージャーで VTV_TCP_Sequencer.exe / python.exe"
-                        " をすべて終了してから再起動してください。\n\n"
-                        f"ログ: {_app_data_dir() / 'startup.log'}"
+                        _tr(
+                            "runapp.backendCrashedRestart",
+                            detail=detail,
+                            log=log_path,
+                        )
                     )
                     break
                 health_error = _server_health_error()
@@ -256,14 +298,7 @@ def _run_browser_session(
                 )
                 if health_failures < _HEALTH_FAILURES_BEFORE_STOP:
                     continue
-                _message_box(
-                    "アプリ画面は開いていますが、ローカルサーバーが応答しなくなりました。\n"
-                    "タイミングモニタの監視中は、応答が一時的に遅れることがあります。\n\n"
-                    "1. この画面を閉じたあと、アプリを再起動する\n"
-                    "2. 繰り返す場合は VTV_TCP_Sequencer フォルダを"
-                    "ウイルス対策の除外設定に追加する\n\n"
-                    f"ログ: {_app_data_dir() / 'startup.log'}"
-                )
+                _message_box(_tr("runapp.serverUnresponsive", log=log_path))
                 break
     finally:
         if process.poll() is None:
@@ -282,20 +317,12 @@ def _attach_to_existing_server(browser: Path) -> None:
             _run_browser_session(browser)
             return
         time.sleep(0.15)
-    _message_box(
-        "VTV Network Sequencer は起動処理中、または前回のプロセスが残っています。\n"
-        "タスクマネージャーで VTV_TCP_Sequencer.exe を終了し、\n"
-        "少し待ってから再度実行してください。"
-    )
+    _message_box(_tr("runapp.alreadyStarting"))
     raise SystemExit(1)
 
 
 def _port_blocked_message() -> None:
-    _message_box(
-        f"ポート {PORT} は別のプログラムが使用中です。\n"
-        "タスクマネージャーで VTV_TCP_Sequencer.exe が残っていないか確認し、\n"
-        "終了してから再度起動してください。"
-    )
+    _message_box(_tr("runapp.portInUse", port=PORT))
 
 
 def _run_uvicorn() -> None:
@@ -350,15 +377,17 @@ def _run_server_and_browser(browser: Path) -> None:
 
 
 def main() -> None:
+    global _ui_lang
     _ensure_stdio()
-    _log(f"start frozen={getattr(sys, 'frozen', False)} exe={sys.executable}")
+    _ui_lang = normalize_lang(_detect_ui_lang())
+    _log(
+        f"start frozen={getattr(sys, 'frozen', False)} "
+        f"exe={sys.executable} lang={_ui_lang}"
+    )
 
     browser = _find_chromium_browser()
     if browser is None:
-        _message_box(
-            "Microsoft Edge または Google Chrome が見つかりません。\n"
-            "いずれかをインストールしてから再度起動してください。"
-        )
+        _message_box(_tr("runapp.browserNotFound"))
         raise SystemExit(1)
     _log(f"browser={browser}")
 
@@ -388,8 +417,13 @@ if __name__ == "__main__":
         raise
     except Exception as exc:
         _ensure_stdio()
+        if not _ui_lang:
+            _ui_lang = normalize_lang(_detect_ui_lang())
         _message_box(
-            f"起動に失敗しました:\n{exc}\n\n"
-            f"ログ: {_app_data_dir() / 'startup.log'}"
+            _tr(
+                "runapp.startupFailed",
+                detail=exc,
+                log=_startup_log_path(),
+            )
         )
         raise SystemExit(1) from exc

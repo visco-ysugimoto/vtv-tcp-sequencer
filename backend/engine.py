@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 from .catalog import catalog_by_code, format_command
+from .i18n import DEFAULT_LANG, normalize_lang, rebuild_error, t
 from .models import (
     BreakStep,
     CommandStep,
@@ -91,11 +92,13 @@ class SequenceEngine:
         client: DeviceClient,
         on_event: EventHandler,
         stop_event: asyncio.Event,
+        lang: str = DEFAULT_LANG,
     ):
         self.client = client
         self.on_event = on_event
         self.stop_event = stop_event
-        self.catalog = catalog_by_code()
+        self.lang = normalize_lang(lang)
+        self.catalog = catalog_by_code(self.lang)
         self.last_result: CommandResult | None = None
         self.step_number = 0
         self.loop_depth = 0
@@ -128,19 +131,19 @@ class SequenceEngine:
                 return f"{code} {name}"
             return code
         if isinstance(step, DelayStep):
-            return f"待機 {step.milliseconds}ms"
+            return t("engine.step.delay", self.lang, ms=step.milliseconds)
         if isinstance(step, IfStep):
-            return "条件"
+            return t("engine.step.condition", self.lang)
         if isinstance(step, LoopStep):
-            return f"ループ ×{step.count}"
+            return t("engine.step.loop", self.lang, count=step.count)
         if isinstance(step, NoteStep):
             text = step.text.strip()
             if not text:
-                return "メモ"
-            return f"メモ {text[:40]}"
+                return t("engine.step.note", self.lang)
+            return t("engine.step.noteText", self.lang, text=text[:40])
         if isinstance(step, VariableStep):
-            name = step.name.strip() or "無名"
-            return f"変数 {name}"
+            name = step.name.strip() or t("engine.step.unnamed", self.lang)
+            return t("engine.step.variable", self.lang, name=name)
         return "BREAK"
 
     def _step_event(
@@ -181,7 +184,7 @@ class SequenceEngine:
             await self.on_event(
                 {
                     "type": "sequence_stopped",
-                    "message": "ユーザーが停止しました",
+                    "message": t("engine.stoppedByUser", self.lang),
                     **self._outcome(),
                 }
             )
@@ -202,9 +205,7 @@ class SequenceEngine:
                 await self._run_delay(step)
             elif isinstance(step, BreakStep):
                 if self.loop_depth == 0:
-                    raise ProtocolError(
-                        "BREAKカードはループの中で使用してください"
-                    )
+                    raise ProtocolError("engine.breakOutsideLoop")
                 await self.on_event(self._step_event("loop_break", step, current))
                 await self.on_event(
                     self._step_event("step_completed", step, current)
@@ -239,7 +240,9 @@ class SequenceEngine:
             if not name:
                 continue
             if name not in self.variables:
-                raise ProtocolError(f"{step.command}: 変数「{name}」はまだありません")
+                raise ProtocolError(
+                    "engine.variableNotDefined", code=step.command, name=name
+                )
             resolved[key] = self.variables[name]
         return resolved
 
@@ -251,7 +254,7 @@ class SequenceEngine:
     def _store_variable(self, step: VariableStep) -> str:
         name = step.name.strip()
         if not name:
-            raise ProtocolError("変数カードに名前を入力してください")
+            raise ProtocolError("engine.variableNameRequired")
         value = self._read_variable_source(step)
         self.variables[name] = value
         return value
@@ -262,44 +265,39 @@ class SequenceEngine:
         if step.source == "last_response":
             text = self.last_response.strip()
             if not text:
-                raise ProtocolError("直前の応答がありません")
+                raise ProtocolError("engine.noLastResponse")
             return text
         if step.source == "last_status":
             if self.last_result is None or not self.last_result.status:
-                raise ProtocolError("直前の結果がありません")
+                raise ProtocolError("engine.noLastResult")
             return self.last_result.status
         if step.source in {"card_response", "card_status"}:
             result = self.card_results.get(step.card_id)
             if result is None:
-                raise ProtocolError(
-                    "指定したカードの結果がありません。先にそのカードを実行してください"
-                )
+                raise ProtocolError("engine.cardResultMissing")
             if step.source == "card_status":
                 return result.status
             text = result.responses[-1].strip() if result.responses else ""
             if not text:
-                raise ProtocolError("指定したカードの応答がありません")
+                raise ProtocolError("engine.cardResponseMissing")
             return text
         if step.source == "output_port":
             return self._read_output_port(step.port)
         if step.source == "result_data":
             return self._read_result_data(step)
-        raise ProtocolError("変数の取り方が不正です")
+        raise ProtocolError("engine.variableSourceInvalid")
 
     def _read_result_data(self, step: VariableStep) -> str:
         settings = self.client.settings
         if settings.transport == "tcp":
-            raise ProtocolError(
-                "TCP では結果データ出力を直接読めません。"
-                "コマンドの応答を選んでください"
-            )
+            raise ProtocolError("engine.resultDataNoTcp")
         offset = int(step.offset)
         if offset < 0 or offset % 2:
-            raise ProtocolError("結果データの相対アドレスは 0 以上の偶数にしてください")
+            raise ProtocolError("engine.resultOffsetInvalid")
         size = int(settings.result_data_size)
         if offset + 2 > size:
             raise ProtocolError(
-                f"結果データの相対アドレス +{offset:04d} は範囲外です"
+                "engine.resultOffsetOutOfRange", offset=f"{offset:04d}"
             )
         if step.result_format == "string":
             return self._read_result_string(offset)
@@ -311,14 +309,14 @@ class SequenceEngine:
         if settings.transport == "plclink":
             memory = getattr(self.client, "memory", None)
             if memory is None:
-                raise ProtocolError("結果データ出力を読めません")
+                raise ProtocolError("engine.resultReadUnavailable")
             address = int(settings.result_data_address) + offset
             try:
                 return int(memory.read_dword(address))
             except (IndexError, ValueError) as exc:
-                raise ProtocolError("結果データ出力の読み出し範囲外です") from exc
+                raise ProtocolError("engine.resultReadOutOfRange") from exc
         if settings.transport != "field_network":
-            raise ProtocolError("結果データ出力を読めません")
+            raise ProtocolError("engine.resultReadUnavailable")
         from .field_network.layout import build_layout
 
         layout = build_layout(
@@ -331,7 +329,7 @@ class SequenceEngine:
         data = self.client.read_input()
         pos = (layout.result_word + offset) * 2
         if pos < 0 or pos + 3 >= len(data):
-            raise ProtocolError("結果データ出力の読み出し範囲外です")
+            raise ProtocolError("engine.resultReadOutOfRange")
         low = data[pos] | (data[pos + 1] << 8)
         high = data[pos + 2] | (data[pos + 3] << 8)
         value = (high << 16) | low
@@ -346,14 +344,14 @@ class SequenceEngine:
         if settings.transport == "plclink":
             memory = getattr(self.client, "memory", None)
             if memory is None:
-                raise ProtocolError("結果データ出力を読めません")
+                raise ProtocolError("engine.resultReadUnavailable")
             address = int(settings.result_data_address) + offset
             try:
                 return [int(word) & 0xFFFF for word in memory.read_words(address, count)]
             except (IndexError, ValueError) as exc:
-                raise ProtocolError("結果データ出力の読み出し範囲外です") from exc
+                raise ProtocolError("engine.resultReadOutOfRange") from exc
         if settings.transport != "field_network":
-            raise ProtocolError("結果データ出力を読めません")
+            raise ProtocolError("engine.resultReadUnavailable")
         from .field_network.layout import build_layout
 
         layout = build_layout(
@@ -404,19 +402,16 @@ class SequenceEngine:
             return self._read_plo(port)
         if transport == "field_network":
             return self._read_eso(port)
-        raise ProtocolError(
-            "TCP では出力ポートを直接読めません。"
-            "コマンドの応答を変数に入れてください"
-        )
+        raise ProtocolError("engine.outputPortNoTcp")
 
     def _read_plo(self, port: int) -> str:
         settings = self.client.settings
         count = max(1, int(settings.plo_port_count))
         if port < 1 or port > count:
-            raise ProtocolError(f"PLO ポート {port} は範囲外です（1–{count}）")
+            raise ProtocolError("engine.ploOutOfRange", port=port, max=count)
         memory = getattr(self.client, "memory", None)
         if memory is None:
-            raise ProtocolError("PLO を読めません")
+            raise ProtocolError("engine.ploReadUnavailable")
         bit = memory.get_bit(int(settings.plo_address) + port - 1)
         return "1" if bit else "0"
 
@@ -426,9 +421,9 @@ class SequenceEngine:
         settings = self.client.settings
         count = int(settings.fn_eso_ports)
         if count <= 0:
-            raise ProtocolError("ESO ポート数が 0 です")
+            raise ProtocolError("engine.esoPortsZero")
         if port < 1 or port > count:
-            raise ProtocolError(f"ESO ポート {port} は範囲外です（1–{count}）")
+            raise ProtocolError("engine.esoOutOfRange", port=port, max=count)
         layout = build_layout(
             esi_ports=settings.fn_esi_ports,
             eso_ports=settings.fn_eso_ports,
@@ -440,17 +435,17 @@ class SequenceEngine:
         scanner = getattr(self.client, "scanner", None)
         buffers = getattr(scanner, "buffers", None)
         if buffers is None:
-            raise ProtocolError("ESO を読めません")
+            raise ProtocolError("engine.esoReadUnavailable")
         try:
             value = buffers.get_in_bit(bit)
         except (IndexError, ValueError) as exc:
-            raise ProtocolError("ESO の読み出し範囲外です") from exc
+            raise ProtocolError("engine.esoReadOutOfRange") from exc
         return "1" if value else "0"
 
     async def _run_command(self, step: CommandStep, index: int) -> None:
         code = step.command.upper()
         if code not in self.catalog:
-            raise ProtocolError(f"未定義のコマンドです: {code}")
+            raise ProtocolError("engine.undefinedCommand", code=code)
         definition = self.catalog[code]
         transport = self.client.settings.transport
         arguments = self._resolve_arguments(step)
@@ -483,7 +478,9 @@ class SequenceEngine:
                     }
                 )
             if result.status in {"NK", "ER"}:
-                raise ProtocolError(f"{code} が {result.status} を返しました")
+                raise ProtocolError(
+                    "engine.commandReturned", code=code, status=result.status
+                )
             return
 
         if transport == "plclink" or transport == "field_network":
@@ -516,7 +513,7 @@ class SequenceEngine:
                     self.client.settings.line_number_digits,
                 )
             except ValueError as exc:
-                raise ProtocolError(str(exc)) from exc
+                raise rebuild_error(exc, ProtocolError) from exc
 
             framed = frame_outbound_command(command, self.client.settings)
             await self.on_event(
@@ -556,7 +553,9 @@ class SequenceEngine:
         if step.ignore_response:
             return
         if result.status in {"NK", "ER"}:
-            raise ProtocolError(f"{code} が {result.status} を返しました")
+            raise ProtocolError(
+                "engine.commandReturned", code=code, status=result.status
+            )
 
     async def _run_delay(self, step: DelayStep) -> None:
         remaining = step.milliseconds / 1000

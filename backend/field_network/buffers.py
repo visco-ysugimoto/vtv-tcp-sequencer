@@ -5,6 +5,8 @@ from __future__ import annotations
 import threading
 from typing import Literal
 
+from ..i18n import LocalizedError, LocalizedIndexError
+
 ByteOrder = Literal["high_low", "low_high"]
 
 
@@ -25,13 +27,13 @@ class AssemblyMemory:
 
     def replace_output(self, data: bytes | bytearray) -> None:
         if len(data) != self.output_size:
-            raise ValueError("出力サイズ不一致")
+            raise LocalizedError("buffers.outputSizeMismatch")
         with self._lock:
             self._out[:] = data
 
     def replace_input(self, data: bytes | bytearray) -> None:
         if len(data) != self.input_size:
-            raise ValueError("入力サイズ不一致")
+            raise LocalizedError("buffers.inputSizeMismatch")
         with self._lock:
             self._in[:] = data
 
@@ -73,21 +75,27 @@ class AssemblyMemory:
         with self._lock:
             byte_index = bit_address // 8
             if byte_index < 0 or byte_index >= len(self._in):
-                raise IndexError(f"IN ビット範囲外: {bit_address}")
+                raise LocalizedIndexError(
+                    "buffers.inBitOutOfRange", address=bit_address
+                )
             return 1 if self._in[byte_index] & (1 << (bit_address % 8)) else 0
 
     def get_out_bit(self, bit_address: int) -> int:
         with self._lock:
             byte_index = bit_address // 8
             if byte_index < 0 or byte_index >= len(self._out):
-                raise IndexError(f"OUT ビット範囲外: {bit_address}")
+                raise LocalizedIndexError(
+                    "buffers.outBitOutOfRange", address=bit_address
+                )
             return 1 if self._out[byte_index] & (1 << (bit_address % 8)) else 0
 
     def set_out_bit(self, bit_address: int, value: int) -> None:
         with self._lock:
             byte_index = bit_address // 8
             if byte_index < 0 or byte_index >= len(self._out):
-                raise IndexError(f"OUT ビット範囲外: {bit_address}")
+                raise LocalizedIndexError(
+                    "buffers.outBitOutOfRange", address=bit_address
+                )
             mask = 1 << (bit_address % 8)
             if value:
                 self._out[byte_index] |= mask
@@ -99,7 +107,9 @@ def _read_words(buf: bytearray, word_index: int, count: int) -> list[int]:
     start = word_index * 2
     end = start + count * 2
     if start < 0 or end > len(buf):
-        raise IndexError(f"ワード範囲外: {word_index}+{count}")
+        raise LocalizedIndexError(
+            "buffers.wordOutOfRange", index=word_index, count=count
+        )
     words: list[int] = []
     for offset in range(start, end, 2):
         words.append(buf[offset] | (buf[offset + 1] << 8))
@@ -110,7 +120,9 @@ def _write_words(buf: bytearray, word_index: int, values: list[int]) -> None:
     start = word_index * 2
     end = start + len(values) * 2
     if start < 0 or end > len(buf):
-        raise IndexError(f"ワード範囲外: {word_index}+{len(values)}")
+        raise LocalizedIndexError(
+            "buffers.wordOutOfRange", index=word_index, count=len(values)
+        )
     for index, value in enumerate(values):
         offset = start + index * 2
         unsigned = value & 0xFFFF

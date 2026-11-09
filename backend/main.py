@@ -4,11 +4,14 @@ import asyncio
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Annotated
 
 from fastapi import (
+    Depends,
     FastAPI,
     File,
     HTTPException,
+    Request,
     UploadFile,
     WebSocket,
     WebSocketDisconnect,
@@ -24,6 +27,13 @@ from .engine import DeviceClient, SequenceEngine, create_client
 from .field_network import FieldNetworkClient, parse_eds_text
 from .field_network.layout import build_layout
 from .field_network.monitor import read_assembly_items
+from .i18n import (
+    DEFAULT_LANG,
+    LocalizedMixin,
+    error_message,
+    get_request_lang,
+    t,
+)
 from .local_io import apply_local_io
 from .models import (
     LocalIoRequest,
@@ -63,9 +73,17 @@ FRONTEND = frontend_dir()
 async def disable_frontend_cache(request, call_next):
     response = await call_next(request)
     path = request.url.path
-    if path == "/" or path.endswith((".html", ".js", ".css")):
+    if path == "/" or path.endswith((".html", ".js", ".css", ".json")):
         response.headers["Cache-Control"] = "no-cache, must-revalidate"
     return response
+
+
+def request_lang(request: Request) -> str:
+    """Accept-Language（または ?lang=）から言語を決める FastAPI 依存関係。"""
+    return get_request_lang(request)
+
+
+Lang = Annotated[str, Depends(request_lang)]
 
 
 class EdsImportResult(BaseModel):
@@ -73,23 +91,40 @@ class EdsImportResult(BaseModel):
     suggested: dict[str, object]
 
 
-def _plclink_listen_info(settings: ProtocolSettings, client: PlcLinkClient) -> dict[str, object]:
+def _plclink_listen_info(
+    settings: ProtocolSettings,
+    client: PlcLinkClient,
+    lang: str = DEFAULT_LANG,
+) -> dict[str, object]:
     targets = connect_targets(settings.port)
     preferred = next(
-        (t for t in targets if t.startswith("192.168.")),
-        targets[0] if targets else f"このPCのIP:{settings.port}",
+        (target for target in targets if target.startswith("192.168.")),
+        targets[0]
+        if targets
+        else t("main.thisPcIp", lang, port=settings.port),
     )
+    client_count = client.server.client_count
+    connected_targets = [
+        target
+        for target in getattr(client.server, "connected_targets", ())
+        if target
+    ]
+    if client_count > 0 and connected_targets:
+        shown = " / ".join(connected_targets)
+        message = t("main.plclinkConnected", lang, preferred=shown)
+    elif client_count > 0:
+        message = t("main.plclinkConnectedPlain", lang)
+    else:
+        message = t("main.plclinkListening", lang, preferred=preferred)
     return {
         "status": "listening",
         "bind": f"0.0.0.0:{settings.port}",
         "port": settings.port,
         "connect_targets": targets,
         "preferred_target": preferred,
-        "client_count": client.server.client_count,
-        "message": (
-            f"疑似 PLC 待受中（{preferred}）。"
-            f" VTV の PLCLINK 接続先を {preferred} に設定してください"
-        ),
+        "connected_targets": connected_targets,
+        "client_count": client_count,
+        "message": message,
     }
 
 
@@ -193,10 +228,10 @@ async def health() -> dict[str, bool]:
 
 
 @app.get("/api/catalog")
-async def get_catalog() -> list[dict]:
-    catalog = load_catalog()
+async def get_catalog(lang: Lang) -> list[dict]:
+    catalog = load_catalog(lang=lang)
     for item in catalog:
-        meta = command_metadata(item["code"])
+        meta = command_metadata(item["code"], lang)
         item.update(meta)
         # 旧メタデータに FN キーが無い場合のみ PLCLINK と同型として補完
         item.setdefault("field_network_supported", meta.get("plclink_supported"))
@@ -207,19 +242,25 @@ async def get_catalog() -> list[dict]:
 
 
 @app.post("/api/plclink/start")
-async def start_plclink(settings: ProtocolSettings) -> dict[str, object]:
+async def start_plclink(
+    settings: ProtocolSettings, lang: Lang
+) -> dict[str, object]:
     """疑似 PLC の待受だけ開始する（VTV 接続待ちなし）。"""
     if settings.transport != "plclink":
-        raise HTTPException(status_code=400, detail="PLCLINK モード専用です")
+        raise HTTPException(
+            status_code=400, detail=t("main.plclinkOnly", lang)
+        )
     try:
         client = await _ensure_plclink_started(settings)
     except ProtocolError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return _plclink_listen_info(settings, client)
+        raise HTTPException(
+            status_code=502, detail=error_message(exc, lang)
+        ) from exc
+    return _plclink_listen_info(settings, client, lang)
 
 
 @app.get("/api/plclink/status")
-async def plclink_status() -> dict[str, object]:
+async def plclink_status(lang: Lang) -> dict[str, object]:
     client = _plclink_client
     if client is None or not client.server.is_running:
         return {
@@ -227,20 +268,26 @@ async def plclink_status() -> dict[str, object]:
             "bind": None,
             "connect_targets": connect_targets(5000),
             "client_count": 0,
-            "message": "疑似 PLC は停止しています",
+            "message": t("main.plclinkStopped", lang),
         }
-    return _plclink_listen_info(client.settings, client)
+    return _plclink_listen_info(client.settings, client, lang)
 
 
 @app.post("/api/field-network/connect")
-async def connect_field_network(settings: ProtocolSettings) -> dict[str, object]:
+async def connect_field_network(
+    settings: ProtocolSettings, lang: Lang
+) -> dict[str, object]:
     if settings.transport != "field_network":
-        raise HTTPException(status_code=400, detail="Field Network モード専用です")
+        raise HTTPException(
+            status_code=400, detail=t("main.fieldNetworkOnly", lang)
+        )
     try:
         client = await _ensure_field_network_connected(settings)
         await client.wait_for_communication()
     except (ProtocolError, ValidationError) as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=502, detail=_exception_message(exc, lang)
+        ) from exc
     stats = client.scanner.buffers.stats
     return {
         "status": "connected",
@@ -251,19 +298,19 @@ async def connect_field_network(settings: ProtocolSettings) -> dict[str, object]
         "rpi_us": settings.fn_rpi_us,
         "layout": client.layout.to_dict(),
         "stats": stats,
-        "message": (
-            f"EtherNet/IP Class 1 接続済み（{settings.host}:{settings.port}）"
+        "message": t(
+            "main.fnConnected", lang, host=settings.host, port=settings.port
         ),
     }
 
 
 @app.get("/api/field-network/status")
-async def field_network_status() -> dict[str, object]:
+async def field_network_status(lang: Lang) -> dict[str, object]:
     client = _field_network_client
     if client is None or not client.is_connected:
         return {
             "status": "disconnected",
-            "message": "Field Network は未接続です",
+            "message": t("main.fnNotConnectedStatus", lang),
             "stats": {},
         }
     return {
@@ -272,27 +319,36 @@ async def field_network_status() -> dict[str, object]:
         "port": client.settings.port,
         "layout": client.layout.to_dict(),
         "stats": client.scanner.buffers.stats,
-        "message": "Field Network 接続中",
+        "message": t("main.fnConnectedStatus", lang),
         "error": client.scanner.last_error,
     }
 
 
 @app.post("/api/field-network/disconnect")
-async def disconnect_field_network() -> dict[str, str]:
+async def disconnect_field_network(lang: Lang) -> dict[str, str]:
     await _close_field_network_client()
-    return {"status": "disconnected", "message": "Field Network を切断しました"}
+    return {
+        "status": "disconnected",
+        "message": t("main.fnDisconnected", lang),
+    }
 
 
 @app.post("/api/field-network/eds/import")
-async def import_eds(file: UploadFile = File(...)) -> EdsImportResult:
+async def import_eds(
+    lang: Lang, file: UploadFile = File(...)
+) -> EdsImportResult:
     raw = await file.read()
     if len(raw) > 2_000_000:
-        raise HTTPException(status_code=400, detail="EDS ファイルが大きすぎます")
+        raise HTTPException(
+            status_code=400, detail=t("main.edsTooLarge", lang)
+        )
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         text = raw.decode("cp932", errors="replace")
-    info = parse_eds_text(text, source_name=file.filename or "import.eds")
+    info = parse_eds_text(
+        text, source_name=file.filename or "import.eds", lang=lang
+    )
     suggested: dict[str, object] = {
         "fn_input_size": info.input_size,
         "fn_output_size": info.output_size,
@@ -330,14 +386,18 @@ async def import_eds(file: UploadFile = File(...)) -> EdsImportResult:
             suggested["response_size"] = response
             suggested["result_data_size"] = result
             suggested["fn_eso_ports"] = 0
-        info.warnings.append(str(exc))
+        info.warnings.append(error_message(exc, lang))
     return EdsImportResult(eds=info.to_dict(), suggested=suggested)
 
 
 @app.post("/api/field-network/layout/preview")
-async def preview_layout(settings: ProtocolSettings) -> dict[str, object]:
+async def preview_layout(
+    settings: ProtocolSettings, lang: Lang
+) -> dict[str, object]:
     if settings.transport != "field_network":
-        raise HTTPException(status_code=400, detail="Field Network モード専用です")
+        raise HTTPException(
+            status_code=400, detail=t("main.fieldNetworkOnly", lang)
+        )
     try:
         layout = build_layout(
             esi_ports=settings.fn_esi_ports,
@@ -347,7 +407,9 @@ async def preview_layout(settings: ProtocolSettings) -> dict[str, object]:
             result_words=settings.result_data_size,
         )
     except ProtocolError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=400, detail=error_message(exc, lang)
+        ) from exc
     return {
         "layout": layout.to_dict(),
         "match_input": layout.input_bytes == settings.fn_input_size,
@@ -358,55 +420,67 @@ async def preview_layout(settings: ProtocolSettings) -> dict[str, object]:
 
 
 @app.post("/api/test-connection")
-async def test_connection(settings: ProtocolSettings) -> dict[str, str]:
+async def test_connection(
+    settings: ProtocolSettings, lang: Lang
+) -> dict[str, str]:
     try:
         if settings.transport == "plclink":
             client = await _get_plclink_client(settings)
             await client.wait_for_communication()
-            preferred = _plclink_listen_info(settings, client)["preferred_target"]
+            preferred = _plclink_listen_info(settings, client, lang)[
+                "preferred_target"
+            ]
             return {
                 "status": "connected",
-                "message": f"VTV との MC 3E 通信を確認しました（{preferred}）",
+                "message": t("main.testPlclinkOk", lang, preferred=preferred),
             }
         if settings.transport == "field_network":
             client = await _ensure_field_network_connected(settings)
             await client.wait_for_communication()
             return {
                 "status": "connected",
-                "message": (
-                    f"EtherNet/IP Implicit I/O を確認しました"
-                    f"（{settings.host}:{settings.port}）"
+                "message": t(
+                    "main.testFnOk",
+                    lang,
+                    host=settings.host,
+                    port=settings.port,
                 ),
             }
         async with create_client(settings):
             return {"status": "connected"}
     except ProtocolError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=502, detail=error_message(exc, lang)
+        ) from exc
 
 
 @app.post("/api/local-io")
-async def apply_local_io_endpoint(request: LocalIoRequest) -> dict[str, object]:
+async def apply_local_io_endpoint(
+    request: LocalIoRequest, lang: Lang
+) -> dict[str, object]:
     """PLI/ESI ポートを ON/OFF する（シーケンス実行中でも可）。"""
     settings = request.settings
     code = request.code.upper()
     try:
         if code == "PLI":
             if settings.transport != "plclink":
-                raise ProtocolError("PLI は PLCLINK 接続時のみ使用できます")
+                raise ProtocolError("main.pliPlclinkOnly")
             client = await _get_plclink_client(settings)
         elif code == "ESI":
             if settings.transport != "field_network":
-                raise ProtocolError("ESI は Field Network 接続時のみ使用できます")
+                raise ProtocolError("main.esiFnOnly")
             client = await _ensure_field_network_connected(settings)
         else:
-            raise ProtocolError(f"未対応のローカル I/O です: {code}")
+            raise ProtocolError("main.localIoUnsupported", code=code)
         result = await apply_local_io(
             client,
             code=code,
             arguments={"state": request.state, "ports": request.ports},
         )
     except ProtocolError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=400, detail=error_message(exc, lang)
+        ) from exc
     return {
         "status": result.status,
         "display": result.command,
@@ -415,12 +489,14 @@ async def apply_local_io_endpoint(request: LocalIoRequest) -> dict[str, object]:
 
 
 @app.post("/api/plclink/memory/read")
-async def read_plclink_memory(request: MemoryReadRequest) -> dict[str, object]:
+async def read_plclink_memory(
+    request: MemoryReadRequest, lang: Lang
+) -> dict[str, object]:
     client = _plclink_client
     if client is None or not client.server.is_running:
         raise HTTPException(
             status_code=503,
-            detail="疑似PLCが起動していません。先に接続テストを行ってください。",
+            detail=t("main.plcNotRunningRunTest", lang),
         )
     values = read_memory_items(
         client.memory,
@@ -432,12 +508,14 @@ async def read_plclink_memory(request: MemoryReadRequest) -> dict[str, object]:
 
 
 @app.post("/api/field-network/memory/read")
-async def read_field_network_memory(request: MemoryReadRequest) -> dict[str, object]:
+async def read_field_network_memory(
+    request: MemoryReadRequest, lang: Lang
+) -> dict[str, object]:
     client = _field_network_client
     if client is None or not client.is_connected:
         raise HTTPException(
             status_code=503,
-            detail="Field Network 未接続です。先に接続テストを行ってください。",
+            detail=t("main.fnNotConnectedRunTest", lang),
         )
     values = read_assembly_items(
         client.read_input(),
@@ -481,6 +559,7 @@ def _watch_edge_keys(
 @app.websocket("/ws/watch")
 async def watch_websocket(websocket: WebSocket) -> None:
     """高速監視ストリーム。items を登録後、interval_ms でサンプルを push する。"""
+    lang = get_request_lang(websocket)
     await websocket.accept()
     stop_event = asyncio.Event()
     loop_task: asyncio.Task[None] | None = None
@@ -515,14 +594,19 @@ async def watch_websocket(websocket: WebSocket) -> None:
                 await websocket.send_json({"type": "pong", "t": message.get("t")})
                 continue
             if msg_type != "start":
-                await websocket.send_json({"type": "error", "message": "不明な操作です"})
+                await websocket.send_json(
+                    {"type": "error", "message": t("main.unknownOperation", lang)}
+                )
                 continue
 
             await stop_loop()
             transport = message.get("transport")
             if transport not in {"plclink", "field_network"}:
                 await websocket.send_json(
-                    {"type": "error", "message": "transport は plclink / field_network のみです"}
+                    {
+                        "type": "error",
+                        "message": t("main.transportInvalid", lang),
+                    }
                 )
                 continue
             try:
@@ -532,12 +616,12 @@ async def watch_websocket(websocket: WebSocket) -> None:
                 ]
             except ValidationError as exc:
                 await websocket.send_json(
-                    {"type": "error", "message": _validation_message(exc)}
+                    {"type": "error", "message": _validation_message(exc, lang)}
                 )
                 continue
             if not items:
                 await websocket.send_json(
-                    {"type": "error", "message": "監視アドレスがありません"}
+                    {"type": "error", "message": t("main.watchNoItems", lang)}
                 )
                 continue
 
@@ -549,7 +633,7 @@ async def watch_websocket(websocket: WebSocket) -> None:
                     if selected_transport == "plclink":
                         client = _plclink_client
                         if client is None or not client.server.is_running:
-                            raise RuntimeError("疑似PLCが起動していません")
+                            raise ProtocolError("main.watchPlcNotRunning")
                         return read_memory_items(
                             client.memory,
                             selected_items,
@@ -558,7 +642,7 @@ async def watch_websocket(websocket: WebSocket) -> None:
                         )
                     client = _field_network_client
                     if client is None or not client.is_connected:
-                        raise RuntimeError("Field Network 未接続です")
+                        raise ProtocolError("main.watchFnNotConnected")
                     return read_assembly_items(
                         client.read_input(),
                         client.read_output(),
@@ -601,6 +685,7 @@ async def watch_websocket(websocket: WebSocket) -> None:
                     send_json=send_json,
                     should_stop=stop_event.is_set,
                     take_edges=take_edges,
+                    lang=lang,
                 )
             )
             await websocket.send_json(
@@ -621,6 +706,7 @@ async def watch_websocket(websocket: WebSocket) -> None:
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
+    lang = get_request_lang(websocket)
     await websocket.accept()
     stop_event = asyncio.Event()
     try:
@@ -628,7 +714,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             message = await websocket.receive_json()
             if message.get("type") != "execute":
                 await websocket.send_json(
-                    {"type": "error", "message": "不明な操作です"}
+                    {"type": "error", "message": t("main.unknownOperation", lang)}
                 )
                 continue
             try:
@@ -637,7 +723,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 await websocket.send_json(
                     {
                         "type": "sequence_failed",
-                        "message": _validation_message(exc),
+                        "message": _validation_message(exc, lang),
                         "duration_ms": 0,
                         "last_response": "",
                     }
@@ -646,7 +732,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
             stop_event.clear()
             run_task = asyncio.create_task(
-                _execute_sequence(websocket, request, stop_event)
+                _execute_sequence(websocket, request, stop_event, lang)
             )
             while not run_task.done():
                 receive_task = asyncio.create_task(websocket.receive_json())
@@ -670,6 +756,7 @@ async def _execute_sequence(
     websocket: WebSocket,
     request: SequenceRequest,
     stop_event: asyncio.Event,
+    lang: str = DEFAULT_LANG,
 ) -> None:
     started = time.perf_counter()
     meta: dict[str, object] = {
@@ -719,7 +806,7 @@ async def _execute_sequence(
             await send_event(
                 {"type": "connection", "state": "connected"}
             )
-            engine = SequenceEngine(client, send_event, stop_event)
+            engine = SequenceEngine(client, send_event, stop_event, lang=lang)
             await engine.run(request.steps)
 
         if settings.transport == "plclink":
@@ -730,19 +817,31 @@ async def _execute_sequence(
             async with create_client(settings) as client:
                 await run_with_client(client)
     except ProtocolError as exc:
-        await send_event(failed(str(exc)))
+        await send_event(failed(error_message(exc, lang)))
     except Exception as exc:
-        await send_event(failed(f"予期しないエラー: {exc}"))
+        await send_event(
+            failed(t("main.unexpectedError", lang, detail=str(exc)))
+        )
     finally:
         if settings.transport not in {"plclink", "field_network"}:
             await send_event({"type": "connection", "state": "disconnected"})
 
 
-def _validation_message(exc: ValidationError) -> str:
+def _validation_message(exc: ValidationError, lang: str = DEFAULT_LANG) -> str:
     errors = exc.errors()
     if not errors:
-        return "入力内容が不正です"
-    return str(errors[0].get("msg", "入力内容が不正です"))
+        return t("validation.invalidInput", lang)
+    first = errors[0]
+    inner = (first.get("ctx") or {}).get("error")
+    if isinstance(inner, LocalizedMixin):
+        return inner.localize(lang)
+    return str(first.get("msg", t("validation.invalidInput", lang)))
+
+
+def _exception_message(exc: Exception, lang: str = DEFAULT_LANG) -> str:
+    if isinstance(exc, ValidationError):
+        return _validation_message(exc, lang)
+    return error_message(exc, lang)
 
 
 @app.get("/api/version")

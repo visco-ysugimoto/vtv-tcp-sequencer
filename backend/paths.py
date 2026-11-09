@@ -17,3 +17,7 @@ def frontend_dir() -> Path:
 
 def catalog_dir() -> Path:
     return project_root() / "backend" / "catalog"
+
+
+def locales_dir() -> Path:
+    return project_root() / "backend" / "locales"

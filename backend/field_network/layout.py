@@ -130,8 +130,9 @@ class AssemblyLayout:
 def ports_to_words(ports: int) -> int:
     if ports not in VALID_IO_PORTS:
         raise ProtocolError(
-            f"ESI/ESO ポート数は {VALID_IO_PORTS} のいずれかを指定してください"
-            f"（指定: {ports}）"
+            "layout.invalidIoPorts",
+            valid=str(VALID_IO_PORTS),
+            ports=ports,
         )
     return ports // 16
 
@@ -147,11 +148,11 @@ def build_layout(
     ports_to_words(esi_ports)
     ports_to_words(eso_ports)
     if command_words < 4 or command_words % 2:
-        raise ProtocolError("コマンドデータサイズは 4 以上の偶数ワードにしてください")
+        raise ProtocolError("layout.commandWords")
     if response_words < 4 or response_words % 2:
-        raise ProtocolError("レスポンスデータサイズは 4 以上の偶数ワードにしてください")
+        raise ProtocolError("layout.responseWords")
     if result_words < 0 or result_words % 2:
-        raise ProtocolError("結果データ出力サイズは 0 以上の偶数ワードにしてください")
+        raise ProtocolError("layout.resultWords")
     return AssemblyLayout(
         esi_ports=esi_ports,
         eso_ports=eso_ports,
@@ -170,11 +171,11 @@ def suggest_layout_from_sizes(
 ) -> dict[str, int]:
     """EDS の入出力バイト数から ESI/ESO・コマンド／結果／レスポンスを推定する。"""
     if input_bytes % 2 or output_bytes % 2:
-        raise ProtocolError("入出力サイズは偶数バイトである必要があります")
+        raise ProtocolError("layout.ioSizeEven")
     in_words = input_bytes // 2
     out_words = output_bytes // 2
     if in_words < 6 or out_words < 6:
-        raise ProtocolError("入出力サイズが Field Network コマンド用途として小さすぎます")
+        raise ProtocolError("layout.ioSizeTooSmall")
 
     # 出力: reserved(2) + ESI + command
     out_candidates: list[tuple[int, int, int]] = []
@@ -188,7 +189,7 @@ def suggest_layout_from_sizes(
         out_candidates.append((score, esi_ports, command))
     if not out_candidates:
         raise ProtocolError(
-            f"出力サイズ {output_bytes} bytes から ESI/コマンド割付を推定できません"
+            "layout.cannotInferOutput", output_bytes=output_bytes
         )
     out_candidates.sort()
     _, esi_ports, command_words = out_candidates[0]
@@ -217,7 +218,7 @@ def suggest_layout_from_sizes(
             in_candidates.append((score, eso_ports, result, response))
     if not in_candidates:
         raise ProtocolError(
-            f"入力サイズ {input_bytes} bytes から ESO/結果/レスポンス割付を推定できません"
+            "layout.cannotInferInput", input_bytes=input_bytes
         )
     in_candidates.sort()
     _, eso_ports, result_words, response_words = in_candidates[0]
@@ -252,15 +253,15 @@ def validate_layout_against_sizes(
     """計算サイズと EDS／接続サイズの一致を検証する。"""
     if layout.input_bytes != input_bytes:
         raise ProtocolError(
-            "入力アセンブリサイズが一致しません: "
-            f"割付 {layout.input_bytes} bytes ≠ EDS/設定 {input_bytes} bytes。"
-            " ESI/ESO・結果・レスポンス語数と EDS を合わせてください"
+            "layout.inputSizeMismatch",
+            allocated=layout.input_bytes,
+            expected=input_bytes,
         )
     if layout.output_bytes != output_bytes:
         raise ProtocolError(
-            "出力アセンブリサイズが一致しません: "
-            f"割付 {layout.output_bytes} bytes ≠ EDS/設定 {output_bytes} bytes。"
-            " ESI・コマンド語数と EDS を合わせてください"
+            "layout.outputSizeMismatch",
+            allocated=layout.output_bytes,
+            expected=output_bytes,
         )
 
 
@@ -277,14 +278,14 @@ def resolve_status_signal_bit(signal: object, layout: AssemblyLayout) -> int:
     if source == "status":
         bit = getattr(signal, "bit", None)
         if bit is None:
-            raise ProtocolError("ステータス領域割付には bit 番号が必要です")
+            raise ProtocolError("layout.statusBitRequired")
         return int(bit)
     if source == "eso":
         port = getattr(signal, "eso_port", None)
         if port is None:
-            raise ProtocolError("ESO 割付にはポート番号が必要です")
+            raise ProtocolError("layout.esoPortRequired")
         return layout.eso_byte * 8 + (int(port) - 1)
-    raise ProtocolError(f"不明なステータス割付先です: {source}")
+    raise ProtocolError("layout.unknownStatusSource", source=source)
 
 
 def describe_status_signal(signal: object) -> str:

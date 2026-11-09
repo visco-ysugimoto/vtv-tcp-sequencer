@@ -11,8 +11,15 @@ import time
 from dataclasses import dataclass, field
 
 from ..bit_edges import BitEdgeLog, resolve_mono
+from ..i18n import LocalizedError, LocalizedMixin, Msg, MsgJoin
 from ..protocol import ProtocolError
 from .eds import parse_connection_path
+
+
+
+class ScannerError(LocalizedMixin, OSError):
+    """Scanner の I/O 失敗。メッセージキー付きで言語別に取り出せる。"""
+
 
 EIP_PORT = 44818
 IO_UDP_PORT = 2222
@@ -92,8 +99,10 @@ class IoBuffers:
 
     def write_output(self, data: bytes | bytearray) -> None:
         if len(data) != self.output_size:
-            raise ValueError(
-                f"出力サイズ不一致: {len(data)} != {self.output_size}"
+            raise LocalizedError(
+                "fn.outputSizeMismatch",
+                actual=len(data),
+                expected=self.output_size,
             )
         now = resolve_mono(None)
         incoming = bytes(data)
@@ -114,7 +123,7 @@ class IoBuffers:
         new_bit = 1 if int(value) else 0
         with self._lock:
             if byte_index < 0 or byte_index >= len(self._output):
-                raise ValueError(f"出力アセンブリ範囲外の bit です: {bit_index}")
+                raise LocalizedError("fn.outputBitOutOfRange", bit=bit_index)
             mask = 1 << bit
             old_bit = 1 if self._output[byte_index] & mask else 0
             if old_bit == new_bit:
@@ -133,8 +142,10 @@ class IoBuffers:
         mono_s: float | None = None,
     ) -> None:
         if len(data) != self.input_size:
-            raise ValueError(
-                f"入力サイズ不一致: {len(data)} != {self.input_size}"
+            raise LocalizedError(
+                "fn.inputSizeMismatch",
+                actual=len(data),
+                expected=self.input_size,
             )
         # mono_s は recvfrom 直後の時刻。処理が遅れてもパケット到達時刻を使う。
         arrived = resolve_mono(mono_s)
@@ -260,7 +271,7 @@ class EipClass1Scanner:
             await loop.run_in_executor(None, self._forward_open)
         except Exception as exc:
             await self.close()
-            raise ProtocolError(f"EtherNet/IP 接続に失敗しました: {exc}") from exc
+            raise ProtocolError("fn.eipConnectFailed", detail=exc) from exc
 
         self._stop.clear()
         self._connected = True
@@ -298,13 +309,8 @@ class EipClass1Scanner:
             winerr = getattr(exc, "winerror", None)
             errno = getattr(exc, "errno", None)
             if winerr == 10061 or errno in {111, 10061}:
-                raise OSError(
-                    f"{self.host}:{self.tcp_port} へ TCP 接続できません（接続拒否）。"
-                    " VTV の「環境設定 → フィールドネットワーク」で"
-                    "「フィールドネットワーク（通常）を有効にする」を ON にし、"
-                    " 接続先 IP に VTV 本体の IP（LAN1/LAN2）を指定してください。"
-                    " PLCLINK 用のこの PC の IP や 0.0.0.0 ではありません。"
-                    " 状態が「PLC からの接続要求を待っています」になることを確認してください。"
+                raise ScannerError(
+                    "fn.tcpRefused", host=self.host, port=self.tcp_port
                 ) from exc
             raise
         tcp.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -318,9 +324,8 @@ class EipClass1Scanner:
             udp.bind(("", IO_UDP_PORT))
         except OSError as exc:
             udp.close()
-            raise OSError(
-                f"EtherNet/IP Implicit I/O 用 UDP {IO_UDP_PORT} をバインドできません"
-                f"（{exc}）。他の Scanner / アプリが占有していないか確認してください。"
+            raise ScannerError(
+                "fn.udpBindFailed", port=IO_UDP_PORT, detail=str(exc)
             ) from exc
         self._udp = udp
         self._local_udp_port = IO_UDP_PORT
@@ -328,7 +333,7 @@ class EipClass1Scanner:
         request = struct.pack("<HH", 1, 0)  # protocol version, options
         response = self._transact(ENC_REGISTER_SESSION, request)
         if len(response) < 4:
-            raise OSError("RegisterSession 応答が不正です")
+            raise ScannerError("fn.registerSessionInvalid")
         # session handle is already in encapsulation header; also echoed in payload
         self._session = self._last_session
 
@@ -356,17 +361,20 @@ class EipClass1Scanner:
                 seen.add(pair)
                 unique_candidates.append(pair)
 
-        last_error = "Forward Open に失敗しました"
+        last_exc: OSError | None = None
         for o_to_t_size, t_to_o_size in unique_candidates:
             try:
                 self._forward_open_once(path, o_to_t_size, t_to_o_size)
                 return
             except OSError as exc:
+                last_exc = exc
                 last_error = str(exc)
                 # サイズ不一致以外は即座に打ち切る
                 if "0x0127" not in last_error and "0x0128" not in last_error:
                     raise
-        raise OSError(last_error)
+        if last_exc is not None:
+            raise last_exc
+        raise ScannerError("fn.forwardOpenFailed")
 
     def _forward_open_once(
         self, path: bytes, o_to_t_size: int, t_to_o_size: int
@@ -414,14 +422,14 @@ class EipClass1Scanner:
         response = self._transact(ENC_SEND_RR_DATA, _pack_cpf(items, timeout_ms=2000))
         cip_reply = _extract_unconnected_reply(response)
         if len(cip_reply) < 4:
-            raise OSError("Forward Open 応答が空です")
+            raise ScannerError("fn.forwardOpenEmpty")
 
         general_status = cip_reply[2]
         add_words = cip_reply[3]
         add_bytes = add_words * 2
         if general_status != 0:
             ext = cip_reply[4 : 4 + add_bytes]
-            raise OSError(
+            raise ScannerError(
                 _format_forward_open_error(
                     general_status,
                     ext,
@@ -435,7 +443,7 @@ class EipClass1Scanner:
 
         data = cip_reply[4 + add_bytes :]
         if len(data) < 26:
-            raise OSError(f"Forward Open 成功応答が短いです ({len(cip_reply)} bytes)")
+            raise ScannerError("fn.forwardOpenShort", size=len(cip_reply))
 
         o_to_t_id, t_to_o_id = struct.unpack_from("<II", data, 0)
         conn_serial, vendor, serial = struct.unpack_from("<HHI", data, 8)
@@ -676,19 +684,19 @@ def _pack_network_params(size: int, *, large: bool) -> bytes:
 
 
 _FORWARD_OPEN_EXT_STATUS = {
-    0x0100: "接続使用中 / 重複 Forward Open",
-    0x0103: "Transport Class / Trigger が非対応",
-    0x0106: "Ownership 競合（他 Scanner が接続中）",
-    0x0108: "ネットワーク接続パラメータが不正",
-    0x0109: "接続サイズが不正",
-    0x0111: "RPI が非対応",
-    0x0114: "Vendor ID / Product Code 不一致",
-    0x0117: "アプリケーションパスが不正",
-    0x0123: "O→T 接続タイプが非対応",
-    0x0124: "T→O 接続タイプが非対応",
-    0x0127: "O→T（出力）サイズ不一致",
-    0x0128: "T→O（入力）サイズ不一致",
-    0x0132: "Null Forward Open 非対応（接続パラメータ不正の可能性）",
+    0x0100: "fn.fwd.ext.0100",
+    0x0103: "fn.fwd.ext.0103",
+    0x0106: "fn.fwd.ext.0106",
+    0x0108: "fn.fwd.ext.0108",
+    0x0109: "fn.fwd.ext.0109",
+    0x0111: "fn.fwd.ext.0111",
+    0x0114: "fn.fwd.ext.0114",
+    0x0117: "fn.fwd.ext.0117",
+    0x0123: "fn.fwd.ext.0123",
+    0x0124: "fn.fwd.ext.0124",
+    0x0127: "fn.fwd.ext.0127",
+    0x0128: "fn.fwd.ext.0128",
+    0x0132: "fn.fwd.ext.0132",
 }
 
 
@@ -701,63 +709,67 @@ def _format_forward_open_error(
     output_size: int,
     input_size: int,
     o_to_t_header_bytes: int,
-) -> str:
+) -> MsgJoin:
     words = [
         struct.unpack_from("<H", ext, offset)[0]
         for offset in range(0, len(ext) - 1, 2)
     ]
     ext_code = words[0] if words else None
     expected = words[1] if len(words) > 1 else None
-    meaning = _FORWARD_OPEN_EXT_STATUS.get(ext_code or -1, "")
-    parts = [
-        f"Forward Open 失敗 status=0x{general_status:02X}",
+    meaning_key = _FORWARD_OPEN_EXT_STATUS.get(ext_code or -1)
+    parts: list[object] = [
+        Msg("fn.fwd.failed", status=f"{general_status:02X}"),
         f"ext={ext.hex() or '-'}",
     ]
     if ext_code is not None:
         label = f"0x{ext_code:04X}"
-        parts.append(f"({label}: {meaning})" if meaning else f"({label})")
+        if meaning_key:
+            parts.append(
+                Msg("fn.fwd.extWithMeaning", label=label, meaning=Msg(meaning_key))
+            )
+        else:
+            parts.append(f"({label})")
         if expected is not None:
             parts.append(f"expected={expected}")
 
     if ext_code == 0x0127:
         parts.append(
-            f"送信 O→T={o_to_t_size} byte"
-            f"（Assem20={output_size} + Run/Idle={o_to_t_header_bytes}"
-            f" + Seq={CLASS1_SEQUENCE_BYTES}）"
+            Msg(
+                "fn.fwd.sendOtoT",
+                size=o_to_t_size,
+                output_size=output_size,
+                header=o_to_t_header_bytes,
+                seq=CLASS1_SEQUENCE_BYTES,
+            )
         )
         if expected is not None:
             assembly = max(
                 0, expected - o_to_t_header_bytes - CLASS1_SEQUENCE_BYTES
             )
             parts.append(
-                f"VTV 要求 O→T={expected} byte"
-                f"（Assem20 目安 {assembly} byte）。"
-                " アプリの出力サイズ／ESI／コマンド語数を EDS と一致させ、"
-                " EDS を再インポートしてください"
+                Msg("fn.fwd.requestOtoT", expected=expected, assembly=assembly)
             )
     elif ext_code == 0x0128:
         parts.append(
-            f"送信 T→O={t_to_o_size} byte"
-            f"（Assem10={input_size} + Seq={CLASS1_SEQUENCE_BYTES}）"
+            Msg(
+                "fn.fwd.sendTtoO",
+                size=t_to_o_size,
+                input_size=input_size,
+                seq=CLASS1_SEQUENCE_BYTES,
+            )
         )
         if expected is not None:
             assembly = max(0, expected - CLASS1_SEQUENCE_BYTES)
             parts.append(
-                f"VTV 要求 T→O={expected} byte"
-                f"（Assem10 目安 {assembly} byte）。"
-                " 入力サイズ／ESO／結果／レスポンスを EDS と一致させてください"
+                Msg("fn.fwd.requestTtoO", expected=expected, assembly=assembly)
             )
     elif ext_code == 0x0106:
-        parts.append(
-            "他の PLC / Scanner が VTV に接続中でないか確認し、"
-            " VTV の通信確認で一度切断してから再試行してください"
-        )
+        parts.append(Msg("fn.fwd.ownership"))
     else:
         parts.append(
-            f"送信サイズ O→T={o_to_t_size} / T→O={t_to_o_size}。"
-            " VTV 側設定と EDS の入出力サイズを一致させてください"
+            Msg("fn.fwd.sizes", o_to_t=o_to_t_size, t_to_o=t_to_o_size)
         )
-    return " ".join(parts)
+    return MsgJoin(parts)
 
 
 def _pack_cpf(items: list[tuple[int, bytes]], *, timeout_ms: int) -> bytes:
@@ -822,6 +834,6 @@ def _recvexact(sock: socket.socket, size: int) -> bytes:
     while len(chunks) < size:
         block = sock.recv(size - len(chunks))
         if not block:
-            raise OSError("TCP 接続が切断されました")
+            raise ScannerError("fn.tcpClosed")
         chunks.extend(block)
     return bytes(chunks)

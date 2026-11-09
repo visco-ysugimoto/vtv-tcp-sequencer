@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .i18n import DEFAULT_LANG, t
 from .models import ProtocolSettings
 from .protocol import CommandResult, ProtocolError
 
@@ -13,12 +14,12 @@ LOCAL_IO_COMMANDS: dict[str, dict[str, Any]] = {
     "PLI": {
         "transports": frozenset({"plclink"}),
         "label": "PLI",
-        "reason_other": "PLI は PLCLINK 専用です（TCP では PIP、Field Network では ESI を使ってください）",
+        "reason_other": "local.reason.pli",
     },
     "ESI": {
         "transports": frozenset({"field_network"}),
         "label": "ESI",
-        "reason_other": "ESI は Field Network 専用です（TCP では PIP、PLCLINK では PLI を使ってください）",
+        "reason_other": "local.reason.esi",
     },
 }
 
@@ -27,24 +28,27 @@ def is_local_io_command(code: str) -> bool:
     return code.upper() in LOCAL_IO_COMMANDS
 
 
-def local_io_metadata(tcp_code: str) -> dict[str, object] | None:
+def local_io_metadata(
+    tcp_code: str, lang: str = DEFAULT_LANG
+) -> dict[str, object] | None:
     code = tcp_code.upper()
     info = LOCAL_IO_COMMANDS.get(code)
     if info is None:
         return None
     transports = info["transports"]
+    reason_other = t(str(info["reason_other"]), lang)
     return {
         "local_io": True,
         "plclink_supported": "plclink" in transports,
         "plclink_code": code,
         "plclink_reason": None
         if "plclink" in transports
-        else info["reason_other"],
+        else reason_other,
         "field_network_supported": "field_network" in transports,
         "field_network_code": code,
         "field_network_reason": None
         if "field_network" in transports
-        else info["reason_other"],
+        else reason_other,
     }
 
 
@@ -52,7 +56,7 @@ def parse_port_list(text: str, *, max_port: int, label: str) -> list[int]:
     """'1,2,5-8' 形式をポート番号リストへ。"""
     raw = str(text or "").strip()
     if not raw:
-        raise ProtocolError(f"{label}ポート番号を入力してください")
+        raise ProtocolError("local.portsRequired", label=label)
     ports: list[int] = []
     for token in re.split(r"[\s,;]+", raw):
         if not token:
@@ -63,7 +67,7 @@ def parse_port_list(text: str, *, max_port: int, label: str) -> list[int]:
                 start = int(left)
                 end = int(right)
             except ValueError as exc:
-                raise ProtocolError(f"ポート範囲が不正です: {token}") from exc
+                raise ProtocolError("local.portRangeInvalid", token=token) from exc
             if start > end:
                 start, end = end, start
             for port in range(start, end + 1):
@@ -72,14 +76,14 @@ def parse_port_list(text: str, *, max_port: int, label: str) -> list[int]:
             try:
                 ports.append(int(token))
             except ValueError as exc:
-                raise ProtocolError(f"ポート番号が不正です: {token}") from exc
+                raise ProtocolError("local.portInvalid", token=token) from exc
     if not ports:
-        raise ProtocolError(f"{label}ポート番号を入力してください")
+        raise ProtocolError("local.portsRequired", label=label)
     unique = sorted(set(ports))
     for port in unique:
         if port < 1 or port > max_port:
             raise ProtocolError(
-                f"{label}ポート {port} は範囲外です（1–{max_port}）"
+                "local.portOutOfRange", label=label, port=port, max=max_port
             )
     return unique
 
@@ -90,7 +94,7 @@ def parse_state(raw: object) -> int:
         return 1
     if text in {"0", "off", "false"}:
         return 0
-    raise ProtocolError("ポート状態は ON(1) / OFF(0) を指定してください")
+    raise ProtocolError("local.stateInvalid")
 
 
 def format_local_io_display(code: str, arguments: dict[str, Any]) -> str:
@@ -108,7 +112,7 @@ async def apply_local_io(
     code = code.upper()
     info = LOCAL_IO_COMMANDS.get(code)
     if info is None:
-        raise ProtocolError(f"未定義のローカル I/O コマンドです: {code}")
+        raise ProtocolError("local.undefinedCommand", code=code)
 
     settings: ProtocolSettings = client.settings  # type: ignore[attr-defined]
     transport = settings.transport
@@ -136,7 +140,7 @@ async def apply_local_io(
     if code == "ESI":
         max_port = max(1, int(settings.fn_esi_ports) or 0)
         if max_port <= 0:
-            raise ProtocolError("ESI ポート数が 0 です。接続設定を確認してください")
+            raise ProtocolError("local.esiPortsZero")
         ports = parse_port_list(
             str(arguments.get("ports", "")), max_port=max_port, label="ESI"
         )
@@ -151,7 +155,7 @@ async def apply_local_io(
         )
         set_bit = getattr(client, "set_output_bit", None)
         if set_bit is None:
-            raise ProtocolError("Field Network クライアントが ESI 書き込みに未対応です")
+            raise ProtocolError("local.esiWriteUnsupported")
         for port in ports:
             bit = layout.esi_byte * 8 + (port - 1)
             set_bit(bit, state)
@@ -161,4 +165,4 @@ async def apply_local_io(
         )
         return CommandResult(display, "AK", ["AK", detail])
 
-    raise ProtocolError(f"未対応のローカル I/O コマンドです: {code}")
+    raise ProtocolError("local.unsupportedCommand", code=code)

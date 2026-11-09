@@ -1,12 +1,49 @@
 const WATCH_INTERVAL_MIN_MS = 1;
 const WATCH_INTERVAL_MAX_MS = 10_000;
 const WATCH_INTERVAL_DEFAULT_MS = 500;
-const DEFAULT_FN_STATUS_SIGNALS = [
-  { id: "auto", label: "自動運転中", source: "status", bit: 0, eso_port: null, plo_port: null, role: "auto" },
-  { id: "busy", label: "BUSY", source: "status", bit: 1, eso_port: null, plo_port: null, role: "busy" },
-  { id: "result_valid", label: "結果信号有効", source: "status", bit: 2, eso_port: null, plo_port: null, role: "result_valid" },
-  { id: "error", label: "エラー", source: "status", bit: 3, eso_port: null, plo_port: null, role: "error" },
-];
+
+// Minimal translator: safe to call before i18n.js loads (returns the vars-interpolated fallback).
+function i18n(key, vars) {
+  if (typeof window !== "undefined" && typeof window.t === "function") return window.t(key, vars);
+  return key;
+}
+
+// Translate labels on known default signals by id/role, so existing stored drafts
+// re-translate on locale change while keeping any user-edited labels user data.
+const DEFAULT_SIGNAL_LABEL_KEYS = {
+  auto: "signal.auto",
+  busy: "common.on", // BUSY is a technical token; keep as "BUSY" (handled explicitly below)
+  result_valid: "signal.resultValid",
+  error: "signal.error",
+};
+
+function defaultSignalLabel(id, role) {
+  if (id === "busy" || role === "busy") return "BUSY";
+  const key = DEFAULT_SIGNAL_LABEL_KEYS[id] || DEFAULT_SIGNAL_LABEL_KEYS[role];
+  return key ? i18n(key) : i18n("signal.custom");
+}
+
+function defaultFnStatusSignals() {
+  return [
+    { id: "auto", label: defaultSignalLabel("auto"), source: "status", bit: 0, eso_port: null, plo_port: null, role: "auto" },
+    { id: "busy", label: "BUSY", source: "status", bit: 1, eso_port: null, plo_port: null, role: "busy" },
+    { id: "result_valid", label: defaultSignalLabel("result_valid"), source: "status", bit: 2, eso_port: null, plo_port: null, role: "result_valid" },
+    { id: "error", label: defaultSignalLabel("error"), source: "status", bit: 3, eso_port: null, plo_port: null, role: "error" },
+  ];
+}
+
+const DEFAULT_FN_STATUS_SIGNALS = defaultFnStatusSignals();
+
+// Re-translate labels on known default signal ids after a locale change.
+function retranslateDefaultSignalLabels(list) {
+  if (!Array.isArray(list)) return list;
+  for (const item of list) {
+    if (!item || typeof item !== "object") continue;
+    const known = DEFAULT_SIGNAL_LABEL_KEYS[item.id];
+    if (known) item.label = defaultSignalLabel(item.id, item.role);
+  }
+  return list;
+}
 
 function defaultPlcLinkStatusSignals(busyPort = 1) {
   const port = Math.max(1, Math.min(256, Number(busyPort) || 1));
@@ -101,6 +138,9 @@ const state = {
   softPlcClientCount: 0,
   softPlcListening: false,
   softPlcPort: 0,
+  softPlcStartedSettings: null,
+  plclinkResultLive: false,
+  plclinkConnectedLabel: "",
   fnLive: false,
   fnLiveHost: "",
   fnLivePort: 0,
@@ -129,6 +169,27 @@ const escapeHtml = (value) => String(value).replace(
   /[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[char])
 );
 
+// Build request headers that advertise the active UI locale to the backend.
+function apiHeaders(extra = {}) {
+  const headers = { ...extra };
+  if (window.VtvI18n) headers["Accept-Language"] = window.VtvI18n.acceptLanguageHeader();
+  return headers;
+}
+
+// fetch() wrapper that injects Accept-Language so backend messages come back localized.
+function apiFetch(url, options = {}) {
+  const opts = { ...options };
+  opts.headers = apiHeaders(opts.headers || {});
+  return fetch(url, opts);
+}
+
+// Append the ?lang= query parameter so WebSocket endpoints also receive the locale.
+function withLangQuery(url) {
+  const locale = window.VtvI18n ? window.VtvI18n.getLocale() : "ja";
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}lang=${encodeURIComponent(locale)}`;
+}
+
 async function initialize() {
   restoreSettings();
   restoreConnectionState();
@@ -141,7 +202,7 @@ async function initialize() {
   applyWatchIntervalToForm();
   applyTimingPreferencesToForm();
   refreshMappedWatchItems();
-  const response = await fetch("/api/catalog");
+  const response = await apiFetch("/api/catalog");
   state.catalog = await response.json();
   $("#catalog-count").textContent = state.catalog.length;
   restoreSequenceDraft();
@@ -247,7 +308,7 @@ function bindEvents() {
     syncStatusSignalDraftFromDom();
     state.statusSignalDraft.push({
       id: `custom-${state.statusSignalSeq++}`,
-      label: "カスタム信号",
+      label: i18n("signal.custom"),
       source: "status",
       bit: 4,
       eso_port: null,
@@ -260,7 +321,7 @@ function bindEvents() {
     renderTimingChannelList();
   });
   $("#fn-status-reset")?.addEventListener("click", () => {
-    state.statusSignalDraft = DEFAULT_FN_STATUS_SIGNALS.map((item) => ({ ...item }));
+    state.statusSignalDraft = defaultFnStatusSignals();
     renderStatusSignalTable();
     refreshMappedWatchItems();
     renderWatchList();
@@ -305,7 +366,7 @@ function bindEvents() {
     while (used.has(nextPort) && nextPort <= maxPort) nextPort += 1;
     state.plclinkStatusSignalDraft.push({
       id: `custom-${state.statusSignalSeq++}`,
-      label: "カスタム信号",
+      label: i18n("signal.custom"),
       source: "plo",
       bit: null,
       eso_port: null,
@@ -367,12 +428,12 @@ function bindEvents() {
   $("#stop-button").addEventListener("click", stopSequence);
   $("#clear-button").addEventListener("click", () => {
     if (state.running || !state.steps.length) return;
-    if (!confirm("すべてのカードを削除しますか？")) return;
+    if (!confirm(i18n("confirm.clearAll"))) return;
     const snapshot = cloneData(state.steps);
     const nextId = state.nextId;
     state.steps = [];
     renderSequence();
-    showToast("シーケンスをクリアしました", () => {
+    showToast(i18n("toast.clearSequence"), () => {
       state.steps = snapshot;
       state.nextId = nextId;
       renderSequence();
@@ -413,7 +474,7 @@ function bindEvents() {
     refreshMappedWatchItems();
     renderWatchList();
     renderTimingChannelList();
-    setWatchStatus("一覧を再生成しました");
+    setWatchStatus(i18n("watch.mapRefreshed"));
   });
   $("#start-watch-button").addEventListener("click", startWatch);
   $("#stop-watch-button").addEventListener("click", () => stopWatch(false));
@@ -558,8 +619,8 @@ function syncTimingAxisModeUi() {
   const hint = $("#timing-measure-info");
   if (hint && !state.timingCursorA && !state.timingPulse) {
     hint.textContent = isPoll
-      ? "横軸は実時間線形。目盛りは各 poll の実時刻位置（周期がぶれると間隔が変化）。チャート外のクリックで選択解除。"
-      : "横軸・目盛りとも実時間（等間隔）。poll ごとのばらつき確認には「ポーリング回数」軸を推奨。チャート外のクリックで選択解除。";
+      ? i18n("timing.hintPollSelect")
+      : i18n("timing.hintTimeSelect");
   }
 }
 
@@ -599,14 +660,14 @@ function updateTimingViewSpan() {
       ? ` ≈ ${formatTimingDuration(timeSpan.spanMs)}`
       : "";
     el.textContent = live
-      ? `表示 ${state.timingWindowPolls} poll${approx}`
-      : `表示 ${state.timingWindowPolls} poll${approx}（過去）`;
+      ? i18n("timing.viewPolls", { count: state.timingWindowPolls, approx })
+      : i18n("timing.viewPollsPast", { count: state.timingWindowPolls, approx });
     return;
   }
   const ms = state.timingWindowMs;
   const live = state.timingPanMs <= 0.5;
   const span = ms >= 1000 ? `${(ms / 1000).toFixed(ms >= 10000 ? 0 : 1)} s` : `${Math.round(ms)} ms`;
-  el.textContent = live ? `表示 ${span}` : `表示 ${span}（過去）`;
+  el.textContent = live ? i18n("timing.viewTime", { span }) : i18n("timing.viewTimePast", { span });
 }
 
 function applyWatchIntervalToForm() {
@@ -746,12 +807,12 @@ function insertTimingEdge(t, edge) {
     if (sample.edgeBits && sample.edgeBits[edge.id]) break;
     sample.bits[edge.id] = value;
   }
-  if (state.watchRunning) setTimingStatus("記録中", "running");
+  if (state.watchRunning) setTimingStatus(i18n("timing.statusRecording"), "running");
   queueTimingChartDraw();
 }
 
 function formatWatchActualPeriodText() {
-  if (!state.watchRunning || state.watchActualMs == null) return "実測 —";
+  if (!state.watchRunning || state.watchActualMs == null) return i18n("watch.actualUnknown");
   const cycle = state.watchActualMs < 10
     ? state.watchActualMs.toFixed(1)
     : String(Math.max(1, Math.round(state.watchActualMs)));
@@ -760,10 +821,10 @@ function formatWatchActualPeriodText() {
     : (state.watchFetchMs < 10
       ? state.watchFetchMs.toFixed(2)
       : String(Math.max(0, Math.round(state.watchFetchMs))));
-  const mode = state.watchMode === "websocket" ? "読取" : "取得";
+  const mode = state.watchMode === "websocket" ? i18n("watch.modeRead") : i18n("watch.modeFetch");
   return fetchMs == null
-    ? `実測 ${cycle} ms`
-    : `実測 ${cycle} ms（${mode} ${fetchMs} ms）`;
+    ? i18n("watch.actual", { cycle })
+    : i18n("watch.actualWithFetch", { cycle, mode, fetchMs });
 }
 
 function updateWatchActualPeriodDisplay() {
@@ -792,21 +853,14 @@ function updateWatchNote() {
   if (!note) return;
   const transport = $("#transport")?.value || state.settings.transport;
   if (transport === "plclink") {
-    note.textContent =
-      `接続設定のコマンド／レスポンス／PLO／PLI から自動生成。`
-      + `コマンド表示とレスポンス表示で、見るワード数を変えられます。`
-      + `更新周期 ${readWatchIntervalMs()} ms。`
-      + `ビットのパルス幅は書込み時刻から取ります。監視周期より短い ON/OFF も、届いた幅で表示します。`;
+    note.textContent = i18n("watch.notePlclink", { interval: readWatchIntervalMs() });
     return;
   }
   if (transport === "field_network") {
-    note.textContent =
-      `「結果データ」は VTV と同じく「出力値」(生DWORD) と「データ」(解釈値) を表示します。`
-      + `更新周期 ${readWatchIntervalMs()} ms（WebSocket）。`
-      + `ビット変化はパケット到達時刻で記録します。幅の分解能は RPI で、最短 2ms です。1ms の RPI 設定は無効です。`;
+    note.textContent = i18n("watch.noteFieldNetwork", { interval: readWatchIntervalMs() });
     return;
   }
-  note.textContent = "PLCLINK / Field Network 接続時に監視が利用できます。";
+  note.textContent = i18n("watch.noteUnavailable");
 }
 
 function restoreResultDataDisplayMode() {
@@ -829,7 +883,7 @@ function applyViewMode() {
   sequenceList?.classList.toggle("compact-mode", state.viewMode === "compact");
 
   const btn = $("#view-mode-button");
-  if (btn) btn.textContent = state.viewMode === "compact" ? "標準" : "コンパクト";
+  if (btn) btn.textContent = state.viewMode === "compact" ? i18n("sequence.viewStandard") : i18n("sequence.viewCompact");
 }
 
 function toggleViewMode() {
@@ -858,12 +912,12 @@ function applyLayoutMode() {
   const headerBtn = $("#layout-mode-button");
   const panelBtn = $("#layout-mode-monitor-button");
   if (headerBtn) {
-    headerBtn.textContent = focused ? "通常画面" : "モニター拡大";
-    headerBtn.title = focused ? "シーケンス編集画面に戻る" : "モニター専用表示に切替";
+    headerBtn.textContent = focused ? i18n("header.layoutNormal") : i18n("header.layoutMonitorExpand");
+    headerBtn.title = focused ? i18n("header.layoutNormalTitle") : i18n("header.layoutMonitorTitle");
   }
   if (panelBtn) {
-    panelBtn.textContent = focused ? "通常へ" : "拡大";
-    panelBtn.title = focused ? "シーケンス編集画面に戻る" : "モニター専用表示に切替";
+    panelBtn.textContent = focused ? i18n("monitor.collapse") : i18n("monitor.expand");
+    panelBtn.title = focused ? i18n("header.layoutNormalTitle") : i18n("header.layoutMonitorTitle");
   }
   if (focused && watchEnabled) {
     const active = document.querySelector("[data-monitor-tab].active")?.dataset?.monitorTab;
@@ -912,21 +966,21 @@ function buildMappedWatchItems(settings) {
   const pliCount = Math.max(1, Number(settings.pli_port_count) || 32);
   const busyPort = Number(settings.busy_port) || 1;
   const items = [
-    { id: "cmd-trigger", label: "トリガ (+0000)", group: "コマンド領域", device: "D", address: command, format: "int32", relAddress: 0 },
-    { id: "cmd-code", label: "コマンドコード (+0002)", group: "コマンド領域", device: "D", address: command + 2, format: "int32", relAddress: 2 },
+    { id: "cmd-trigger", label: i18n("watch.labelTrigger"), group: i18n("watch.groupCommand"), groupKey: "command", device: "D", address: command, format: "int32", relAddress: 0 },
+    { id: "cmd-code", label: i18n("watch.labelCommandCode"), group: i18n("watch.groupCommand"), groupKey: "command", device: "D", address: command + 2, format: "int32", relAddress: 2 },
   ];
   appendDwordSpan(items, {
-    idPrefix: "cmd-data", group: "コマンド領域", device: "D", base: command,
+    idPrefix: "cmd-data", group: i18n("watch.groupCommand"), groupKey: "command", device: "D", base: command,
     start: 4, stop: areaWatchWords("command", settings), labelWidth: 4,
   });
   items.push(
-    { id: "rsp-result", label: "実行結果 (+0000)", group: "レスポンス領域", device: "D", address: response, format: "int32", relAddress: 0 },
-    { id: "rsp-error", label: "エラーコード (+0002)", group: "レスポンス領域", device: "D", address: response + 2, format: "int32", relAddress: 2 },
-    { id: "rsp-echo", label: "コマンドエコー (+0004)", group: "レスポンス領域", device: "D", address: response + 4, format: "int32", relAddress: 4 },
-    { id: "rsp-param-size", label: "パラメータ総サイズ (+0006)", group: "レスポンス領域", device: "D", address: response + 6, format: "int32", relAddress: 6 },
+    { id: "rsp-result", label: i18n("watch.labelResult"), group: i18n("watch.groupResponse"), groupKey: "response", device: "D", address: response, format: "int32", relAddress: 0 },
+    { id: "rsp-error", label: i18n("watch.labelErrorCode"), group: i18n("watch.groupResponse"), groupKey: "response", device: "D", address: response + 2, format: "int32", relAddress: 2 },
+    { id: "rsp-echo", label: i18n("watch.labelEcho"), group: i18n("watch.groupResponse"), groupKey: "response", device: "D", address: response + 4, format: "int32", relAddress: 4 },
+    { id: "rsp-param-size", label: i18n("watch.labelParamSize"), group: i18n("watch.groupResponse"), groupKey: "response", device: "D", address: response + 6, format: "int32", relAddress: 6 },
   );
   appendDwordSpan(items, {
-    idPrefix: "rsp-data", group: "レスポンス領域", device: "D", base: response,
+    idPrefix: "rsp-data", group: i18n("watch.groupResponse"), groupKey: "response", device: "D", base: response,
     start: 8, stop: areaWatchWords("response", settings), labelWidth: 4,
   });
   // 結果データ領域は監視用に常時表示（有効フラグは VTV 設定整合用）
@@ -940,7 +994,8 @@ function buildMappedWatchItems(settings) {
       items.push({
         id: `result-data-${offset}`,
         label: `+${String(offset).padStart(4, "0")}`,
-        group: "結果データ",
+        group: i18n("watch.groupResult"),
+        groupKey: "result",
         device: "D",
         address: base + offset,
         format: "int32",
@@ -953,10 +1008,10 @@ function buildMappedWatchItems(settings) {
   if (settings.notify_area_enabled) {
     const notify = Number(settings.notify_address) || 0;
     items.push(
-      { id: "notify-status", label: "書込ステータス", group: "結果通知エリア", device: "D", address: notify, format: "int32", valueKind: "notify_status" },
-      { id: "notify-error", label: "エラーコード", group: "結果通知エリア", device: "D", address: notify + 2, format: "int32", valueKind: "notify_error" },
-      { id: "notify-data-address", label: "結果データ先頭", group: "結果通知エリア", device: "D", address: notify + 4, format: "int32" },
-      { id: "notify-data-size", label: "結果データサイズ", group: "結果通知エリア", device: "D", address: notify + 6, format: "int32" },
+      { id: "notify-status", label: i18n("watch.labelNotifyStatus"), group: i18n("watch.groupNotify"), groupKey: "notify", device: "D", address: notify, format: "int32", valueKind: "notify_status" },
+      { id: "notify-error", label: i18n("watch.labelNotifyError"), group: i18n("watch.groupNotify"), groupKey: "notify", device: "D", address: notify + 2, format: "int32", valueKind: "notify_error" },
+      { id: "notify-data-address", label: i18n("watch.labelNotifyDataAddress"), group: i18n("watch.groupNotify"), groupKey: "notify", device: "D", address: notify + 4, format: "int32" },
+      { id: "notify-data-size", label: i18n("watch.labelNotifyDataSize"), group: i18n("watch.groupNotify"), groupKey: "notify", device: "D", address: notify + 6, format: "int32" },
     );
   }
   // ステータス割付は PLO 一覧のラベルに反映（同一ポートの二重表示を避ける）
@@ -977,7 +1032,8 @@ function buildMappedWatchItems(settings) {
     items.push({
       id: `plo-port-${port}`,
       label: custom !== `Port ${port}` ? custom : (portLabels[port] || `Port ${port}`),
-      group: "PLO出力",
+      group: i18n("watch.groupPlo"),
+      groupKey: "plo",
       device: "M",
       address: plo + port - 1,
       format: "bit",
@@ -989,7 +1045,8 @@ function buildMappedWatchItems(settings) {
     items.push({
       id: `pli-port-${port}`,
       label: portDisplayLabel(port, pliNames, `PLI-${port}`),
-      group: "PLI入力",
+      group: i18n("watch.groupPli"),
+      groupKey: "pli",
       device: "M",
       address: pli + port - 1,
       format: "bit",
@@ -1056,15 +1113,16 @@ function renderPortNameTable(kind, count) {
   if (!body) return;
   const names = state.portNameDraft[kind] || {};
   if (!count) {
-    body.innerHTML = '<tr><td colspan="2" class="port-name-empty">ポート数 0</td></tr>';
+    body.innerHTML = `<tr><td colspan="2" class="port-name-empty">${escapeHtml(i18n("settings.portNameEmpty"))}</td></tr>`;
     return;
   }
+  const placeholder = i18n("settings.portNamePlaceholder");
   const rows = [];
   for (let port = 1; port <= count; port += 1) {
     const value = names[String(port)] || "";
     rows.push(`<tr data-port="${port}">
       <td>${port}</td>
-      <td><input type="text" maxlength="40" value="${escapeHtml(value)}" placeholder="名称（任意）" aria-label="${kind.toUpperCase()} ${port} 名称"></td>
+      <td><input type="text" maxlength="40" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}" aria-label="${escapeHtml(i18n("settings.portNameAria", { kind: kind.toUpperCase(), port }))}"></td>
     </tr>`);
   }
   body.innerHTML = rows.join("");
@@ -1093,7 +1151,7 @@ function readPortNamesFromForm() {
 function normalizeStatusSignals(raw) {
   const list = Array.isArray(raw) && raw.length
     ? raw
-    : DEFAULT_FN_STATUS_SIGNALS;
+    : defaultFnStatusSignals();
   return list.map((item, index) => {
     const source = item.source === "eso" ? "eso" : "status";
     const role = ["busy", "auto", "result_valid", "error"].includes(item.role)
@@ -1101,7 +1159,7 @@ function normalizeStatusSignals(raw) {
       : "none";
     return {
       id: String(item.id || `signal-${index + 1}`).slice(0, 40),
-      label: String(item.label || item.id || `信号${index + 1}`).slice(0, 40),
+      label: String(item.label || item.id || i18n("signal.defaultName", { index: index + 1 })).slice(0, 40),
       source,
       bit: source === "status" ? Number(item.bit ?? 0) : null,
       eso_port: source === "eso" ? Number(item.eso_port ?? 1) : null,
@@ -1122,7 +1180,7 @@ function normalizePlcLinkStatusSignals(raw, busyPort = 1) {
     const port = Number(item.plo_port ?? item.bit ?? busyPort);
     return {
       id: String(item.id || `signal-${index + 1}`).slice(0, 40),
-      label: String(item.label || item.id || `信号${index + 1}`).slice(0, 40),
+      label: String(item.label || item.id || i18n("signal.defaultName", { index: index + 1 })).slice(0, 40),
       source: "plo",
       bit: null,
       eso_port: null,
@@ -1152,11 +1210,11 @@ function statusRoleOptionsHtml(signal, signals) {
     return `<option value="${value}"${selected}${disabled}>${label}</option>`;
   };
   return [
-    option("none", "なし"),
+    option("none", i18n("common.none")),
     option("busy", "BUSY"),
-    option("auto", "自動運転中"),
-    option("result_valid", "結果信号有効"),
-    option("error", "エラー"),
+    option("auto", i18n("signal.auto")),
+    option("result_valid", i18n("signal.resultValid")),
+    option("error", i18n("signal.error")),
   ].join("");
 }
 
@@ -1195,7 +1253,7 @@ function renderStatusSignalTable() {
   state.statusSignalDraft = ensureExactlyOneBusy(
     state.statusSignalDraft.length
       ? state.statusSignalDraft
-      : DEFAULT_FN_STATUS_SIGNALS.map((item) => ({ ...item })),
+      : defaultFnStatusSignals(),
   );
   const rows = state.statusSignalDraft;
   const canDelete = rows.length > 1;
@@ -1205,13 +1263,13 @@ function renderStatusSignalTable() {
       ? (Number(signal.eso_port) || 1)
       : (Number(signal.bit) || 0);
     const deleteDisabled = canDelete ? "" : " disabled";
-    const deleteTitle = canDelete ? "削除" : "BUSY 用に最低 1 信号必要";
+    const deleteTitle = canDelete ? i18n("common.delete") : i18n("settings.signalDeleteBusyRequired");
     return `<tr data-status-index="${index}">
       <td><input type="text" data-field="label" value="${escapeHtml(signal.label)}" maxlength="40"></td>
       <td>
         <select data-field="source">
-          <option value="status"${source === "status" ? " selected" : ""}>ステータス bit</option>
-          <option value="eso"${source === "eso" ? " selected" : ""}>ESO ポート</option>
+          <option value="status"${source === "status" ? " selected" : ""}>${escapeHtml(i18n("settings.signalSourceStatus"))}</option>
+          <option value="eso"${source === "eso" ? " selected" : ""}>${escapeHtml(i18n("settings.signalSourceEso"))}</option>
         </select>
       </td>
       <td><input type="number" data-field="index" min="0" max="128" step="1" value="${value}"></td>
@@ -1237,7 +1295,7 @@ function renderPlcLinkStatusSignalTable() {
   body.innerHTML = rows.map((signal, index) => {
     const port = Number(signal.plo_port) || 1;
     const deleteDisabled = canDelete ? "" : " disabled";
-    const deleteTitle = canDelete ? "削除" : "BUSY 用に最低 1 信号必要";
+    const deleteTitle = canDelete ? i18n("common.delete") : i18n("settings.signalDeleteBusyRequired");
     return `<tr data-plclink-status-index="${index}">
       <td><input type="text" data-field="label" value="${escapeHtml(signal.label)}" maxlength="40"></td>
       <td><input type="number" data-field="plo-port" min="1" max="${maxPort}" step="1" value="${port}"></td>
@@ -1256,7 +1314,7 @@ function syncStatusSignalDraftFromDom() {
   const next = [];
   body.querySelectorAll("tr[data-status-index]").forEach((row, index) => {
     const prev = state.statusSignalDraft[index] || {};
-    const label = row.querySelector('[data-field="label"]')?.value?.trim() || `信号${index + 1}`;
+    const label = row.querySelector('[data-field="label"]')?.value?.trim() || i18n("signal.defaultName", { index: index + 1 });
     const source = row.querySelector('[data-field="source"]')?.value === "eso" ? "eso" : "status";
     const role = row.querySelector('[data-field="role"]')?.value || "none";
     const rawIndex = Number(row.querySelector('[data-field="index"]')?.value);
@@ -1281,7 +1339,7 @@ function syncPlcLinkStatusSignalDraftFromDom() {
   const maxPort = Math.max(1, Number($("#plo-port-count")?.value) || 32);
   body.querySelectorAll("tr[data-plclink-status-index]").forEach((row, index) => {
     const prev = state.plclinkStatusSignalDraft[index] || {};
-    const label = row.querySelector('[data-field="label"]')?.value?.trim() || `信号${index + 1}`;
+    const label = row.querySelector('[data-field="label"]')?.value?.trim() || i18n("signal.defaultName", { index: index + 1 });
     const role = row.querySelector('[data-field="role"]')?.value || "none";
     const rawPort = Number(row.querySelector('[data-field="plo-port"]')?.value);
     const id = prev.id || `custom-${state.statusSignalSeq++}`;
@@ -1312,18 +1370,16 @@ function readStatusSignalsFromForm() {
   const signals = normalizeStatusSignals(state.statusSignalDraft);
   const busyCount = signals.filter((item) => item.role === "busy").length;
   if (busyCount !== 1) {
-    throw new Error(`ステータス信号の role=BUSY はちょうど 1 つ必要です（現在 ${busyCount} 件）`);
+    throw new Error(i18n("settings.errBusyCount", { count: busyCount }));
   }
   const esoPorts = Number($("#fn-eso-ports")?.value) || 0;
   for (const signal of signals) {
     if (signal.source === "eso") {
       if (esoPorts <= 0) {
-        throw new Error(`信号「${signal.label}」: ESO ポート数が 0 のため ESO に割付できません`);
+        throw new Error(i18n("settings.errNoEso", { label: signal.label }));
       }
       if (signal.eso_port > esoPorts) {
-        throw new Error(
-          `信号「${signal.label}」: ESO-${signal.eso_port} は設定ポート数 ${esoPorts} を超えています`
-        );
+        throw new Error(i18n("settings.errEsoExceeds", { label: signal.label, port: signal.eso_port, count: esoPorts }));
       }
     }
   }
@@ -1338,14 +1394,12 @@ function readPlcLinkStatusSignalsFromForm() {
   );
   const busyCount = signals.filter((item) => item.role === "busy").length;
   if (busyCount !== 1) {
-    throw new Error(`ステータス信号の role=BUSY はちょうど 1 つ必要です（現在 ${busyCount} 件）`);
+    throw new Error(i18n("settings.errBusyCount", { count: busyCount }));
   }
   const portCount = Math.max(1, Number($("#plo-port-count")?.value) || 32);
   for (const signal of signals) {
     if (signal.plo_port > portCount) {
-      throw new Error(
-        `信号「${signal.label}」: PLO-${signal.plo_port} は仮想出力ポート数 ${portCount} を超えています`
-      );
+      throw new Error(i18n("settings.errPloExceeds", { label: signal.label, port: signal.plo_port, count: portCount }));
     }
   }
   return signals;
@@ -1374,7 +1428,8 @@ function buildFnMappedWatchItems(settings) {
   const items = statusSignals.map((signal) => ({
     id: `fn-status-${signal.id}`,
     label: signal.label,
-    group: "ステータス",
+    group: i18n("watch.groupStatus"),
+    groupKey: "status",
     device: "IN",
     address: resolveFnStatusBit(signal, esoByte),
     format: "bit",
@@ -1387,7 +1442,8 @@ function buildFnMappedWatchItems(settings) {
     items.push({
       id: `result-data-${offset}`,
       label: `+${String(offset).padStart(5, "0")}`,
-      group: "結果データ (Assem10)",
+      group: i18n("watch.groupResultAssem10"),
+      groupKey: "result_assem10",
       device: "IN",
       address: resultWord + offset,
       relAddress: offset,
@@ -1397,21 +1453,21 @@ function buildFnMappedWatchItems(settings) {
     });
   }
   items.push(
-    { id: "rsp-result", label: "実行結果 (+0000)", group: "レスポンス領域 (Assem10)", device: "IN", address: rsp, format: "int32", relAddress: 0 },
-    { id: "rsp-error", label: "エラーコード (+0002)", group: "レスポンス領域 (Assem10)", device: "IN", address: rsp + 2, format: "int32", relAddress: 2 },
-    { id: "rsp-echo", label: "コマンドエコー (+0004)", group: "レスポンス領域 (Assem10)", device: "IN", address: rsp + 4, format: "int32", relAddress: 4 },
-    { id: "rsp-param-size", label: "パラメータ総サイズ (+0006)", group: "レスポンス領域 (Assem10)", device: "IN", address: rsp + 6, format: "int32", relAddress: 6 },
+    { id: "rsp-result", label: i18n("watch.labelResult"), group: i18n("watch.groupResponseAssem10"), groupKey: "response_assem10", device: "IN", address: rsp, format: "int32", relAddress: 0 },
+    { id: "rsp-error", label: i18n("watch.labelErrorCode"), group: i18n("watch.groupResponseAssem10"), groupKey: "response_assem10", device: "IN", address: rsp + 2, format: "int32", relAddress: 2 },
+    { id: "rsp-echo", label: i18n("watch.labelEcho"), group: i18n("watch.groupResponseAssem10"), groupKey: "response_assem10", device: "IN", address: rsp + 4, format: "int32", relAddress: 4 },
+    { id: "rsp-param-size", label: i18n("watch.labelParamSize"), group: i18n("watch.groupResponseAssem10"), groupKey: "response_assem10", device: "IN", address: rsp + 6, format: "int32", relAddress: 6 },
   );
   appendDwordSpan(items, {
-    idPrefix: "rsp-data", group: "レスポンス領域 (Assem10)", device: "IN", base: rsp,
+    idPrefix: "rsp-data", group: i18n("watch.groupResponseAssem10"), groupKey: "response_assem10", device: "IN", base: rsp,
     start: 8, stop: areaWatchWords("response", settings), labelWidth: 5,
   });
   items.push(
-    { id: "cmd-trigger", label: "トリガ (+0000)", group: "コマンド領域 (Assem20)", device: "OUT", address: cmd, format: "int32", relAddress: 0 },
-    { id: "cmd-code", label: "コマンドコード (+0002)", group: "コマンド領域 (Assem20)", device: "OUT", address: cmd + 2, format: "int32", relAddress: 2 },
+    { id: "cmd-trigger", label: i18n("watch.labelTrigger"), group: i18n("watch.groupCommandAssem20"), groupKey: "command_assem20", device: "OUT", address: cmd, format: "int32", relAddress: 0 },
+    { id: "cmd-code", label: i18n("watch.labelCommandCode"), group: i18n("watch.groupCommandAssem20"), groupKey: "command_assem20", device: "OUT", address: cmd + 2, format: "int32", relAddress: 2 },
   );
   appendDwordSpan(items, {
-    idPrefix: "cmd-data", group: "コマンド領域 (Assem20)", device: "OUT", base: cmd,
+    idPrefix: "cmd-data", group: i18n("watch.groupCommandAssem20"), groupKey: "command_assem20", device: "OUT", base: cmd,
     start: 4, stop: areaWatchWords("command", settings), labelWidth: 5,
   });
   const esoNames = normalizePortNames(settings.eso_port_names);
@@ -1420,7 +1476,8 @@ function buildFnMappedWatchItems(settings) {
     items.push({
       id: `eso-port-${port}`,
       label: portDisplayLabel(port, esoNames, `ESO-${port}`),
-      group: "ESO出力 (Assem10)",
+      group: i18n("watch.groupEsoAssem10"),
+      groupKey: "eso_assem10",
       device: "IN",
       address: esoByte * 8 + (port - 1),
       format: "bit",
@@ -1431,7 +1488,8 @@ function buildFnMappedWatchItems(settings) {
     items.push({
       id: `esi-port-${port}`,
       label: portDisplayLabel(port, esiNames, `ESI-${port}`),
-      group: "ESI入力 (Assem20)",
+      group: i18n("watch.groupEsiAssem20"),
+      groupKey: "esi_assem20",
       device: "OUT",
       address: esiByte * 8 + (port - 1),
       format: "bit",
@@ -1451,6 +1509,7 @@ function appendDwordSpan(items, options) {
       id: `${options.idPrefix}-${offset}`,
       label: `+${String(offset).padStart(width, "0")}`,
       group: options.group,
+      groupKey: options.groupKey,
       device: options.device,
       address: options.base + offset,
       format: "int32",
@@ -1545,7 +1604,7 @@ function renderWatchList(changed = new Set()) {
   const list = $("#watch-list");
   if (!list) return;
   if (!state.watchItems.length) {
-    list.innerHTML = '<div class="watch-empty">接続設定から監視アドレスを生成できません。</div>';
+    list.innerHTML = `<div class="watch-empty">${escapeHtml(i18n("watch.mapUnavailable"))}</div>`;
     return;
   }
   const query = (state.watchQuery || "").trim().toLowerCase();
@@ -1557,9 +1616,9 @@ function renderWatchList(changed = new Set()) {
   });
   if (!visibleItems.length) {
     const message = state.watchChangedOnly && !query
-      ? "変化した信号はまだありません。"
-      : "条件に合う信号がありません。";
-    list.innerHTML = `<div class="watch-empty">${message}</div>`;
+      ? i18n("watch.emptyNoChange")
+      : i18n("watch.emptyNoMatch");
+    list.innerHTML = `<div class="watch-empty">${escapeHtml(message)}</div>`;
     return;
   }
   const groups = [];
@@ -1576,7 +1635,7 @@ function renderWatchList(changed = new Set()) {
       const value = snapshot === undefined
         ? "—"
         : snapshot.valid === false
-          ? "無効"
+          ? i18n("watch.valueInvalid")
           : formatWatchValue(snapshot.value, item);
       const valueClass = watchValueClass(snapshot, item, changed.has(item.id));
       return `<div class="watch-map-row${item.busy ? " busy" : ""}">
@@ -1600,14 +1659,15 @@ function renderWatchList(changed = new Set()) {
 
 function watchGroupTitle(name, items) {
   if (!items.length) return name;
-  if (name.startsWith("コマンド領域") || name.startsWith("レスポンス領域")) {
-    const width = name.includes("Assem") ? 5 : 4;
+  const key = items[0].groupKey;
+  if (key === "command" || key === "response" || key === "command_assem20" || key === "response_assem10") {
+    const width = (key === "command_assem20" || key === "response_assem10") ? 5 : 4;
     const first = typeof items[0].relAddress === "number" ? items[0].relAddress : 0;
     const lastItem = items[items.length - 1];
     const last = (typeof lastItem.relAddress === "number" ? lastItem.relAddress : first) + 2;
     return `${name}（+${String(first).padStart(width, "0")}–+${String(last).padStart(width, "0")}）`;
   }
-  if (name.startsWith("結果データ")) {
+  if (key === "result" || key === "result_assem10") {
     const first = typeof items[0].relAddress === "number" ? items[0].relAddress : items[0].address;
     const lastItem = items[items.length - 1];
     const last = typeof lastItem.relAddress === "number"
@@ -1615,35 +1675,47 @@ function watchGroupTitle(name, items) {
       : lastItem.address + 1;
     return `${name}（+${String(first).padStart(5, "0")}–+${String(last).padStart(5, "0")}）`;
   }
-  if (name === "結果通知エリア") {
+  if (key === "notify") {
     return `${name}（D${items[0].address}–D${items[0].address + 7}）`;
   }
   return name;
 }
 
 function formatWatchValue(value, item) {
-  if (item.format === "bit") return value ? "ON" : "OFF";
+  if (item.format === "bit") return value ? i18n("common.on") : i18n("common.off");
   if (item.format === "fixed" && typeof value === "number") {
     return value.toFixed(item.decimals);
   }
   if (item.valueKind === "notify_status") {
-    const labels = {
-      1: "書込許可",
-      2: "書込完了",
-      3: "分割先頭完了",
-      4: "分割中間完了",
-      5: "分割末尾完了",
-    };
+    const labels = notifyStatusLabels();
     return labels[value] ? `${value} (${labels[value]})` : String(value);
   }
   if (item.valueKind === "notify_error") {
-    const labels = { 0: "なし", 100: "オーバーフロー", 101: "書込許可TO" };
+    const labels = notifyErrorLabels();
     return labels[value] !== undefined ? `${value} (${labels[value]})` : String(value);
   }
   if (item.valueKind === "result_data" && typeof value === "number") {
     return formatResultDataValue(value, item);
   }
   return String(value);
+}
+
+function notifyStatusLabels() {
+  return {
+    1: i18n("notify.status.writeOk"),
+    2: i18n("notify.status.writeDone"),
+    3: i18n("notify.status.splitFirst"),
+    4: i18n("notify.status.splitMid"),
+    5: i18n("notify.status.splitLast"),
+  };
+}
+
+function notifyErrorLabels() {
+  return {
+    0: i18n("common.none"),
+    100: i18n("notify.error.overflow"),
+    101: i18n("notify.error.writeTimeout"),
+  };
 }
 
 /** VTV 結果データ「No Data」センチネル (0x7FFFFFFE) */
@@ -1778,17 +1850,17 @@ function formatResultDataValue(value, item) {
   const text = resultStringAt(item);
   if (text) {
     const dataText = text.index === 0 ? `"${text.text}"` : ">";
-    return `出力値 ${outputText}\nデータ ${dataText}`;
+    return i18n("watch.valueDual", { output: outputText, data: dataText });
   }
 
   // 直前が double の下位ワードなら VTV 同様「>」
   if (mode === "float" && isResultFloatContinuation(item)) {
-    return `出力値 ${outputText}\nデータ >`;
+    return i18n("watch.valueDual", { output: outputText, data: ">" });
   }
 
   let dataText;
   if (raw === RESULT_NO_DATA) {
-    dataText = "No Data";
+    dataText = i18n("watch.valueNoData");
   } else if (mode === "hex") {
     dataText = outputText;
   } else if (mode === "fixed") {
@@ -1802,7 +1874,7 @@ function formatResultDataValue(value, item) {
   }
 
   // VTV モニタ列順: 出力値 → データ
-  return `出力値 ${outputText}\nデータ ${dataText}`;
+  return i18n("watch.valueDual", { output: outputText, data: dataText });
 }
 
 function readResultFloatPair(item) {
@@ -1870,7 +1942,7 @@ function updateWatchValueDisplays(changed = new Set()) {
     element.textContent = snapshot === undefined
       ? "—"
       : snapshot.valid === false
-        ? "無効"
+        ? i18n("watch.valueInvalid")
         : formatWatchValue(snapshot.value, item);
     element.className = `watch-value ${watchValueClass(snapshot, item, changed.has(item.id))}`.trim();
   }
@@ -1903,14 +1975,14 @@ function startWatch() {
     settings = state.settings;
   }
   if (settings.transport !== "plclink" && settings.transport !== "field_network") {
-    setWatchStatus("PLCLINK / Field Network を選択してください", "error");
+    setWatchStatus(i18n("watch.selectTransport"), "error");
     return;
   }
   state.watchChangedIds = new Set();
   refreshMappedWatchItems();
   renderWatchList();
   if (!state.watchItems.length) {
-    setWatchStatus("監視アドレスがありません", "error");
+    setWatchStatus(i18n("watch.noAddresses"), "error");
     return;
   }
   state.watchRunning = true;
@@ -1919,8 +1991,8 @@ function startWatch() {
   $("#stop-watch-button").disabled = false;
   $("#start-timing-button") && ($("#start-timing-button").disabled = true);
   $("#stop-timing-button") && ($("#stop-timing-button").disabled = false);
-  setWatchStatus("監視接続中…", "running");
-  setTimingStatus("記録中", "running");
+  setWatchStatus(i18n("watch.statusConnecting"), "running");
+  setTimingStatus(i18n("timing.statusRecording"), "running");
   startWatchSocket();
 }
 
@@ -1939,8 +2011,8 @@ function stopWatch(resetValues = false) {
   $("#stop-watch-button").disabled = true;
   $("#start-timing-button") && ($("#start-timing-button").disabled = false);
   $("#stop-timing-button") && ($("#stop-timing-button").disabled = true);
-  setWatchStatus("停止中");
-  setTimingStatus(state.timingSamples.length ? "停止（波形は保持）" : "監視開始後に記録します");
+  setWatchStatus(i18n("watch.statusStopped"));
+  setTimingStatus(state.timingSamples.length ? i18n("timing.statusStopped") : i18n("timing.statusIdle"));
 }
 
 function closeWatchSocket() {
@@ -1957,7 +2029,7 @@ function closeWatchSocket() {
 
 function watchSocketUrl() {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${location.host}/ws/watch`;
+  return withLangQuery(`${protocol}//${location.host}/ws/watch`);
 }
 
 function startWatchSocket() {
@@ -1969,7 +2041,7 @@ function startWatchSocket() {
   try {
     socket = new WebSocket(watchSocketUrl());
   } catch (error) {
-    setWatchStatus(`WS接続失敗: ${error.message}（HTTPへ切替）`, "error");
+    setWatchStatus(i18n("watch.errorWsFailed", { message: error.message }), "error");
     state.watchMode = "http";
     pollWatchValues();
     return;
@@ -1993,7 +2065,7 @@ function startWatchSocket() {
   });
   socket.addEventListener("error", () => {
     if (state.watchSocket !== socket) return;
-    setWatchStatus("WSエラー — HTTPポールへ切替", "error");
+    setWatchStatus(i18n("watch.errorWs"), "error");
     closeWatchSocket();
     if (state.watchRunning) {
       state.watchMode = "http";
@@ -2004,7 +2076,7 @@ function startWatchSocket() {
     if (state.watchSocket !== socket) return;
     state.watchSocket = null;
     if (state.watchRunning && state.watchMode === "websocket") {
-      setWatchStatus("WS切断 — 再接続待ち", "error");
+      setWatchStatus(i18n("watch.wsClosed"), "error");
       state.watchTimer = setTimeout(() => {
         if (state.watchRunning) startWatchSocket();
       }, 500);
@@ -2015,12 +2087,13 @@ function startWatchSocket() {
 function handleWatchSocketMessage(message) {
   if (!message || typeof message !== "object") return;
   if (message.type === "ready") {
-    setWatchStatus(`監視中 (WS ${Math.round(message.interval_ms)} ms)`, "running");
+    setWatchStatus(i18n("watch.statusRunningWs", { ms: Math.round(message.interval_ms) }), "running");
     return;
   }
   if (message.type === "error") {
-    setWatchStatus(`監視エラー: ${message.message || "不明"}`, "error");
-    setTimingStatus(`監視エラー: ${message.message || "不明"}`, "error");
+    const errText = i18n("watch.error", { message: message.message || i18n("watch.errorUnknown") });
+    setWatchStatus(errText, "error");
+    setTimingStatus(errText, "error");
     return;
   }
   if (message.type !== "sample") return;
@@ -2098,13 +2171,13 @@ async function pollWatchValues() {
     : "/api/plclink/memory/read";
   if (!state.watchRequestItems.length) rebuildWatchRequestItems();
   try {
-    const response = await fetch(endpoint, {
+    const response = await apiFetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ items: state.watchRequestItems }),
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || "監視データを取得できません");
+    if (!response.ok) throw new Error(data.detail || i18n("watch.fetchFailed"));
     const changed = new Set();
     const nextValues = {};
     for (const snapshot of data.values) {
@@ -2114,14 +2187,15 @@ async function pollWatchValues() {
       }
     }
     state.watchValues = nextValues;
-    setWatchStatus("監視中", "running");
+    setWatchStatus(i18n("watch.statusRunning"), "running");
     updateWatchValueDisplays(changed);
     recordTimingSample(started, nextValues);
   } catch (error) {
     state.watchValues = {};
     updateWatchValueDisplays();
-    setWatchStatus(`再接続待ち: ${error.message}`, "error");
-    setTimingStatus(`再接続待ち: ${error.message}`, "error");
+    const text = i18n("watch.reconnecting", { message: error.message });
+    setWatchStatus(text, "error");
+    setTimingStatus(text, "error");
   } finally {
     const fetchMs = performance.now() - started;
     state.watchFetchMs = state.watchFetchMs == null
@@ -2148,11 +2222,11 @@ function updateTimingSampleInfo() {
   if (!element) return;
   const count = state.timingSamples.length;
   if (!count) {
-    element.textContent = "サンプル —";
+    element.textContent = i18n("watch.sampleUnknown");
     return;
   }
   const spanMs = state.timingSamples[count - 1].t - state.timingSamples[0].t;
-  element.textContent = `サンプル ${count}（${(spanMs / 1000).toFixed(1)} s）`;
+  element.textContent = i18n("watch.sample", { count, span: (spanMs / 1000).toFixed(1) });
 }
 
 function formatTimingDuration(ms) {
@@ -2465,11 +2539,11 @@ function updateTimingMeasureInfo() {
       const ageMs = tLatest != null && tA != null ? tLatest - tA : null;
       parts.push(
         ageMs != null
-          ? `A=${formatTimingPolls(agePolls)}前（${formatTimingDuration(ageMs)}）`
-          : `A=${formatTimingPolls(agePolls)}前`,
+          ? i18n("timing.cursorAgoPollsWithTime", { polls: formatTimingPolls(agePolls), duration: formatTimingDuration(ageMs) })
+          : i18n("timing.cursorAgoPolls", { polls: formatTimingPolls(agePolls) }),
       );
     } else {
-      parts.push(`A=${formatTimingDuration(latest - state.timingCursorA)}前`);
+      parts.push(i18n("timing.cursorAgoTime", { duration: formatTimingDuration(latest - state.timingCursorA) }));
     }
   }
   if (state.timingCursorA != null && state.timingCursorB != null) {
@@ -2487,17 +2561,17 @@ function updateTimingMeasureInfo() {
       parts.push(formatTimingDelta(delta));
     }
   } else if (state.timingCursorA != null && state.timingCursorB == null) {
-    parts.push("B をクリックで区間測定");
+    parts.push(i18n("timing.cursorClickB"));
   }
   if (state.timingPulse) {
     const pulse = state.timingPulse;
     const label = state.watchItems.find((item) => item.id === pulse.id)?.label || pulse.id;
-    parts.push(`${label} ${pulse.value ? "ON" : "OFF"} ${formatTimingPulseLength(pulse)}`);
+    parts.push(`${label} ${pulse.value ? i18n("common.on") : i18n("common.off")} ${formatTimingPulseLength(pulse)}`);
   }
   if (!parts.length) {
     el.textContent = timingIsPollAxis()
-      ? "横軸は実時間線形。目盛りは各 poll の実時刻（周期がぶれると間隔が変化）。クリックで A/B。チャート外で解除。"
-      : "横軸・目盛りとも実時間。クリックでカーソル A/B（Δt と信号長）。チャート外で解除。";
+      ? i18n("timing.hintPollMeasure")
+      : i18n("timing.hintTimeMeasure");
     return;
   }
   el.textContent = parts.join(" ｜ ");
@@ -2510,7 +2584,7 @@ function renderTimingChannelList() {
   const available = new Set(bits.map((item) => item.id));
   state.timingSelectedIds = state.timingSelectedIds.filter((id) => available.has(id));
   if (!bits.length) {
-    list.innerHTML = '<div class="watch-empty">bit 信号がありません</div>';
+    list.innerHTML = `<div class="watch-empty">${escapeHtml(i18n("timing.noBitSignals"))}</div>`;
     return;
   }
   if (!state.timingSelectedIds.length && state.timingNeedsDefaultChannels) {
@@ -2572,7 +2646,7 @@ function recordTimingSample(t, values) {
     updateTimingSampleInfo();
     updateTimingViewSpan();
   }
-  if (state.watchRunning) setTimingStatus("記録中", "running");
+  if (state.watchRunning) setTimingStatus(i18n("timing.statusRecording"), "running");
   queueTimingChartDraw();
 }
 
@@ -2831,7 +2905,7 @@ function drawTimingChart() {
   if (!selected.length) {
     ctx.fillStyle = "#68758d";
     ctx.font = "12px sans-serif";
-    ctx.fillText("左の一覧から比較したい bit 信号を選択してください", padL + 8, padT + 24);
+    ctx.fillText(i18n("timing.selectSignalPrompt"), padL + 8, padT + 24);
     return;
   }
 
@@ -2942,7 +3016,7 @@ function drawTimingChart() {
     if (!points.length) {
       ctx.fillStyle = "#4a5568";
       ctx.font = "10px sans-serif";
-      ctx.fillText("データなし", padL + 6, mid + 4);
+      ctx.fillText(i18n("timing.noData"), padL + 6, mid + 4);
       return;
     }
 
@@ -2981,7 +3055,7 @@ function drawTimingChart() {
       ? findTimingPulseAt(item.id, state.timingCursorB ?? state.timingCursorA)
       : null;
     if (pulse) {
-      const label = `${pulse.value ? "ON" : "OFF"} ${formatTimingPulseLength(pulse)}`;
+      const label = `${pulse.value ? i18n("common.on") : i18n("common.off")} ${formatTimingPulseLength(pulse)}`;
       ctx.fillStyle = "#d7e0ef";
       ctx.font = "10px Consolas, monospace";
       ctx.textAlign = "right";
@@ -3189,7 +3263,7 @@ function renderPalette() {
   if ($("#catalog-count")) $("#catalog-count").textContent = available.length;
   const favoriteHtml = favorites.length ? `
     <section class="command-group">
-      <h4>お気に入り<span>${favorites.length}</span></h4>
+      <h4>${escapeHtml(i18n("palette.favorites"))}<span>${favorites.length}</span></h4>
       ${favorites.map((item) => paletteCommandButton(item, transport, isMapped)).join("")}
     </section>` : "";
   const groups = catalogGroups(filtered).map((group) => `
@@ -3200,7 +3274,7 @@ function renderPalette() {
   const hidden = unavailable.filter(matches);
   const folded = hidden.length ? `
     <details class="unsupported-fold" ${state.foldUnsupported === false ? "open" : ""}>
-      <summary>この方式では使えない ${hidden.length}</summary>
+      <summary>${escapeHtml(i18n("palette.unsupportedSummary", { count: hidden.length }))}</summary>
       ${hidden.map((item) => paletteCommandButton(item, transport, isMapped)).join("")}
     </details>` : "";
   const palette = $("#command-palette");
@@ -3256,7 +3330,7 @@ function addControl(type, target) {
   if (type === "delay") target.push({ id: state.nextId++, type, milliseconds: 100 });
   if (type === "break") {
     if (!listIsInsideLoop(target)) {
-      showToast("BREAK はループの中にだけ追加できます。");
+      showToast(i18n("toast.breakInLoopOnly"));
       return;
     }
     target.push({ id: state.nextId++, type });
@@ -3289,8 +3363,8 @@ function stepHtml(step, nested = false) {
     const def = state.catalog.find((item) => item.code === step.command);
     if (!def) {
       return `<article class="step-card generated-step unsupported-step" data-id="${step.id}">
-        ${stepHeader(step, `<strong>${escapeHtml(step.command || "?")}</strong>不明なコマンド`, nested)}
-        ${isCompact ? "" : `<div class="step-body"><p class="step-warning">カタログにないコマンドです。</p></div>`}
+        ${stepHeader(step, `<strong>${escapeHtml(step.command || "?")}</strong>${escapeHtml(i18n("sequence.unknownCommand"))}`, nested)}
+        ${isCompact ? "" : `<div class="step-body"><p class="step-warning">${escapeHtml(i18n("sequence.unknownCommandBody"))}</p></div>`}
       </article>`;
     }
     const transport = $("#transport")?.value || state.settings.transport;
@@ -3302,21 +3376,22 @@ function stepHtml(step, nested = false) {
         : !def.local_io && def.tcp_supported !== false;
     const unsupported = !supported;
     const modeLabel = def.local_io
-      ? "ローカルI/O"
-      : (transport === "field_network" ? "FNコマンド" : "PLCLINKコマンド");
+      ? i18n("palette.modeLocalIo")
+      : (transport === "field_network" ? i18n("palette.modeFn") : i18n("palette.modePlclink"));
     const fields = visibleArguments(def)
       .filter((arg) => argumentVisible(step, arg))
       .map((arg) => argumentField(step, arg))
       .join("");
     const rawVariable = argumentVariableName(step, "raw");
+    const rawLabel = i18n("sequence.rawArgs");
     const raw = usesRaw(def) ? `
-      <label>引数文字列${variableSelect("raw", rawVariable, "引数文字列")}
-        <input data-field="raw" value="${rawVariable ? `変数 ${escapeHtml(rawVariable)}` : escapeHtml(step.arguments.raw || "")}" ${rawVariable ? "disabled" : ""} placeholder="別資料の構文に従って入力">
+      <label>${escapeHtml(rawLabel)}${variableSelect("raw", rawVariable, rawLabel)}
+        <input data-field="raw" value="${rawVariable ? escapeHtml(i18n("variable.reference", { name: rawVariable })) : escapeHtml(step.arguments.raw || "")}" ${rawVariable ? "disabled" : ""} placeholder="${escapeHtml(i18n("sequence.rawPlaceholder"))}">
       </label>` : "";
     const ignoreOption = `
-      <label class="step-option" title="送信後に装置応答を待たず、すぐ次のカードへ進みます">
+      <label class="step-option" title="${escapeHtml(i18n("sequence.ignoreResponseTitle"))}">
         <input data-field="ignore_response" type="checkbox" ${step.ignore_response ? "checked" : ""}>
-        応答を待たない
+        ${escapeHtml(i18n("sequence.ignoreResponse"))}
       </label>`;
     const compactSummary = commandCompactSummary(step, def);
     const mappedCode = def.local_io
@@ -3329,8 +3404,9 @@ function stepHtml(step, nested = false) {
       ? (def.field_network_reason || def.plclink_reason)
       : def.plclink_reason;
     const missing = missingLabels(step);
+    const separator = i18n("common.listSeparator");
     const missingNote = missing.length
-      ? `<p class="step-warning missing-note">未入力: ${escapeHtml(missing.join("、"))}</p>`
+      ? `<p class="step-warning missing-note">${escapeHtml(i18n("sequence.missingNote", { labels: missing.join(separator) }))}</p>`
       : "";
     return `<article class="step-card generated-step${unsupported ? " unsupported-step" : ""}${missing.length ? " incomplete-step" : ""}" data-id="${step.id}">
       ${stepHeader(step, `<strong>${displayCode}</strong>${escapeHtml(def.name)}${isMapped ? `<small class="plclink-code">${modeLabel}</small>` : ""}${def.tool_name ? `<small class="tool-badge">${escapeHtml(def.tool_id)} ${escapeHtml(def.tool_name)}</small>` : ""}`, nested)}
@@ -3338,8 +3414,8 @@ function stepHtml(step, nested = false) {
     ? `${compactSummary ? `<div class="step-compact-row">${compactSummary}</div>` : ""}${missingNote}`
     : `<div class="step-body">${fields}${raw}${ignoreOption}
         ${missingNote}
-        ${unsupported ? `<p class="step-warning">${escapeHtml(unsupportedReason || "この通信方式では使用できません")}</p>` : ""}
-        <p class="step-description">${escapeHtml(def.description || "")}${!isMapped && def.example ? `　例: ${escapeHtml(def.example)}` : ""}</p>
+        ${unsupported ? `<p class="step-warning">${escapeHtml(unsupportedReason || i18n("sequence.unsupportedDefault"))}</p>` : ""}
+        <p class="step-description">${escapeHtml(def.description || "")}${!isMapped && def.example ? `　${escapeHtml(i18n("sequence.example", { example: def.example }))}` : ""}</p>
       </div>`}
     </article>`;
   }
@@ -3352,116 +3428,118 @@ function stepHtml(step, nested = false) {
     ).join("");
     const missingName = !String(step.name || "").trim();
     const title = isCompact
-      ? `<strong>VAR</strong>${escapeHtml(step.name || "変数")} ${escapeHtml(variableSourceLabel(source))}`
-      : "<strong>VAR</strong>変数";
+      ? `<strong>VAR</strong>${escapeHtml(step.name || i18n("control.variableTitleDefault"))} ${escapeHtml(variableSourceLabel(source))}`
+      : `<strong>VAR</strong>${escapeHtml(i18n("control.variableTitleDefault"))}`;
     const cardField = source === "card_response" || source === "card_status"
-      ? `<label>カード<select data-field="card_id"><option value="">選んでください</option>${cardOptions}</select></label>`
+      ? `<label>${escapeHtml(i18n("control.variableCardLabel"))}<select data-field="card_id"><option value="">${escapeHtml(i18n("control.variableCardChoose"))}</option>${cardOptions}</select></label>`
       : "";
     const portField = source === "output_port"
       ? `<label>${escapeHtml(outputPortCaption())}<input data-field="port" type="number" min="1" max="256" step="1" value="${Number(step.port) || 1}"></label>`
       : "";
     const literalField = source === "literal"
-      ? `<label>入れる文字<input data-field="value" type="text" maxlength="500" value="${escapeHtml(step.value || "")}"></label>`
+      ? `<label>${escapeHtml(i18n("control.variableLiteralLabel"))}<input data-field="value" type="text" maxlength="500" value="${escapeHtml(step.value || "")}"></label>`
       : "";
     const resultFormat = step.result_format || "dec";
     const resultMax = Math.max(0, resultDataSize() - 2);
     const resultField = source === "result_data"
-      ? `<label>相対アドレス<input data-field="offset" type="number" min="0" max="${resultMax}" step="2" value="${Number(step.offset) || 0}"></label>
-        <label>表記<select data-field="result_format">
-          <option value="dec" ${resultFormat === "dec" ? "selected" : ""}>整数</option>
-          <option value="fixed" ${resultFormat === "fixed" ? "selected" : ""}>固定小数点</option>
-          <option value="hex" ${resultFormat === "hex" ? "selected" : ""}>16進</option>
-          <option value="string" ${resultFormat === "string" ? "selected" : ""}>文字列</option>
+      ? `<label>${escapeHtml(i18n("control.variableOffsetLabel"))}<input data-field="offset" type="number" min="0" max="${resultMax}" step="2" value="${Number(step.offset) || 0}"></label>
+        <label>${escapeHtml(i18n("control.variableFormatLabel"))}<select data-field="result_format">
+          <option value="dec" ${resultFormat === "dec" ? "selected" : ""}>${escapeHtml(i18n("variable.formatDec"))}</option>
+          <option value="fixed" ${resultFormat === "fixed" ? "selected" : ""}>${escapeHtml(i18n("variable.formatFixed"))}</option>
+          <option value="hex" ${resultFormat === "hex" ? "selected" : ""}>${escapeHtml(i18n("variable.formatHex"))}</option>
+          <option value="string" ${resultFormat === "string" ? "selected" : ""}>${escapeHtml(i18n("variable.formatString"))}</option>
         </select></label>`
       : "";
     const tcpNote = transport === "tcp" && (source === "output_port" || source === "result_data")
-      ? `<p class="step-warning">${source === "output_port" ? "TCP では出力ポートを直接読めません。" : "TCP では結果データ出力を直接読めません。"}コマンドの応答を選んでください。</p>`
+      ? `<p class="step-warning">${escapeHtml(source === "output_port" ? i18n("control.variableTcpOutputPort") : i18n("control.variableTcpResultData"))}${escapeHtml(i18n("control.variableChooseResponse"))}</p>`
       : "";
+    const descExtra = (source === "card_response" || source === "card_status") ? i18n("control.variableDescCardOrder") : "";
+    const descResult = source === "result_data" ? i18n("control.variableDescResultData") : "";
     return `<article class="step-card variable-step generated-step${missingName ? " incomplete-step" : ""}" data-id="${step.id}">
       ${stepHeader(step, title, nested)}
       ${isCompact ? "" : `<div class="step-body">
-        <label class="${missingName ? "missing-arg" : ""}">名前
-          <input data-field="name" type="text" maxlength="40" value="${escapeHtml(step.name || "")}" placeholder="ロット">
+        <label class="${missingName ? "missing-arg" : ""}">${escapeHtml(i18n("control.variableNameLabel"))}
+          <input data-field="name" type="text" maxlength="40" value="${escapeHtml(step.name || "")}" placeholder="${escapeHtml(i18n("control.variableNamePlaceholder"))}">
         </label>
-        <label>格納する値<select data-field="source">
-          <option value="last_response" ${source === "last_response" ? "selected" : ""}>直前のカードの応答</option>
-          <option value="last_status" ${source === "last_status" ? "selected" : ""}>直前のカードの結果（AK/NK/ER）</option>
-          <option value="card_response" ${source === "card_response" ? "selected" : ""}>指定したカードの応答</option>
-          <option value="card_status" ${source === "card_status" ? "selected" : ""}>指定したカードの結果（AK/NK/ER）</option>
-          <option value="output_port" ${source === "output_port" ? "selected" : ""}>出力ポート</option>
-          <option value="result_data" ${source === "result_data" ? "selected" : ""}>結果データ出力</option>
-          <option value="literal" ${source === "literal" ? "selected" : ""}>固定の文字</option>
+        <label>${escapeHtml(i18n("control.variableSourceLabel"))}<select data-field="source">
+          <option value="last_response" ${source === "last_response" ? "selected" : ""}>${escapeHtml(i18n("variable.sourceLastResponse"))}</option>
+          <option value="last_status" ${source === "last_status" ? "selected" : ""}>${escapeHtml(i18n("variable.sourceLastStatus"))}</option>
+          <option value="card_response" ${source === "card_response" ? "selected" : ""}>${escapeHtml(i18n("variable.sourceCardResponse"))}</option>
+          <option value="card_status" ${source === "card_status" ? "selected" : ""}>${escapeHtml(i18n("variable.sourceCardStatus"))}</option>
+          <option value="output_port" ${source === "output_port" ? "selected" : ""}>${escapeHtml(i18n("variable.sourceOutputPort"))}</option>
+          <option value="result_data" ${source === "result_data" ? "selected" : ""}>${escapeHtml(i18n("variable.sourceResultData"))}</option>
+          <option value="literal" ${source === "literal" ? "selected" : ""}>${escapeHtml(i18n("variable.sourceLiteral"))}</option>
         </select></label>
         ${cardField}${portField}${resultField}${literalField}${tcpNote}
-        <p class="step-description">名前で残します。あとのコマンド引数で、その名前を選べます。装置へは送りません。${source === "card_response" || source === "card_status" ? "指定したカードは、この変数より前に置いてください。" : ""}${source === "result_data" ? "相対アドレスは監視の +0000 と同じ位置です。文字列は、引用符が付いている行の番号を指定し、表記を「文字列」にします。" : ""}</p>
+        <p class="step-description">${escapeHtml(i18n("control.variableDescription"))}${escapeHtml(descExtra)}${escapeHtml(descResult)}</p>
       </div>`}
     </article>`;
   }
   if (step.type === "note") {
     const title = isCompact
-      ? `<strong>MEMO</strong>${escapeHtml(step.text || "メモ")}`
-      : "<strong>MEMO</strong>メモ";
+      ? `<strong>MEMO</strong>${escapeHtml(step.text || i18n("control.noteTitleDefault"))}`
+      : `<strong>MEMO</strong>${escapeHtml(i18n("control.noteTitleDefault"))}`;
     return `<article class="step-card note-step generated-step" data-id="${step.id}">
       ${stepHeader(step, title, nested)}
-      ${isCompact ? "" : `<div class="step-body"><label>メモ
-        <textarea data-field="text" maxlength="500" rows="2" placeholder="装置には送りません">${escapeHtml(step.text || "")}</textarea>
+      ${isCompact ? "" : `<div class="step-body"><label>${escapeHtml(i18n("control.noteLabel"))}
+        <textarea data-field="text" maxlength="500" rows="2" placeholder="${escapeHtml(i18n("control.notePlaceholder"))}">${escapeHtml(step.text || "")}</textarea>
       </label></div>`}
     </article>`;
   }
   if (step.type === "delay") {
     const title = isCompact
-      ? `<strong>WAIT</strong>待機 ${step.milliseconds}ms`
-      : "<strong>WAIT</strong>待機";
+      ? `<strong>WAIT</strong>${escapeHtml(i18n("control.waitTitle", { ms: step.milliseconds }))}`
+      : `<strong>WAIT</strong>${escapeHtml(i18n("control.waitTitleDefault"))}`;
     return `<article class="step-card control-step generated-step" data-id="${step.id}">
       ${stepHeader(step, title, nested)}
-      ${isCompact ? "" : `<div class="step-body"><label>待機時間（ミリ秒）
+      ${isCompact ? "" : `<div class="step-body"><label>${escapeHtml(i18n("control.waitLabel"))}
         <input data-field="milliseconds" type="number" min="0" max="3600000" value="${step.milliseconds}">
       </label></div>`}
     </article>`;
   }
   if (step.type === "break") {
     return `<article class="step-card break-step generated-step" data-id="${step.id}">
-      ${stepHeader(step, "<strong>BREAK</strong>最寄りのループを抜ける", nested)}
+      ${stepHeader(step, `<strong>BREAK</strong>${escapeHtml(i18n("control.breakCardTitle"))}`, nested)}
       ${isCompact ? "" : `<div class="step-body">
-        <p class="step-description">このカードを実行すると、内側から最も近いループを終了します。</p>
+        <p class="step-description">${escapeHtml(i18n("control.breakDescription"))}</p>
       </div>`}
     </article>`;
   }
   if (step.type === "loop") {
     const title = isCompact
       ? `<strong>LOOP</strong>×${step.count}`
-      : "<strong>LOOP</strong>指定回数くり返す";
+      : `<strong>LOOP</strong>${escapeHtml(i18n("control.loopTitle"))}`;
     return `<article class="step-card control-step generated-step" data-id="${step.id}">
       ${stepHeader(step, title, nested)}
-      ${isCompact ? "" : `<div class="step-body"><label>回数
+      ${isCompact ? "" : `<div class="step-body"><label>${escapeHtml(i18n("control.loopCountLabel"))}
         <input data-field="count" type="number" min="1" max="10000" value="${step.count}">
       </label></div>`}
-      ${childArea(step, "steps", "くり返すカード")}
+      ${childArea(step, "steps", i18n("control.loopChildren"))}
     </article>`;
   }
   return `<article class="step-card control-step generated-step" data-id="${step.id}">
     ${stepHeader(step, (() => {
-      if (!isCompact) return "<strong>IF</strong>応答による条件分岐";
-      const sourceLabel = step.source === "status" ? "AK/NK/ER" : "受信全体";
-      const opLabel = step.operator === "equals" ? "等しい"
-        : step.operator === "contains" ? "含む"
-          : "含まない";
-      return `<strong>IF</strong>${sourceLabel} ${opLabel} ${escapeHtml(step.value)}`;
+      if (!isCompact) return `<strong>IF</strong>${escapeHtml(i18n("control.ifTitle"))}`;
+      const sourceLabel = step.source === "status" ? "AK/NK/ER" : i18n("control.ifSourceAll");
+      const opLabel = step.operator === "equals" ? i18n("control.opEquals")
+        : step.operator === "contains" ? i18n("control.opContains")
+          : i18n("control.opNotContains");
+      return `<strong>IF</strong>${escapeHtml(sourceLabel)} ${escapeHtml(opLabel)} ${escapeHtml(step.value)}`;
     })(), nested)}
     ${isCompact ? "" : `<div class="step-body">
-      <label>判定対象<select data-field="source">
+      <label>${escapeHtml(i18n("control.ifTargetLabel"))}<select data-field="source">
         <option value="status" ${step.source === "status" ? "selected" : ""}>AK / NK / ER</option>
-        <option value="response" ${step.source === "response" ? "selected" : ""}>受信内容全体</option>
+        <option value="response" ${step.source === "response" ? "selected" : ""}>${escapeHtml(i18n("control.ifSourceResponse"))}</option>
       </select></label>
-      <label>条件<select data-field="operator">
-        <option value="equals" ${step.operator === "equals" ? "selected" : ""}>等しい</option>
-        <option value="contains" ${step.operator === "contains" ? "selected" : ""}>含む</option>
-        <option value="not_contains" ${step.operator === "not_contains" ? "selected" : ""}>含まない</option>
+      <label>${escapeHtml(i18n("control.ifConditionLabel"))}<select data-field="operator">
+        <option value="equals" ${step.operator === "equals" ? "selected" : ""}>${escapeHtml(i18n("control.opEquals"))}</option>
+        <option value="contains" ${step.operator === "contains" ? "selected" : ""}>${escapeHtml(i18n("control.opContains"))}</option>
+        <option value="not_contains" ${step.operator === "not_contains" ? "selected" : ""}>${escapeHtml(i18n("control.opNotContains"))}</option>
       </select></label>
-      <label>比較値<input data-field="value" value="${escapeHtml(step.value)}"></label>
+      <label>${escapeHtml(i18n("control.ifCompareLabel"))}<input data-field="value" value="${escapeHtml(step.value)}"></label>
     </div>`}
-    ${childArea(step, "then_steps", "条件に一致")}
-    ${childArea(step, "else_steps", "条件に不一致")}
+    ${childArea(step, "then_steps", i18n("control.ifThen"))}
+    ${childArea(step, "else_steps", i18n("control.ifElse"))}
   </article>`;
 }
 
@@ -3471,7 +3549,7 @@ function commandCompactSummary(step, def) {
     if (!argumentVisible(step, arg)) continue;
     const variableName = argumentVariableName(step, arg.key);
     if (variableName) {
-      parts.push(`${arg.label}:変数 ${variableName}`);
+      parts.push(i18n("sequence.summaryBound", { label: arg.label, name: variableName }));
       if (parts.length >= 3) break;
       continue;
     }
@@ -3481,31 +3559,36 @@ function commandCompactSummary(step, def) {
     if (parts.length >= 3) break;
   }
   const rawVariable = argumentVariableName(step, "raw");
-  if (rawVariable) parts.push(`raw:変数 ${rawVariable}`);
+  if (rawVariable) parts.push(i18n("sequence.summaryRawBound", { name: rawVariable }));
   else if (usesRaw(def) && step.arguments.raw) parts.push(`raw:${step.arguments.raw}`);
-  if (step.ignore_response) parts.push("応答無視");
+  if (step.ignore_response) parts.push(i18n("sequence.summaryIgnoreResponse"));
   return parts.map((part) => `<span>${escapeHtml(part)}</span>`).join("");
 }
 
 function stepHeader(step, title, nested) {
+  const drag = i18n("sequence.dragMove");
+  const up = i18n("sequence.moveUp");
+  const down = i18n("sequence.moveDown");
+  const dup = i18n("sequence.duplicate");
+  const del = i18n("common.delete");
   return `<div class="step-header">
-    <span class="drag-handle" draggable="true" title="ドラッグして移動" aria-label="ドラッグして移動">⠿</span><div class="step-title">${title}</div>
+    <span class="drag-handle" draggable="true" title="${escapeHtml(drag)}" aria-label="${escapeHtml(drag)}">⠿</span><div class="step-title">${title}</div>
     <div class="step-actions">
-      <button data-action="up" title="上へ" aria-label="上へ">↑</button><button data-action="down" title="下へ" aria-label="下へ">↓</button>
-      <button data-action="duplicate" title="複製" aria-label="複製">⧉</button>
-      <button data-action="remove" class="remove" title="削除" aria-label="削除">×</button>
+      <button data-action="up" title="${escapeHtml(up)}" aria-label="${escapeHtml(up)}">↑</button><button data-action="down" title="${escapeHtml(down)}" aria-label="${escapeHtml(down)}">↓</button>
+      <button data-action="duplicate" title="${escapeHtml(dup)}" aria-label="${escapeHtml(dup)}">⧉</button>
+      <button data-action="remove" class="remove" title="${escapeHtml(del)}" aria-label="${escapeHtml(del)}">×</button>
     </div>
   </div>`;
 }
 
 function variableSourceLabel(source) {
-  if (source === "last_status") return "直前の結果";
-  if (source === "card_response") return "指定カードの応答";
-  if (source === "card_status") return "指定カードの結果";
-  if (source === "output_port") return "出力ポート";
-  if (source === "result_data") return "結果データ出力";
-  if (source === "literal") return "固定の文字";
-  return "直前の応答";
+  if (source === "last_status") return i18n("variable.labelLastStatus");
+  if (source === "card_response") return i18n("variable.labelCardResponse");
+  if (source === "card_status") return i18n("variable.labelCardStatus");
+  if (source === "output_port") return i18n("variable.labelOutputPort");
+  if (source === "result_data") return i18n("variable.labelResultData");
+  if (source === "literal") return i18n("variable.labelLiteral");
+  return i18n("variable.labelLastResponse");
 }
 
 function resultDataSize() {
@@ -3517,17 +3600,17 @@ function resultDataSize() {
 }
 
 function resultFormatLabel(format) {
-  if (format === "fixed") return "固定小数点";
-  if (format === "hex") return "16進";
-  if (format === "string") return "文字列";
-  return "整数";
+  if (format === "fixed") return i18n("variable.formatFixed");
+  if (format === "hex") return i18n("variable.formatHex");
+  if (format === "string") return i18n("variable.formatString");
+  return i18n("variable.formatDec");
 }
 
 function outputPortCaption() {
   const transport = $("#transport")?.value || state.settings.transport;
-  if (transport === "field_network") return "ESO ポート";
-  if (transport === "plclink") return "PLO ポート";
-  return "出力ポート";
+  if (transport === "field_network") return i18n("variable.portEso");
+  if (transport === "plclink") return i18n("variable.portPlo");
+  return i18n("variable.portOutput");
 }
 
 function collectCommandCards(steps, prefix = "", found = []) {
@@ -3584,10 +3667,10 @@ function variableSelect(key, selected, label) {
   if (selected && !names.includes(selected)) names.unshift(selected);
   if (!names.length) return "";
   const options = names.map((name) =>
-    `<option value="${escapeHtml(name)}" ${selected === name ? "selected" : ""}>変数 ${escapeHtml(name)}</option>`
+    `<option value="${escapeHtml(name)}" ${selected === name ? "selected" : ""}>${escapeHtml(i18n("variable.reference", { name }))}</option>`
   ).join("");
-  return `<select class="arg-bind" data-var="${escapeHtml(key)}" aria-label="${escapeHtml(label)}に使う変数">
-    <option value="" ${selected ? "" : "selected"}>入力した値</option>${options}
+  return `<select class="arg-bind" data-var="${escapeHtml(key)}" aria-label="${escapeHtml(i18n("variable.bindAria", { label }))}">
+    <option value="" ${selected ? "" : "selected"}>${escapeHtml(i18n("variable.bindTyped"))}</option>${options}
   </select>`;
 }
 
@@ -3603,7 +3686,7 @@ function argumentField(step, arg) {
   }
   if (variableName) {
     return `<label class="${missingClass}">${escapeHtml(arg.label)}${source}
-      <input data-arg="${arg.key}" type="text" value="変数 ${escapeHtml(variableName)}" disabled></label>`;
+      <input data-arg="${arg.key}" type="text" value="${escapeHtml(i18n("variable.reference", { name: variableName }))}" disabled></label>`;
   }
   const attrs = arg.type === "integer"
     ? `type="number" min="${arg.min}" max="${arg.max}" step="1"`
@@ -3614,13 +3697,13 @@ function argumentField(step, arg) {
 function childArea(step, key, label) {
   const isCompact = state.viewMode === "compact";
   const controlOptions = `
-    <optgroup label="制御カード">
-      <option value="control:delay">WAIT｜待機</option>
-      <option value="control:if">IF｜条件分岐</option>
-      <option value="control:loop">LOOP｜くり返し</option>
-      <option value="control:break">BREAK｜ループを抜ける</option>
-      <option value="control:note">MEMO｜メモ</option>
-      <option value="control:variable">VAR｜変数</option>
+    <optgroup label="${escapeHtml(i18n("control.groupLabel"))}">
+      <option value="control:delay">${escapeHtml(i18n("control.optionDelay"))}</option>
+      <option value="control:if">${escapeHtml(i18n("control.optionIf"))}</option>
+      <option value="control:loop">${escapeHtml(i18n("control.optionLoop"))}</option>
+      <option value="control:break">${escapeHtml(i18n("control.optionBreak"))}</option>
+      <option value="control:note">${escapeHtml(i18n("control.optionNote"))}</option>
+      <option value="control:variable">${escapeHtml(i18n("control.optionVariable"))}</option>
     </optgroup>`;
   const commandOptions = catalogGroups(state.catalog.filter((item) => commandAvailable(item))).map((group) =>
     `<optgroup label="${escapeHtml(group.label)}">${group.items.map(
@@ -3628,10 +3711,10 @@ function childArea(step, key, label) {
     ).join("")}</optgroup>`
   ).join("");
   return `<div class="nested-area" data-child="${key}">
-    <h3>${label}</h3>
+    <h3>${escapeHtml(label)}</h3>
     <div class="nested-cards drop-list" data-parent-id="${step.id}" data-child-key="${key}">${(step[key] || []).map((child) => stepHtml(child, true)).join("")}</div>
     ${isCompact ? "" : `<div class="nested-add"><select data-child-select="${key}">${controlOptions}${commandOptions}</select>
-      <button data-add-child="${key}" class="icon-button" aria-label="カードを追加">＋ カード追加</button>
+      <button data-add-child="${key}" class="icon-button" aria-label="${escapeHtml(i18n("sequence.addCardAria"))}">${escapeHtml(i18n("sequence.addCard"))}</button>
     </div>`}
   </div>`;
 }
@@ -3639,12 +3722,12 @@ function childArea(step, key, label) {
 function catalogGroups(items) {
   const groups = [];
   const system = items.filter((item) => item.category === "system");
-  if (system.length) groups.push({ key: "system", label: "システム", items: system });
+  if (system.length) groups.push({ key: "system", label: i18n("palette.groupSystem"), items: system });
   const tools = new Map();
   items.filter((item) => item.category === "tool").forEach((item) => {
     const key = item.tool_id || "tool";
     if (!tools.has(key)) {
-      tools.set(key, { key, label: `${key} ${item.tool_name || "ツール"}`, items: [] });
+      tools.set(key, { key, label: `${key} ${item.tool_name || i18n("palette.toolFallback")}`, items: [] });
     }
     tools.get(key).items.push(item);
   });
@@ -3861,7 +3944,7 @@ function stepAction(id, action) {
     const nextId = state.nextId;
     found.list.splice(found.index, 1);
     renderSequence();
-    showToast("カードを削除しました", () => {
+    showToast(i18n("toast.deleteCard"), () => {
       state.steps = snapshot;
       state.nextId = nextId;
       renderSequence();
@@ -4096,11 +4179,35 @@ function closeSettingsDialog() {
   if (!dialog) return;
   if (typeof dialog.close === "function" && dialog.open) dialog.close();
   else dialog.removeAttribute("open");
+  document.body.classList.remove("tour-settings-open");
+}
+
+/** Non-modal settings open so Driver.js overlay can highlight form controls. */
+function openSettingsForTour(transport) {
+  const dialog = $("#settings-dialog");
+  if (!dialog) return;
+  applySettingsToForm();
+  renderProfileSelect();
+  if (transport && $("#transport")) {
+    $("#transport").value = transport;
+  }
+  syncTransportUi();
+  selectSettingsPage("connection");
+  if (typeof dialog.close === "function" && dialog.open) dialog.close();
+  document.body.classList.add("tour-settings-open");
+  if (typeof dialog.show === "function") dialog.show();
+  else dialog.setAttribute("open", "");
+}
+
+function closeSettingsFromTour() {
+  applySettingsToForm();
+  syncTransportUi();
+  closeSettingsDialog();
 }
 
 async function syncPlcLinkPortFromServer() {
   try {
-    const response = await fetch("/api/plclink/status");
+    const response = await apiFetch("/api/plclink/status");
     if (!response.ok) return;
     const data = await response.json();
     if (data.status !== "listening" || !data.bind) return;
@@ -4120,10 +4227,14 @@ async function saveSettings(event) {
     refreshMappedWatchItems();
     renderWatchList();
     renderTimingChannelList();
+    // Transport-dependent chrome (PLI/ESI panel, watch tabs) must update on save,
+    // not only when the settings dialog is reopened (applySettingsToForm → syncTransportUi).
+    syncWorkspaceForTransport();
     closeSettingsDialog();
     void applySavedConnectionSettings();
   } catch (error) {
     console.error(error);
+    state.plclinkResultLive = false;
     const resultEl = $("#connection-test-result");
     if (resultEl) {
       resultEl.className = "test-result error";
@@ -4146,7 +4257,7 @@ async function applySavedConnectionSettings() {
     if (resultEl) {
       resultEl.className = "test-result success";
       resultEl.textContent =
-        `${resultEl.textContent}\n設定を保存しました（既存の VTV 接続は維持します）。`;
+        `${resultEl.textContent}\n${i18n("settings.saved")}`;
     }
     return;
   }
@@ -4276,7 +4387,7 @@ function syncTransportUi() {
 
   const hint = $("#transport-hint");
   if (isPlc) {
-    $("#host-label-text").textContent = "待受アドレス";
+    $("#host-label-text").textContent = i18n("settings.hostListen");
     $("#host").placeholder = "0.0.0.0";
     if (!$("#host").value || prev === "tcp" || prev === "field_network") {
       $("#host").value = "0.0.0.0";
@@ -4284,37 +4395,30 @@ function syncTransportUi() {
     if ([55555, 44818].includes(Number($("#port").value)) || prev !== "plclink") {
       $("#port").value = 5000;
     }
-    $("#port-label-text").textContent = "待受ポート";
-    hint.textContent =
-      "アプリが疑似 PLC（MC 3E）として全 NIC で待ち受けます。"
-      + " 先に「疑似PLC待受開始」を押し、VTV 側の接続先を"
-      + " この PC の LAN IP:待受ポート にしてください。";
+    $("#port-label-text").textContent = i18n("settings.portListen");
+    hint.textContent = i18n("settings.hintPlclink");
   } else if (isFn) {
-    $("#host-label-text").textContent = "装置 IP";
+    $("#host-label-text").textContent = i18n("settings.hostDevice");
     $("#host").placeholder = "192.168.0.10";
     if ($("#host").value === "0.0.0.0" || prev === "plclink") $("#host").value = "";
     if ([5000, 55555].includes(Number($("#port").value)) || prev !== "field_network") {
       $("#port").value = 44818;
     }
-    $("#port-label-text").textContent = "EIP ポート";
-    hint.textContent =
-      "アプリが EtherNet/IP Scanner として VTV（Adapter）へ接続します。"
-      + " 接続先は VTV 本体の IP（LAN1/LAN2、ポート 44818）。"
-      + " VTV で「フィールドネットワーク（通常）を有効にする」を ON にし、"
-      + " 作成した EDS を両方にインポートしてサイズを一致させてください。";
+    $("#port-label-text").textContent = i18n("settings.portEip");
+    hint.textContent = i18n("settings.hintFieldNetwork");
     if (prev !== null && prev !== "field_network") {
       applyFieldNetworkDefaultsToForm();
     }
     updateFnLayoutHint();
   } else {
-    $("#host-label-text").textContent = "装置 IP";
+    $("#host-label-text").textContent = i18n("settings.hostDevice");
     $("#host").placeholder = "192.168.0.10";
     if ($("#host").value === "0.0.0.0" || prev === "plclink") $("#host").value = "";
     if ([5000, 44818].includes(Number($("#port").value)) || prev !== "tcp") {
       $("#port").value = 55555;
     }
-    $("#port-label-text").textContent = "ポート";
-    hint.textContent = "装置の Network I/O（TCP）へクライアント接続します。";
+    $("#port-label-text").textContent = i18n("settings.portDefault");
+    hint.textContent = i18n("settings.hintTcp");
   }
 
   $("#start-softplc-button")?.classList.toggle("hidden", !isPlc);
@@ -4351,7 +4455,7 @@ function applyFieldNetworkDefaultsToForm() {
   $("#fn-result-watch-words").value = 64;
   $("#fn-connection-path").value = "20 04 24 01 2C 14 2C 0A";
   $("#fn-o-to-t-header").value = "4";
-  state.statusSignalDraft = DEFAULT_FN_STATUS_SIGNALS.map((item) => ({ ...item }));
+  state.statusSignalDraft = defaultFnStatusSignals();
   renderStatusSignalTable();
 }
 
@@ -4372,9 +4476,8 @@ function updateFnLayoutHint() {
   const okIn = calcIn === inSize;
   const okOut = calcOut === outSize;
   hint.textContent =
-    `割付計算: 入力 ${calcIn} byte / 出力 ${calcOut} byte`
-    + `（EDS: 入力 ${inSize} / 出力 ${outSize}）`
-    + (okIn && okOut ? " — 一致" : " — 不一致。ESI/ESO・語数または EDS を調整してください");
+    i18n("settings.fnLayoutCalc", { calcIn, calcOut, inSize, outSize })
+    + (okIn && okOut ? i18n("settings.fnLayoutMatch") : i18n("settings.fnLayoutMismatch"));
   hint.classList.toggle("error-note", !(okIn && okOut));
 }
 
@@ -4385,14 +4488,14 @@ async function onEdsImport(event) {
   if (!file) return;
   const body = new FormData();
   body.append("file", file);
-  if (status) status.textContent = "EDS を解析中…";
+  if (status) status.textContent = i18n("settings.fnEdsParsing");
   try {
-    const response = await fetch("/api/field-network/eds/import", {
+    const response = await apiFetch("/api/field-network/eds/import", {
       method: "POST",
       body,
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || "EDS を読み込めません");
+    if (!response.ok) throw new Error(data.detail || i18n("settings.fnEdsReadFailed"));
     const s = data.suggested || {};
     if (s.fn_input_size != null) $("#fn-input-size").value = s.fn_input_size;
     if (s.fn_output_size != null) $("#fn-output-size").value = s.fn_output_size;
@@ -4411,12 +4514,15 @@ async function onEdsImport(event) {
     const name = data.eds?.catalog || data.eds?.product_name || file.name;
     const warnings = (data.eds?.warnings || []).join(" / ");
     if (status) {
-      status.textContent =
-        `取り込み完了: ${name}`
-        + `（IN ${s.fn_input_size} / OUT ${s.fn_output_size}`
-        + ` / ESI ${s.fn_esi_ports ?? "-"} / ESO ${s.fn_eso_ports ?? "-"}`
-        + ` / CMD ${s.command_size ?? "-"} / RPI ${s.fn_rpi_us}μs）`
-        + (warnings ? ` ※${warnings}` : "");
+      status.textContent = i18n("settings.fnEdsImported", {
+        name,
+        in: s.fn_input_size,
+        out: s.fn_output_size,
+        esi: s.fn_esi_ports ?? "-",
+        eso: s.fn_eso_ports ?? "-",
+        cmd: s.command_size ?? "-",
+        rpi: s.fn_rpi_us,
+      }) + (warnings ? i18n("settings.fnEdsWarnings", { warnings }) : "");
     }
   } catch (error) {
     if (status) status.textContent = error.message;
@@ -4427,29 +4533,30 @@ async function onEdsImport(event) {
 
 async function connectFieldNetwork() {
   const settings = readSettingsForm();
+  state.plclinkResultLive = false;
   const resultEl = $("#connection-test-result");
   if (settings.transport !== "field_network") {
     resultEl.className = "test-result error";
-    resultEl.textContent = "Field Network モードで実行してください。";
+    resultEl.textContent = i18n("settings.fnModeRequired");
     return null;
   }
   if (!settings.host) {
     resultEl.className = "test-result error";
-    resultEl.textContent = "装置 IP を入力してください。";
+    resultEl.textContent = i18n("settings.hostRequired");
     return null;
   }
   resultEl.className = "test-result";
-  resultEl.textContent = "EtherNet/IP 接続中…";
+  resultEl.textContent = i18n("settings.fnConnecting");
   try {
-    const response = await fetch("/api/field-network/connect", {
+    const response = await apiFetch("/api/field-network/connect", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(settings),
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || "接続できません");
+    if (!response.ok) throw new Error(data.detail || i18n("settings.connectFailed"));
     resultEl.className = "test-result success";
-    resultEl.textContent = data.message || "接続しました";
+    resultEl.textContent = data.message || i18n("settings.connected");
     markConnectionVerified(true, settings);
     state.settings = settings;
     state.fnLive = true;
@@ -4477,8 +4584,10 @@ function updateVirtualIoRange() {
   const pliCount = Math.max(1, Number($("#pli-port-count")?.value) || 32);
   const plo = Number($("#plo-address")?.value) || 0;
   const ploCount = Math.max(1, Number($("#plo-port-count")?.value) || 32);
-  hint.textContent = `仮想入力 M${pli}–M${pli + pliCount - 1} / 仮想出力 M${plo}–M${plo + ploCount - 1}。`
-    + "VTV の仮想I/Oと同じ先頭にしてください。";
+  hint.textContent = i18n("settings.virtualIoRange", {
+    pliStart: pli, pliEnd: pli + pliCount - 1,
+    ploStart: plo, ploEnd: plo + ploCount - 1,
+  });
 }
 
 function updateBusyAddressHint() {
@@ -4494,8 +4603,7 @@ function updateBusyAddressHint() {
   const port = Number(busySignal?.plo_port) || Number($("#busy-port").value) || 1;
   const busy = plo + port - 1;
   const count = state.plclinkStatusSignalDraft.length;
-  hint.textContent = `BUSY 実アドレス: M${busy}（PLO先頭 M${plo} + Port ${port} - 1 / ポート数 ${portCount}）。`
-    + `監視信号 ${count} 件。VTV の「ステータス信号」割付と一致させてください。`;
+  hint.textContent = i18n("settings.busyAddressHint", { busy, plo, port, portCount, count });
   updateVirtualIoRange();
 }
 
@@ -4614,22 +4722,76 @@ function startSoftPlcStatusPoll() {
   pollLinkStatus();
 }
 
+function plcLinkConnectedLabel(data) {
+  const connected = Array.isArray(data?.connected_targets)
+    ? data.connected_targets.filter(Boolean)
+    : [];
+  return connected.join(" / ");
+}
+
+function writePlcLinkResult(data, { track = true } = {}) {
+  const resultEl = $("#connection-test-result");
+  if (!resultEl) return;
+  const listening = data?.status === "listening";
+  const count = Number(data?.client_count) || 0;
+  if (!listening) {
+    resultEl.className = "test-result";
+    resultEl.textContent = data?.message || "";
+  } else if (count > 0) {
+    resultEl.className = "test-result success";
+    const target = plcLinkConnectedLabel(data);
+    state.plclinkConnectedLabel = target;
+    resultEl.textContent = target
+      ? i18n("settings.plclinkConnected", { target })
+      : i18n("settings.plclinkConnectedPlain");
+  } else {
+    resultEl.className = "test-result success";
+    const targets = (data.connect_targets || []).join(" / ") || data.preferred_target || "";
+    resultEl.textContent =
+      `${data.message || i18n("settings.listenStarted")}\n`
+      + i18n("settings.vtvTargets", { targets });
+    state.plclinkConnectedLabel = "";
+  }
+  state.plclinkResultLive = track;
+}
+
 async function pollLinkStatus() {
   if (state.running) return;
   const transport = state.settings.transport;
+  const watchPlcLink = transport === "plclink"
+    || state.plclinkResultLive
+    || state.softPlcListening;
   try {
-    if (transport === "plclink") {
-      const response = await fetch("/api/plclink/status");
+    if (watchPlcLink) {
+      const response = await apiFetch("/api/plclink/status");
       if (!response.ok) return;
       const data = await response.json();
+      const previousCount = state.softPlcClientCount;
+      const connectedLabel = plcLinkConnectedLabel(data);
       state.softPlcListening = data.status === "listening";
       state.softPlcClientCount = Number(data.client_count) || 0;
       state.softPlcPort = Number(data.port) || 0;
+      const labelChanged = connectedLabel !== state.plclinkConnectedLabel;
+      state.plclinkConnectedLabel = connectedLabel;
       refreshConnectionBadge();
+      if (
+        state.plclinkResultLive
+        && (previousCount !== state.softPlcClientCount
+          || (state.softPlcClientCount > 0 && labelChanged))
+      ) {
+        writePlcLinkResult(data);
+      }
+      if (
+        previousCount === 0
+        && state.softPlcClientCount > 0
+        && state.softPlcStartedSettings
+      ) {
+        markConnectionVerified(true, state.softPlcStartedSettings);
+      }
       return;
     }
     if (transport === "field_network") {
-      const response = await fetch("/api/field-network/status");
+      const response = await apiFetch("/api/field-network/status");
       if (!response.ok) return;
       const data = await response.json();
       state.fnLive = data.status === "connected";
@@ -4640,43 +4802,42 @@ async function pollLinkStatus() {
   } catch (_) {}
 }
 
-async function startSoftPlc({ updateBadge = true } = {}) {
+async function startSoftPlc({ updateBadge = true, trackResult = true } = {}) {
   const settings = readSettingsForm();
   const resultEl = $("#connection-test-result");
   if (settings.transport !== "plclink") {
+    state.plclinkResultLive = false;
     resultEl.className = "test-result error";
-    resultEl.textContent = "PLCLINK モードで実行してください。";
+    resultEl.textContent = i18n("settings.plclinkModeRequired");
     return null;
   }
   if (!settings.host) {
     resultEl.className = "test-result error";
-    resultEl.textContent = "待受アドレスを入力してください。";
+    resultEl.textContent = i18n("settings.hostRequiredListen");
     return null;
   }
   resultEl.className = "test-result";
-  resultEl.textContent = "疑似 PLC を起動しています…";
+  resultEl.textContent = i18n("settings.softPlcStarting");
   try {
-    const response = await fetch("/api/plclink/start", {
+    const response = await apiFetch("/api/plclink/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(settings),
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || "待受を開始できません");
-    const targets = (data.connect_targets || []).join(" / ") || data.preferred_target;
-    resultEl.className = "test-result success";
-    resultEl.textContent =
-      `${data.message || "待受を開始しました。"}\n`
-      + `VTV に設定する接続先: ${targets}`;
+    if (!response.ok) throw new Error(data.detail || i18n("settings.listenFailed"));
     state.softPlcListening = true;
     state.softPlcPort = Number(data.port) || Number(settings.port) || 0;
     state.softPlcClientCount = Number(data.client_count) || 0;
+    state.softPlcStartedSettings = settings;
+    writePlcLinkResult(data, { track: trackResult });
     if (updateBadge) {
       if (state.softPlcClientCount > 0) markConnectionVerified(true, settings);
       refreshConnectionBadge();
     }
     return data;
   } catch (error) {
+    state.plclinkResultLive = false;
     resultEl.className = "test-result error";
     resultEl.textContent = error.message;
     return null;
@@ -4691,32 +4852,32 @@ async function verifyConnectionSettings({ showMessage = false, resultEl = null }
     if (showMessage && resultEl) {
       resultEl.className = "test-result error";
       resultEl.textContent = settings.transport === "plclink"
-        ? "待受アドレスを入力してください。"
-        : "装置 IP を入力してください。";
+        ? i18n("settings.hostRequiredListen")
+        : i18n("settings.hostRequired");
     }
     return false;
   }
   if (settings.transport === "plclink") {
-    const started = await startSoftPlc({ updateBadge: false });
+    const started = await startSoftPlc({ updateBadge: false, trackResult: false });
     if (!started) return false;
     if (showMessage && resultEl) {
       resultEl.className = "test-result";
       resultEl.textContent =
-        `${resultEl.textContent}\nVTV からの接続・MC 3E 通信を待っています…`;
+        `${resultEl.textContent}\n${i18n("settings.waitingForVtv")}`;
     }
   } else if (showMessage && resultEl) {
     resultEl.className = "test-result";
-    resultEl.textContent = "接続しています…";
+    resultEl.textContent = i18n("settings.connecting");
   }
   setConnection("connecting");
   try {
-    const response = await fetch("/api/test-connection", {
+    const response = await apiFetch("/api/test-connection", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(settings),
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || "接続できません");
+    if (!response.ok) throw new Error(data.detail || i18n("settings.connectFailed"));
     markConnectionVerified(true, settings);
     state.settings = settings;
     localStorage.setItem("vtv-settings", JSON.stringify(settings));
@@ -4735,7 +4896,7 @@ async function verifyConnectionSettings({ showMessage = false, resultEl = null }
     refreshConnectionBadge();
     if (showMessage && resultEl) {
       resultEl.className = "test-result success";
-      resultEl.textContent = data.message || "接続に成功しました。";
+      resultEl.textContent = data.message || i18n("settings.connectSucceeded");
     }
     return true;
   } catch (error) {
@@ -4761,35 +4922,35 @@ async function testConnection() {
 function runBlockReason(settings) {
   if (!settings.host) {
     return settings.transport === "plclink"
-      ? "待受アドレスを入力してください。"
-      : "装置 IP を入力してください。";
+      ? i18n("settings.hostRequiredListen")
+      : i18n("settings.hostRequired");
   }
-  if (!state.steps.length) return "実行するカードを追加してください。";
-  if (findOrphanBreak(state.steps)) return "BREAK はループの中に置いてください。";
+  if (!state.steps.length) return i18n("run.noCards");
+  if (findOrphanBreak(state.steps)) return i18n("run.breakOutsideLoop");
   const variableProblem = findVariableProblem(state.steps, settings.transport);
   if (variableProblem) return variableProblem;
   const missing = findMissingArgument(state.steps);
-  if (missing) return `${missing.command}: ${missing.label}を入力してください。`;
+  if (missing) return i18n("run.missingArg", { command: missing.command, label: missing.label });
   if (settings.transport === "plclink" || settings.transport === "field_network") {
     const unsupported = findUnsupportedPlcLinkCommand(state.steps);
     if (unsupported) return `${unsupported.command}: ${unsupported.reason}`;
   }
   if (!settingsMatchVerified(settings)) {
-    return "この設定は未確認です。接続設定で接続テストをしてください。";
+    return i18n("run.unconfirmed");
   }
   return "";
 }
 
 function runSequence() {
   if (state.running) {
-    showRunHint("実行中です。終わるか停止してから、もう一度実行してください。");
+    showRunHint(i18n("run.alreadyRunning"));
     return;
   }
   let settings;
   try {
     settings = readSettingsForm();
   } catch (error) {
-    showRunHint(error.message || "接続設定を確認してください。");
+    showRunHint(error.message || i18n("run.checkSettings"));
     return;
   }
   state.settings = settings;
@@ -4813,23 +4974,23 @@ function runSequence() {
   $("#run-summary")?.classList.add("hidden");
   setRunning(true);
   const protocol = location.protocol === "https:" ? "wss" : "ws";
-  state.socket = new WebSocket(`${protocol}://${location.host}/ws`);
+  state.socket = new WebSocket(withLangQuery(`${protocol}://${location.host}/ws`));
   state.socket.addEventListener("open", () => state.socket.send(JSON.stringify({
     type: "execute", payload: { settings: state.settings, steps: cleanSteps(state.steps) },
   })));
   state.socket.addEventListener("message", (event) => handleEvent(JSON.parse(event.data)));
   state.socket.addEventListener("error", () => {
-    addLog("error", "ERR", "WebSocket接続に失敗しました");
-    showRunHint("WebSocket接続に失敗しました。");
+    addLog("error", "ERR", i18n("log.wsConnectFailed"));
+    showRunHint(i18n("run.wsConnectFailedHint"));
     if (state.running) {
-      finishRun("failed", { message: "WebSocket接続に失敗しました", last_response: state.lastResponse });
+      finishRun("failed", { message: i18n("log.wsConnectFailed"), last_response: state.lastResponse });
     }
     setRunning(false);
   });
   state.socket.addEventListener("close", () => {
     if (!state.running) return;
-    finishRun("failed", { message: "実行中に通信が切れました", last_response: state.lastResponse });
-    showRunHint("実行中に通信が切れました。実行は中断されています。");
+    finishRun("failed", { message: i18n("run.connectionLost"), last_response: state.lastResponse });
+    showRunHint(i18n("run.connectionLostHint"));
     setRunning(false);
   });
 }
@@ -4846,8 +5007,8 @@ function findUnsupportedPlcLinkCommand(steps) {
         return {
           command: step.command,
           reason: transport === "field_network"
-            ? (definition?.field_network_reason || definition?.plclink_reason || "Field Networkでは使用できません")
-            : (definition?.plclink_reason || "PLCLINKでは使用できません"),
+            ? (definition?.field_network_reason || definition?.plclink_reason || i18n("run.unsupportedFn"))
+            : (definition?.plclink_reason || i18n("run.unsupportedPlclink")),
         };
       }
     }
@@ -4864,6 +5025,7 @@ function findUnsupportedPlcLinkCommand(steps) {
 function cleanSteps(steps) {
   return steps.map((step) => {
     const next = { ...step };
+    delete next._tourDemo;
     if (next.id !== undefined && next.id !== null) next.id = String(next.id);
     for (const key of ["steps", "then_steps", "else_steps"]) {
       if (next[key]) next[key] = cleanSteps(next[key]);
@@ -4880,7 +5042,7 @@ function handleEvent(event) {
   if (event.type === "connection") {
     if (event.state === "connecting") {
       setConnection("connecting");
-      addLog("info", "SYS", `${event.message} に接続中`);
+      addLog("info", "SYS", i18n("log.connecting", { target: event.message }));
     } else if (event.state === "connected") {
       if (state.settings.transport === "field_network") {
         state.fnLive = true;
@@ -4920,18 +5082,18 @@ function handleEvent(event) {
     state.lastResponse = String(event.response ?? "");
     addLog("rx", "RX", event.response, event.id);
   }
-  if (event.type === "note") addLog("info", "MEMO", event.message || "メモ", event.id);
+  if (event.type === "note") addLog("info", "MEMO", event.message || i18n("control.noteTitleDefault"), event.id);
   if (event.type === "variable") {
     const shown = event.source === "output_port"
-      ? (String(event.value) === "1" ? "ON" : "OFF")
+      ? (String(event.value) === "1" ? i18n("common.on") : i18n("common.off"))
       : (event.value ?? "");
     addLog("info", "VAR", `${event.name} = ${shown}`, event.id);
   }
   if (event.type === "loop_iteration") addLog("info", "LOOP", `${event.iteration} / ${event.count}`, event.id);
-  if (event.type === "loop_break") addLog("info", "BREAK", "条件によりループを終了しました", event.id);
-  if (event.type === "condition") addLog("info", "IF", `${event.matched ? "一致" : "不一致"} (${event.actual || "空"})`, event.id);
+  if (event.type === "loop_break") addLog("info", "BREAK", i18n("log.loopBreak"), event.id);
+  if (event.type === "condition") addLog("info", "IF", `${event.matched ? i18n("log.conditionMatched") : i18n("log.conditionUnmatched")} (${event.actual || i18n("log.conditionEmpty")})`, event.id);
   if (event.type === "sequence_completed") {
-    addLog("info", "DONE", "シーケンスが完了しました");
+    addLog("info", "DONE", i18n("log.done"));
     finishRun("success", event);
     setRunning(false);
   }
@@ -4948,7 +5110,7 @@ function handleEvent(event) {
       card.scrollIntoView({ block: "nearest" });
     }
     addLog("error", "ERR", event.message, card?.dataset.id || event.id);
-    showRunHint(event.message || "シーケンスが失敗しました");
+    showRunHint(event.message || i18n("run.sequenceFailed"));
     finishRun("failed", event);
     setRunning(false);
   }
@@ -4981,24 +5143,27 @@ function setRunProgress(event) {
   el.classList.remove("hidden");
 }
 
-const CONNECTION_LABELS = {
-  connected: "接続中",
-  connecting: "接続中…",
-  listening: "待受中",
-  remembered: "前回成功",
-  disconnected: "未接続",
-};
+function connectionLabel(status) {
+  switch (status) {
+    case "connected": return i18n("badge.connected");
+    case "connecting": return i18n("badge.connecting");
+    case "listening": return i18n("badge.listening");
+    case "remembered": return i18n("badge.remembered");
+    case "disconnected":
+    default: return i18n("badge.disconnected");
+  }
+}
 
 function setConnection(status) {
   state.connectionStatus = status;
   const badge = $("#connection-badge");
   if (badge) {
     badge.className = `badge ${status}`;
-    badge.textContent = CONNECTION_LABELS[status] || "未接続";
+    badge.textContent = connectionLabel(status);
     if (status === "remembered") {
-      badge.title = "この設定で以前接続に成功しています。いまの通信は確認していません。";
+      badge.title = i18n("badge.rememberedTitle");
     } else if (status === "listening") {
-      badge.title = "疑似 PLC は待受中です。VTV からの接続を待っています。";
+      badge.title = i18n("badge.listeningTitle");
     } else {
       badge.title = "";
     }
@@ -5019,12 +5184,12 @@ function setRunning(running) {
   if (runButton) {
     runButton.disabled = running;
     runButton.title = running
-      ? "実行中はもう一度実行できません"
-      : "実行（Ctrl+Enter）";
+      ? i18n("header.runTitleBusy")
+      : i18n("header.runTitle");
   }
   if (stopButton) {
     stopButton.disabled = !running;
-    stopButton.title = "停止（Ctrl+.）";
+    stopButton.title = i18n("header.stopTitle");
   }
   if (!running) {
     setRunProgress(null);
@@ -5037,6 +5202,23 @@ function localIoCode() {
   if (transport === "plclink") return "PLI";
   if (transport === "field_network") return "ESI";
   return null;
+}
+
+/** Update header/workspace UI that depends on the saved transport (not the settings form). */
+function syncWorkspaceForTransport() {
+  const transport = state.settings?.transport || "tcp";
+  const mapped = transport === "plclink" || transport === "field_network";
+  const watchBtn = $("#watch-tab-button");
+  const timingBtn = $("#timing-tab-button");
+  if (watchBtn) watchBtn.disabled = !mapped;
+  if (timingBtn) timingBtn.disabled = !mapped;
+  if (!mapped) {
+    stopWatch(true);
+    selectMonitorTab("log");
+  }
+  updateWatchNote();
+  renderPalette();
+  syncLocalIoPanel();
 }
 
 function syncLocalIoPanel() {
@@ -5054,8 +5236,8 @@ function syncLocalIoPanel() {
     .slice(0, 8)
     .map(([port, name]) => `${port}:${name}`);
   panel.title = named.length
-    ? `${code} ポートを直接 ON/OFF（例: ${named.join(", ")}）`
-    : `${code} ポートを直接 ON/OFF します（タスク実行中も可）`;
+    ? i18n("localIo.titleNamed", { code, names: named.join(", ") })
+    : i18n("localIo.titleDefault", { code });
 }
 
 async function setLocalIoPorts(stateValue) {
@@ -5063,7 +5245,7 @@ async function setLocalIoPorts(stateValue) {
   if (!code) return;
   const ports = ($("#local-io-ports")?.value || "").trim();
   if (!ports) {
-    addLog("error", "ERR", `${code} ポート番号を入力してください`);
+    addLog("error", "ERR", i18n("localIo.errPort", { code }));
     return;
   }
   const settings = (() => {
@@ -5074,11 +5256,11 @@ async function setLocalIoPorts(stateValue) {
     }
   })();
   if (!settings?.host && code === "ESI") {
-    addLog("error", "ERR", "接続設定の装置 IP を確認してください");
+    addLog("error", "ERR", i18n("localIo.errHost"));
     return;
   }
   try {
-    const response = await fetch("/api/local-io", {
+    const response = await apiFetch("/api/local-io", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -5098,7 +5280,7 @@ async function setLocalIoPorts(stateValue) {
       addLog("rx", "RX", line);
     }
   } catch (error) {
-    addLog("error", "ERR", `${code} 失敗: ${error.message || error}`);
+    addLog("error", "ERR", i18n("localIo.errFailed", { code, message: error.message || error }));
   }
 }
 
@@ -5128,16 +5310,18 @@ function paintLog() {
     .map((entry, index) => ({ entry, index }))
     .filter(({ entry }) => logMatches(entry, filter));
   if (!entries.length) {
-    log.innerHTML = `<div class="log-empty">${state.logs.length ? "この種別のログはありません。" : "実行すると送受信内容が表示されます。"}</div>`;
+    log.innerHTML = `<div class="log-empty">${escapeHtml(state.logs.length ? i18n("log.emptyFiltered") : i18n("log.empty"))}</div>`;
     return;
   }
+  const copyText = i18n("log.copy");
+  const jumpTitle = i18n("log.jumpTitle");
   log.innerHTML = entries.map(({ entry, index }) => {
     const time = String(entry.timestamp || "").slice(11);
     const copy = entry.kind === "ERR"
-      ? `<button type="button" class="log-copy" data-log-copy="${index}">コピー</button>`
+      ? `<button type="button" class="log-copy" data-log-copy="${index}">${escapeHtml(copyText)}</button>`
       : "";
     const jump = entry.stepId
-      ? ` log-jump" data-log-step="${escapeHtml(entry.stepId)}" role="button" tabindex="0" title="このカードへ移動"`
+      ? ` log-jump" data-log-step="${escapeHtml(entry.stepId)}" role="button" tabindex="0" title="${escapeHtml(jumpTitle)}"`
       : `"`;
     return `<div class="log-row ${logCss(entry.kind)}${jump}>
       <span class="log-time">${escapeHtml(time)}</span><span class="log-kind">${escapeHtml(entry.kind)}</span><span class="log-data">${escapeHtml(entry.data)}</span>${copy}
@@ -5152,7 +5336,7 @@ function clearLog(options = {}) {
   state.logs = [];
   paintLog();
   if (snapshot) {
-    showToast("通信ログを消去しました", () => {
+    showToast(i18n("toast.clearLog"), () => {
       state.logs = snapshot;
       paintLog();
     });
@@ -5166,7 +5350,7 @@ function clearExecutionStyles() {
 
 function openLogExport() {
   if (!state.logs.length) {
-    showToast("出力できる通信ログがありません。");
+    showToast(i18n("toast.noExportLog"));
     return;
   }
   openDialog($("#log-export-dialog"), "#log-export-format");
@@ -5189,7 +5373,9 @@ function exportLog(event) {
 }
 
 function buildCsvLog(includeTimestamp) {
-  const header = includeTimestamp ? ["通信時刻", "種別", "内容"] : ["種別", "内容"];
+  const header = includeTimestamp
+    ? [i18n("export.csvHeaderTime"), i18n("export.csvHeaderType"), i18n("export.csvHeaderContent")]
+    : [i18n("export.csvHeaderType"), i18n("export.csvHeaderContent")];
   const rows = state.logs.map((entry) =>
     includeTimestamp
       ? [entry.timestamp, entry.kind, entry.data]
@@ -5239,8 +5425,8 @@ async function loadSequence(event) {
   if (!file) return;
   try {
     const data = JSON.parse(await file.text());
-    if (!Array.isArray(data.steps)) throw new Error("steps がありません");
-    if (state.steps.length && !confirm("現在のシーケンスを読み込んだ内容で置き換えますか？")) return;
+    if (!Array.isArray(data.steps)) throw new Error(i18n("toast.stepsMissing"));
+    if (state.steps.length && !confirm(i18n("confirm.replaceSequenceLoad"))) return;
     const snapshot = cloneData(state.steps);
     const nextId = state.nextId;
     const previousName = state.sequenceName;
@@ -5255,7 +5441,7 @@ async function loadSequence(event) {
     }
     renderSequence();
     renderSequenceLibrary();
-    showToast("シーケンスを読み込みました", () => {
+    showToast(i18n("toast.sequenceLoaded"), () => {
       state.steps = snapshot;
       state.nextId = nextId;
       state.sequenceName = previousName;
@@ -5266,7 +5452,7 @@ async function loadSequence(event) {
       renderSequenceLibrary();
     });
   } catch (error) {
-    showToast(`読み込めません: ${error.message}`);
+    showToast(i18n("toast.loadFailed", { message: error.message }));
   } finally {
     input.value = "";
   }
@@ -5324,20 +5510,20 @@ function findVariableProblem(steps, transport) {
   const walk = (items) => {
     for (const step of items || []) {
       if (step.type === "variable") {
-        if (!String(step.name || "").trim()) return "変数カードに名前を入力してください。";
+        if (!String(step.name || "").trim()) return i18n("variable.errNameRequired");
         if ((step.source === "card_response" || step.source === "card_status") && !step.card_id) {
-          return "変数カードで、結果を取るカードを選んでください。";
+          return i18n("variable.errCardRequired");
         }
         if (step.source === "output_port" && transport === "tcp") {
-          return "TCP では出力ポートを変数に入れられません。コマンドの応答を選んでください。";
+          return i18n("variable.errTcpOutputPort");
         }
         if (step.source === "result_data" && transport === "tcp") {
-          return "TCP では結果データ出力を変数に入れられません。コマンドの応答を選んでください。";
+          return i18n("variable.errTcpResultData");
         }
       }
       if (step.type === "command" && step.argument_variables) {
         for (const name of Object.values(step.argument_variables)) {
-          if (name && !names.has(String(name).trim())) return `変数「${name}」がありません。`;
+          if (name && !names.has(String(name).trim())) return i18n("variable.errNotFound", { name });
         }
       }
       for (const key of ["steps", "then_steps", "else_steps"]) {
@@ -5387,7 +5573,7 @@ function refreshCardMissing(card, step) {
     if (body) body.prepend(note);
     else card.append(note);
   }
-  note.textContent = `未入力: ${labels.join("、")}`;
+  note.textContent = i18n("sequence.missingNote", { labels: labels.join(i18n("common.listSeparator")) });
 }
 
 function paletteCommandButton(item, transport, isMapped) {
@@ -5396,25 +5582,26 @@ function paletteCommandButton(item, transport, isMapped) {
     ? `${item.local_io ? item.code : (item.plclink_code ?? item.code)}：`
     : item.code;
   const mode = item.local_io
-    ? "ローカルI/O"
-    : (transport === "field_network" ? "FNコマンド" : "PLCLINKコマンド");
+    ? i18n("palette.modeLocalIo")
+    : (transport === "field_network" ? i18n("palette.modeFn") : i18n("palette.modePlclink"));
+  const aria = favorite ? i18n("palette.favoriteRemove") : i18n("palette.favoriteAdd");
   return `<div class="palette-row">
     <button class="palette-card palette-command${commandAvailable(item, transport) ? "" : " unavailable"}" data-code="${escapeHtml(item.code)}" type="button">
       <span class="command-code">${escapeHtml(String(codeLabel))}</span>
       <span class="command-name">${escapeHtml(item.name)}</span>
-      ${isMapped ? `<small class="plclink-code">${mode}</small>` : ""}
+      ${isMapped ? `<small class="plclink-code">${escapeHtml(mode)}</small>` : ""}
     </button>
-    <button type="button" class="favorite-toggle" data-favorite="${escapeHtml(item.code)}" aria-pressed="${favorite ? "true" : "false"}" aria-label="${favorite ? "お気に入りを外す" : "お気に入りに追加"}">${favorite ? "★" : "☆"}</button>
+    <button type="button" class="favorite-toggle" data-favorite="${escapeHtml(item.code)}" aria-pressed="${favorite ? "true" : "false"}" aria-label="${escapeHtml(aria)}">${favorite ? "★" : "☆"}</button>
   </div>`;
 }
 
 function unsupportedCommandReason(item, transport) {
-  if (!item) return "この通信方式では使用できません。";
+  if (!item) return i18n("palette.unavailable");
   if (transport === "field_network") {
-    return item.field_network_reason || item.plclink_reason || "Field Network では使用できません。";
+    return item.field_network_reason || item.plclink_reason || i18n("palette.unavailableFn");
   }
-  if (transport === "plclink") return item.plclink_reason || "PLCLINK では使用できません。";
-  return "TCP では使用できません。";
+  if (transport === "plclink") return item.plclink_reason || i18n("palette.unavailablePlclink");
+  return i18n("palette.unavailableTcp");
 }
 
 function toggleFavorite(code) {
@@ -5438,7 +5625,7 @@ function onLogClick(event) {
     const entry = state.logs[Number(button.dataset.logCopy)];
     if (!entry) return;
     const text = `${entry.timestamp} ${entry.kind} ${entry.data}`;
-    const done = () => showToast("失敗行をコピーしました。");
+    const done = () => showToast(i18n("toast.failedRowsCopied"));
     if (navigator.clipboard?.writeText) {
       navigator.clipboard.writeText(text).then(done).catch(() => showToast(text));
       return;
@@ -5461,7 +5648,7 @@ function onLogKeydown(event) {
 function focusStepCard(id) {
   const card = document.querySelector(`.step-card[data-id="${CSS.escape(String(id))}"]`);
   if (!card) {
-    showToast("対応するカードが見つかりません。");
+    showToast(i18n("toast.cardNotFound"));
     return;
   }
   document.querySelectorAll(".step-card.log-target").forEach((item) => item.classList.remove("log-target"));
@@ -5496,7 +5683,7 @@ function renderProfileSelect() {
   const select = $("#profile-select");
   if (!select) return;
   const data = profileStore();
-  select.innerHTML = `<option value="">（プロファイルなし）</option>${data.items.map((item) =>
+  select.innerHTML = `<option value="">${escapeHtml(i18n("settings.profileNone"))}</option>${data.items.map((item) =>
     `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`
   ).join("")}`;
   select.value = data.items.some((item) => item.id === data.activeId) ? data.activeId : "";
@@ -5519,12 +5706,12 @@ function saveProfile() {
   try {
     settings = readSettingsForm();
   } catch (error) {
-    showToast(error.message || "設定を確認してください。");
+    showToast(error.message || i18n("toast.checkSettings"));
     return;
   }
   const name = ($("#profile-name")?.value || "").trim();
   if (!name) {
-    showToast("プロファイル名を入力してください。");
+    showToast(i18n("toast.profileNameRequired"));
     return;
   }
   const data = profileStore();
@@ -5532,7 +5719,7 @@ function saveProfile() {
   let item = data.items.find((entry) => entry.id === selected);
   const named = data.items.find((entry) => entry.name === name);
   if (named && (!item || named.id !== item.id)) {
-    if (!confirm(`「${name}」を上書きしますか？`)) return;
+    if (!confirm(i18n("confirm.overwriteProfile", { name }))) return;
     item = named;
   }
   if (!item) {
@@ -5548,7 +5735,7 @@ function saveProfile() {
   state.settings = settings;
   localStorage.setItem("vtv-settings", JSON.stringify(settings));
   renderProfileSelect();
-  showToast(`プロファイル「${name}」を保存しました。`);
+  showToast(i18n("toast.profileSaved", { name }));
 }
 
 function applySelectedProfile() {
@@ -5574,18 +5761,18 @@ function applySelectedProfile() {
 function deleteProfile() {
   const id = $("#profile-select")?.value || "";
   if (!id) {
-    showToast("削除するプロファイルを選んでください。");
+    showToast(i18n("toast.profileSelectToDelete"));
     return;
   }
   const data = profileStore();
   const item = data.items.find((entry) => entry.id === id);
   if (!item) return;
-  if (!confirm(`プロファイル「${item.name}」を削除しますか？`)) return;
+  if (!confirm(i18n("confirm.deleteProfile", { name: item.name }))) return;
   data.items = data.items.filter((entry) => entry.id !== id);
   if (data.activeId === id) data.activeId = "";
   saveProfileStore(data);
   renderProfileSelect();
-  showToast("プロファイルを削除しました。");
+  showToast(i18n("toast.profileDeleted"));
 }
 
 function libraryStore() {
@@ -5609,7 +5796,7 @@ function renderSequenceLibrary() {
     ...data.recent.map((id) => byId.get(id)).filter(Boolean),
     ...data.items.filter((item) => !recentIds.has(item.id)),
   ];
-  select.innerHTML = `<option value="">最近使ったシーケンス</option>${options.map((item) =>
+  select.innerHTML = `<option value="">${escapeHtml(i18n("sequence.recentOption"))}</option>${options.map((item) =>
     `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`
   ).join("")}`;
   if (state.sequenceLibraryId && byId.has(state.sequenceLibraryId)) select.value = state.sequenceLibraryId;
@@ -5618,7 +5805,7 @@ function renderSequenceLibrary() {
 function saveSequenceLibrary() {
   const name = ($("#sequence-name")?.value || "").trim();
   if (!name) {
-    showToast("シーケンス名を入力してください。");
+    showToast(i18n("toast.sequenceNameRequired"));
     return;
   }
   state.sequenceName = name;
@@ -5626,7 +5813,7 @@ function saveSequenceLibrary() {
   let item = data.items.find((entry) => entry.id === state.sequenceLibraryId);
   const sameName = data.items.find((entry) => entry.name === name);
   if (sameName && (!item || sameName.id !== item.id)) {
-    if (!confirm(`「${name}」を上書きしますか？`)) return;
+    if (!confirm(i18n("confirm.overwriteSequence", { name }))) return;
     item = sameName;
   }
   const payload = {
@@ -5646,7 +5833,7 @@ function saveSequenceLibrary() {
   try { localStorage.setItem("vtv-sequence-library", JSON.stringify(data)); } catch (_) {}
   persistSequenceDraft();
   renderSequenceLibrary();
-  showToast(`「${name}」を残しました。`);
+  showToast(i18n("toast.sequenceSaved", { name }));
 }
 
 function openLibrarySequence(id) {
@@ -5654,7 +5841,7 @@ function openLibrarySequence(id) {
   const data = libraryStore();
   const item = data.items.find((entry) => entry.id === id);
   if (!item) return;
-  if (state.steps.length && !confirm("現在のシーケンスを、選んだ内容で置き換えますか？")) {
+  if (state.steps.length && !confirm(i18n("confirm.replaceSequenceSelected"))) {
     renderSequenceLibrary();
     return;
   }
@@ -5674,7 +5861,7 @@ function openLibrarySequence(id) {
   try { localStorage.setItem("vtv-sequence-library", JSON.stringify(data)); } catch (_) {}
   renderSequence();
   renderSequenceLibrary();
-  showToast(`「${item.name}」を開きました`, () => {
+  showToast(i18n("toast.sequenceOpened", { name: item.name }), () => {
     state.steps = snapshot;
     state.nextId = nextId;
     state.sequenceName = previousName;
@@ -5698,7 +5885,7 @@ function formatDuration(ms) {
   const value = Number(ms);
   const safe = Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
   if (safe < 1000) return `${safe} ms`;
-  return `${(safe / 1000).toFixed(1)} 秒`;
+  return i18n("run.durationSeconds", { value: (safe / 1000).toFixed(1) });
 }
 
 function destinationText(settings) {
@@ -5714,9 +5901,13 @@ function destinationText(settings) {
 function showRunSummary(entry) {
   const el = $("#run-summary");
   if (!el) return;
-  const outcome = entry.result === "success" ? "成功" : entry.result === "stopped" ? "停止" : "失敗";
+  const outcome = entry.result === "success"
+    ? i18n("run.outcomeSuccess")
+    : entry.result === "stopped"
+      ? i18n("run.outcomeStopped")
+      : i18n("run.outcomeFailed");
   const where = entry.result === "success" ? "" : (entry.stoppedAt ? ` ${entry.stoppedAt}` : "");
-  const last = entry.lastResponse ? ` 最後の応答: ${entry.lastResponse}` : "";
+  const last = entry.lastResponse ? i18n("run.lastResponse", { response: entry.lastResponse }) : "";
   const text = `${outcome}${where} · ${formatDuration(entry.durationMs)}${last}`;
   el.textContent = text;
   el.title = entry.message ? `${text} / ${entry.message}` : text;
@@ -5776,19 +5967,25 @@ function renderRunHistory() {
   if (!list) return;
   const history = readRunHistory();
   if (!history.length) {
-    list.innerHTML = `<p class="export-note">まだ実行記録はありません。</p>`;
+    list.innerHTML = `<p class="export-note">${escapeHtml(i18n("history.empty"))}</p>`;
     return;
   }
+  const showLogLabel = i18n("history.showLog");
+  const noLogLabel = i18n("history.noLog");
   list.innerHTML = history.slice(0, 12).map((entry, index) => {
-    const outcome = entry.result === "success" ? "成功" : entry.result === "stopped" ? "停止" : "失敗";
+    const outcome = entry.result === "success"
+      ? i18n("run.outcomeSuccess")
+      : entry.result === "stopped"
+        ? i18n("run.outcomeStopped")
+        : i18n("run.outcomeFailed");
     const when = String(entry.at || "").replace("T", " ").slice(0, 19);
     const where = entry.stoppedAt ? ` ${entry.stoppedAt}` : "";
     const last = entry.lastResponse ? ` / ${entry.lastResponse}` : "";
     const summary = `${when} ${outcome}${where} ${formatDuration(entry.durationMs)} ${entry.destination || ""}${last}`;
     const lines = (entry.logs || []).map((line) => `${line.kind} ${line.data}`).join("\n");
     const body = lines
-      ? `<pre class="run-log">${escapeHtml(lines)}</pre><button type="button" class="icon-button" data-history-log="${index}">この通信を表示</button>`
-      : `<p class="export-note">この記録に通信ログはありません。</p>`;
+      ? `<pre class="run-log">${escapeHtml(lines)}</pre><button type="button" class="icon-button" data-history-log="${index}">${escapeHtml(showLogLabel)}</button>`
+      : `<p class="export-note">${escapeHtml(noLogLabel)}</p>`;
     return `<details class="run-history-item"><summary>${escapeHtml(summary)}</summary>${body}</details>`;
   }).join("");
 }
@@ -5796,7 +5993,7 @@ function renderRunHistory() {
 function showHistoryLog(index) {
   const entry = readRunHistory()[index];
   if (!entry?.logs?.length) {
-    showToast("この記録に通信はありません。");
+    showToast(i18n("toast.noRunHistoryLog"));
     return;
   }
   const snapshot = state.logs.map((item) => ({ ...item }));
@@ -5807,7 +6004,7 @@ function showHistoryLog(index) {
     stepId: item.stepId || "",
   }));
   paintLog();
-  showToast("この回の通信を表示しています", () => {
+  showToast(i18n("toast.runHistoryShown"), () => {
     state.logs = snapshot;
     paintLog();
   });
@@ -5834,12 +6031,12 @@ function exportSupportBundle() {
 function exportTimingImage() {
   const canvas = $("#timing-chart");
   if (!canvas || !state.timingSamples.length) {
-    showToast("書き出せる波形がありません。");
+    showToast(i18n("toast.noWaveform"));
     return;
   }
   canvas.toBlob((blob) => {
     if (!blob) {
-      showToast("画像を書き出せませんでした。");
+      showToast(i18n("toast.imageExportFailed"));
       return;
     }
     const link = document.createElement("a");
@@ -5852,11 +6049,11 @@ function exportTimingImage() {
 
 function exportTimingCsv() {
   if (!state.timingSamples.length) {
-    showToast("書き出せる波形がありません。");
+    showToast(i18n("toast.noWaveform"));
     return;
   }
   const channels = timingBitItems().filter((item) => state.timingSelectedIds.includes(item.id));
-  const header = ["時刻ms", "poll", ...channels.map((item) => item.label)];
+  const header = [i18n("timing.csvTime"), "poll", ...channels.map((item) => item.label)];
   const rows = state.timingSamples.map((sample) => [
     sample.t,
     sample.n ?? "",
@@ -5897,7 +6094,7 @@ function closeHelpDialog() {
 
 async function loadAppVersion() {
   try {
-    const response = await fetch("/api/version");
+    const response = await apiFetch("/api/version");
     if (response.ok) {
       const data = await response.json();
       state.appVersion = data.version || "";
@@ -5906,8 +6103,8 @@ async function loadAppVersion() {
   const el = $("#app-version");
   if (!el) return;
   el.textContent = state.appVersion
-    ? `VTV Network Sequencer ${state.appVersion}`
-    : "VTV Network Sequencer";
+    ? `${i18n("footer.version")} ${state.appVersion}`
+    : i18n("footer.version");
 }
 
 function trialStore() {
@@ -5924,7 +6121,7 @@ function renderTrialSelect() {
   const select = $("#trial-select");
   if (!select) return;
   const data = trialStore();
-  select.innerHTML = `<option value="">保存セット</option>${data.items.map((item) =>
+  select.innerHTML = `<option value="">${escapeHtml(i18n("sequence.saveSetOption"))}</option>${data.items.map((item) =>
     `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`
   ).join("")}`;
   if (state.trialId && data.items.some((item) => item.id === state.trialId)) {
@@ -5992,21 +6189,21 @@ function upsertSequence(name, preferredId) {
 function saveTrialSet() {
   const name = ($("#trial-name")?.value || "").trim();
   if (!name) {
-    showToast("保存セット名を入力してください。");
+    showToast(i18n("toast.saveSetNameRequired"));
     return;
   }
   let settings;
   try {
     settings = readSettingsForm();
   } catch (error) {
-    showToast(error.message || "設定を確認してください。");
+    showToast(error.message || i18n("toast.checkSettings"));
     return;
   }
   const data = trialStore();
   let trial = data.items.find((item) => item.id === state.trialId);
   const sameName = data.items.find((item) => item.name === name);
   if (sameName && (!trial || sameName.id !== trial.id)) {
-    if (!confirm(`保存セット「${name}」を上書きしますか？`)) return;
+    if (!confirm(i18n("confirm.overwriteSaveSet", { name }))) return;
     trial = sameName;
   }
   const profileId = upsertProfile(name, settings, trial?.profileId);
@@ -6031,7 +6228,7 @@ function saveTrialSet() {
   renderTrialSelect();
   renderProfileSelect();
   renderSequenceLibrary();
-  showToast(`保存セット「${name}」を残しました。接続先とシーケンスを一緒に開けます。`);
+  showToast(i18n("toast.saveSetSaved", { name }));
 }
 
 function openTrial(id) {
@@ -6041,11 +6238,11 @@ function openTrial(id) {
   const profile = profileStore().items.find((item) => item.id === trial.profileId);
   const sequence = libraryStore().items.find((item) => item.id === trial.sequenceId);
   if (!profile || !sequence) {
-    showToast("この保存セットの接続先かシーケンスが見つかりません。もう一度残してください。");
+    showToast(i18n("toast.saveSetMissing"));
     renderTrialSelect();
     return;
   }
-  if (state.steps.length && !confirm("現在のシーケンスと接続先を、この保存セットで置き換えますか？")) {
+  if (state.steps.length && !confirm(i18n("confirm.replaceSaveSet"))) {
     renderTrialSelect();
     return;
   }
@@ -6092,7 +6289,7 @@ function openTrial(id) {
   renderSequenceLibrary();
   renderTrialSelect();
   renderSequence();
-  showToast(`保存セット「${trial.name}」を開きました。`, () => {
+  showToast(i18n("toast.saveSetOpened", { name: trial.name }), () => {
     state.steps = snapshot.steps;
     state.nextId = snapshot.nextId;
     state.sequenceName = snapshot.sequenceName;
@@ -6122,12 +6319,12 @@ function openTrial(id) {
 
 function describeSequenceText() {
   const lines = [
-    "VTV Network Sequencer",
-    `名前: ${state.sequenceName.trim() || "（無名）"}`,
-    `接続: ${destinationText(state.settings)}`,
+    i18n("footer.version"),
+    i18n("readable.name", { name: state.sequenceName.trim() || i18n("readable.unnamed") }),
+    i18n("readable.connection", { destination: destinationText(state.settings) }),
     "",
   ];
-  if (!state.steps.length) lines.push("カードはありません。");
+  if (!state.steps.length) lines.push(i18n("readable.noCards"));
   else lines.push(...describeSteps(state.steps, 0));
   return lines.join("\r\n");
 }
@@ -6143,21 +6340,21 @@ function describeSteps(steps, depth) {
       for (const arg of visibleArguments(definition || {})) {
         if (!argumentVisible(step, arg)) continue;
         const variableName = argumentVariableName(step, arg.key);
-        const value = variableName ? `変数 ${variableName}` : (step.arguments?.[arg.key] ?? "");
+        const value = variableName ? i18n("variable.reference", { name: variableName }) : (step.arguments?.[arg.key] ?? "");
         lines.push(`${pad}   ${arg.label}: ${value}`);
       }
       const rawVariable = argumentVariableName(step, "raw");
-      if (rawVariable) lines.push(`${pad}   引数文字列: 変数 ${rawVariable}`);
-      else if (step.arguments?.raw) lines.push(`${pad}   引数文字列: ${step.arguments.raw}`);
-      if (step.ignore_response) lines.push(`${pad}   応答を待たない`);
+      if (rawVariable) lines.push(`${pad}   ${i18n("readable.rawVariable", { name: rawVariable })}`);
+      else if (step.arguments?.raw) lines.push(`${pad}   ${i18n("readable.raw", { value: step.arguments.raw })}`);
+      if (step.ignore_response) lines.push(`${pad}   ${i18n("sequence.ignoreResponse")}`);
     } else if (step.type === "delay") {
-      lines.push(`${pad}${number} 待機 ${step.milliseconds}ms`);
+      lines.push(`${pad}${number} ${i18n("control.waitTitle", { ms: step.milliseconds })}`);
     } else if (step.type === "note") {
-      lines.push(`${pad}${number} メモ`);
-      lines.push(`${pad}   ${step.text || "（空）"}`);
+      lines.push(`${pad}${number} ${i18n("control.noteTitleDefault")}`);
+      lines.push(`${pad}   ${step.text || i18n("readable.empty")}`);
     } else if (step.type === "variable") {
       const source = variableSourceLabel(step.source);
-      const name = step.name || "（無名）";
+      const name = step.name || i18n("readable.unnamed");
       let detail = source;
       if (step.source === "card_response" || step.source === "card_status") {
         const card = collectCommandCards(state.steps).find((item) => item.id === String(step.card_id));
@@ -6166,29 +6363,29 @@ function describeSteps(steps, depth) {
         detail = `${outputPortCaption()} ${step.port}`;
       } else if (step.source === "result_data") {
         const offset = String(Number(step.offset) || 0).padStart(4, "0");
-        detail = `結果データ +${offset} ${resultFormatLabel(step.result_format)}`;
+        detail = i18n("readable.resultData", { offset, format: resultFormatLabel(step.result_format) });
       } else if (step.source === "literal") {
-        detail = `固定の文字 ${step.value || "（空）"}`;
+        detail = i18n("readable.literal", { value: step.value || i18n("readable.empty") });
       }
-      lines.push(`${pad}${number} 変数 ${name}`);
+      lines.push(`${pad}${number} ${i18n("readable.variable", { name })}`);
       lines.push(`${pad}   ${detail}`);
     } else if (step.type === "break") {
-      lines.push(`${pad}${number} BREAK ループを抜ける`);
+      lines.push(`${pad}${number} ${i18n("readable.break")}`);
     } else if (step.type === "if") {
-      const source = step.source === "response" ? "応答全文" : "AK/NK/ER";
+      const source = step.source === "response" ? i18n("readable.sourceResponse") : "AK/NK/ER";
       const operator = step.operator === "contains"
-        ? "含む"
+        ? i18n("control.opContains")
         : step.operator === "not_contains"
-          ? "含まない"
-          : "等しい";
-      lines.push(`${pad}${number} 条件 ${source} ${operator} ${step.value}`);
-      lines.push(`${pad}   一致:`);
-      lines.push(...(step.then_steps?.length ? describeSteps(step.then_steps, depth + 2) : [`${pad}     （なし）`]));
-      lines.push(`${pad}   不一致:`);
-      lines.push(...(step.else_steps?.length ? describeSteps(step.else_steps, depth + 2) : [`${pad}     （なし）`]));
+          ? i18n("control.opNotContains")
+          : i18n("control.opEquals");
+      lines.push(`${pad}${number} ${i18n("readable.condition", { source, operator, value: step.value })}`);
+      lines.push(`${pad}   ${i18n("readable.matched")}`);
+      lines.push(...(step.then_steps?.length ? describeSteps(step.then_steps, depth + 2) : [`${pad}     ${i18n("readable.none")}`]));
+      lines.push(`${pad}   ${i18n("readable.unmatched")}`);
+      lines.push(...(step.else_steps?.length ? describeSteps(step.else_steps, depth + 2) : [`${pad}     ${i18n("readable.none")}`]));
     } else if (step.type === "loop") {
-      lines.push(`${pad}${number} ループ ×${step.count}`);
-      lines.push(...(step.steps?.length ? describeSteps(step.steps, depth + 1) : [`${pad}   （なし）`]));
+      lines.push(`${pad}${number} ${i18n("readable.loop", { count: step.count })}`);
+      lines.push(...(step.steps?.length ? describeSteps(step.steps, depth + 1) : [`${pad}   ${i18n("readable.none")}`]));
     }
   });
   return lines;
@@ -6201,7 +6398,7 @@ function exportReadableSequence() {
   link.download = `vtv-sequence-${fileTimestamp(new Date())}.txt`;
   link.click();
   URL.revokeObjectURL(link.href);
-  showToast("一覧を書き出しました。");
+  showToast(i18n("toast.listExported"));
 }
 
 function restoreWorkshop() {
@@ -6278,7 +6475,67 @@ function bindWorkshopEvents() {
   $("#help-close-button")?.addEventListener("click", closeHelpDialog);
   $("#help-close-action")?.addEventListener("click", closeHelpDialog);
   $("#support-export-button")?.addEventListener("click", exportSupportBundle);
+  window.VtvTourHooks = {
+    closeHelp: closeHelpDialog,
+    openSettingsForTour,
+    closeSettingsFromTour,
+    selectSettingsPage,
+    selectMonitorTab,
+    selectMonitorTabForTour,
+    restoreMonitorTourUi,
+    showLocalIoPanelForTour,
+    restoreLocalIoPanelFromTour,
+    setLayoutMode,
+    addTourDemoCard,
+  };
+  window.VtvTours?.bindHelpButtons?.($("#help-dialog") || document);
   document.addEventListener("keydown", onWorkshopKeydown);
+}
+
+/** Add a Delay card during the basics tour drag demo (once per tour). */
+function addTourDemoCard() {
+  if (state.running) return null;
+  if (state.steps.some((step) => step && step._tourDemo)) return null;
+  const card = { id: state.nextId++, type: "delay", milliseconds: 100, _tourDemo: true };
+  state.steps.push(card);
+  renderSequence();
+  return card.id;
+}
+
+/** Force-enable watch/timing tabs during the monitor tour (even on TCP). */
+function selectMonitorTabForTour(tab) {
+  const watchBtn = $("#watch-tab-button");
+  const timingBtn = $("#timing-tab-button");
+  if (watchBtn) watchBtn.disabled = false;
+  if (timingBtn) timingBtn.disabled = false;
+  selectMonitorTab(tab);
+}
+
+/** Restore layout and tab availability after the monitor tour. */
+function restoreMonitorTourUi() {
+  setLayoutMode("workspace");
+  const transport = state.settings?.transport || $("#transport")?.value || "tcp";
+  const mapped = transport === "plclink" || transport === "field_network";
+  const watchBtn = $("#watch-tab-button");
+  const timingBtn = $("#timing-tab-button");
+  if (watchBtn) watchBtn.disabled = !mapped;
+  if (timingBtn) timingBtn.disabled = !mapped;
+  if (!mapped) selectMonitorTab("log");
+  updateWatchNote();
+}
+
+/** Show PLI/ESI quick panel during the basics tour (hidden on TCP). */
+function showLocalIoPanelForTour() {
+  const panel = $("#local-io-panel");
+  if (!panel) return;
+  panel.classList.remove("hidden");
+  const code = localIoCode() || (state.settings?.transport === "plclink" ? "PLI" : "ESI");
+  if ($("#local-io-label")) $("#local-io-label").textContent = code;
+  panel.title = i18n("localIo.titleDefault", { code });
+}
+
+function restoreLocalIoPanelFromTour() {
+  syncLocalIoPanel();
 }
 
 function onWorkshopKeydown(event) {
@@ -6302,7 +6559,7 @@ function onWorkshopKeydown(event) {
   if (key === ".") {
     event.preventDefault();
     if (state.running) stopSequence();
-    else showRunHint("実行中ではありません。");
+    else showRunHint(i18n("run.notRunning"));
     return;
   }
   if (key === "s" && event.shiftKey) {
@@ -6311,6 +6568,105 @@ function onWorkshopKeydown(event) {
   }
 }
 
-initialize().catch((error) => {
-  document.body.innerHTML = `<p style="padding:30px">起動エラー: ${escapeHtml(error.message)}</p>`;
-});
+async function reloadCatalogForLocale() {
+  try {
+    const response = await apiFetch("/api/catalog");
+    if (response.ok) {
+      state.catalog = await response.json();
+      if ($("#catalog-count")) $("#catalog-count").textContent = state.catalog.length;
+    }
+  } catch (_) {
+    // Keep the old catalog if re-fetch fails.
+  }
+}
+
+// Re-apply all dynamic (JS-generated) text and re-translate labels after a locale change.
+// Static HTML is handled by VtvI18n.applyStaticI18n.
+function refreshUiForLocale() {
+  // Default signal labels for known ids re-translate; user-edited labels remain as-is.
+  retranslateDefaultSignalLabels(state.settings.fn_status_signals);
+  retranslateDefaultSignalLabels(state.statusSignalDraft);
+
+  // Watch items are derived from settings every time refreshMappedWatchItems is called,
+  // so just regenerate them and re-render anything that embeds labels in JS.
+  refreshMappedWatchItems();
+  renderWatchList();
+  renderTimingChannelList();
+
+  // Palette, sequence, local I/O panel and connection badge all embed translated strings.
+  renderPalette();
+  renderSequence();
+  syncLocalIoPanel();
+  refreshConnectionBadge();
+
+  // Panel hints / notes / view-mode & layout-mode buttons.
+  updateWatchNote();
+  updateWatchActualPeriodDisplay();
+  updateTimingSampleInfo();
+  updateTimingViewSpan();
+  updateTimingMeasureInfo();
+  syncTimingAxisModeUi();
+  applyViewMode();
+  applyLayoutMode();
+  updateVirtualIoRange();
+  updateBusyAddressHint();
+  updateFnLayoutHint();
+  syncTransportUi();
+  renderStatusSignalTable();
+  renderPlcLinkStatusSignalTable();
+  renderPortNameTables({ capture: false });
+
+  // Keep the running / idle watch status label in sync with the new language.
+  const watchStatus = $("#watch-status");
+  if (watchStatus) {
+    setWatchStatus(
+      state.watchRunning
+        ? i18n("watch.statusRunning")
+        : i18n("watch.statusStopped"),
+      state.watchRunning ? "running" : "",
+    );
+  }
+  const timingStatus = $("#timing-status");
+  if (timingStatus) {
+    setTimingStatus(
+      state.watchRunning
+        ? i18n("timing.statusRecording")
+        : (state.timingSamples.length ? i18n("timing.statusStopped") : i18n("timing.statusIdle")),
+      state.watchRunning ? "running" : "",
+    );
+  }
+
+  // Refresh labels inside the existing rendered log (JS-generated placeholder etc).
+  paintLog();
+
+  // Re-render footer app-version (string key included).
+  const versionEl = $("#app-version");
+  if (versionEl) {
+    versionEl.textContent = state.appVersion
+      ? `${i18n("footer.version")} ${state.appVersion}`
+      : i18n("footer.version");
+  }
+
+  // Run-summary (if visible) was built with the previous locale, but it is a point-in-time
+  // snapshot. Leave as-is.
+}
+
+(async () => {
+  try {
+    if (window.VtvI18n) await window.VtvI18n.init();
+    // i18n is now ready; re-translate default signal labels that were created
+    // at module-load time (before VtvI18n was available).
+    retranslateDefaultSignalLabels(state.settings.fn_status_signals);
+    retranslateDefaultSignalLabels(state.statusSignalDraft);
+    await initialize();
+    if (window.VtvI18n) {
+      window.VtvI18n.onLocaleChange(async () => {
+        await reloadCatalogForLocale();
+        refreshUiForLocale();
+      });
+    }
+    window.VtvTours?.maybeStartFirstRunTour?.();
+  } catch (error) {
+    document.body.innerHTML = `<p style="padding:30px">${escapeHtml(i18n("status.startupError", { message: error.message }))}</p>`;
+  }
+})();
