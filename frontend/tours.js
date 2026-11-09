@@ -7,7 +7,8 @@
 (function (global) {
   "use strict";
 
-  const BASICS_SEEN_KEY = "vtv-tour-basics-seen";
+  // v2: auto-start is gated only by this flag (not by existing settings data).
+  const BASICS_SEEN_KEY = "vtv-tour-basics-seen-v2";
 
   /** @type {null | { destroy: Function, isActive: Function, refresh: Function }} */
   let activeDriver = null;
@@ -455,30 +456,19 @@
     cleanupTourUi();
   }
 
-  function isReturningUser() {
-    try {
-      return Boolean(
-        localStorage.getItem("vtv-settings")
-        || localStorage.getItem("vtv-sequence-draft")
-        || localStorage.getItem("vtv-connection-profiles")
-      );
-    } catch (_) {
-      return true;
-    }
-  }
-
   function maybeStartFirstRunTour() {
     if (hasSeenBasicsTour()) return false;
-    // After this feature ships, skip auto-start for installs that already have data.
-    if (isReturningUser()) {
-      markBasicsTourSeen();
-      return false;
-    }
     if (activeDriver && activeDriver.isActive()) return false;
     // Wait for layout / catalog paint, then start basics once.
+    // Note: the packaged app shares LocalAppData/.../app-profile with prior runs,
+    // so "first launch" means "this profile has never finished/skipped the basics tour".
     window.setTimeout(() => {
       if (hasSeenBasicsTour()) return;
       if (activeDriver && activeDriver.isActive()) return;
+      if (!driverFactory()) {
+        console.error("Driver.js is not loaded; skipping first-run tour");
+        return;
+      }
       startTour("basics");
     }, 700);
     return true;
