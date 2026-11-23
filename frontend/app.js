@@ -128,6 +128,12 @@ const state = {
   timingZoomMinPolls: 20,
   timingZoomMaxPolls: 20000,
   timingMaxSamples: 60000,
+  /** 監視の時系列。変化した信号だけを、領域・時刻・値で残す */
+  watchHistory: [],
+  watchHistoryLast: new Map(),
+  watchHistoryDisplay: new Map(),
+  watchPollSeq: 0,
+  watchHistoryMax: 100000,
   timingColors: ["#3dd6c6", "#6ea8fe", "#f0b429", "#f07178", "#c3a6ff", "#7ddea2", "#ff9f68", "#8fd3ff"],
   timingCursorA: null,
   timingCursorB: null,
@@ -478,6 +484,11 @@ function bindEvents() {
   });
   $("#start-watch-button").addEventListener("click", startWatch);
   $("#stop-watch-button").addEventListener("click", () => stopWatch(false));
+  $("#watch-clear-button")?.addEventListener("click", () => {
+    clearWatchHistory();
+    if (!state.watchRunning) setWatchStatus(watchStoppedStatusText());
+  });
+  $("#watch-export-csv")?.addEventListener("click", exportWatchCsv);
   $("#start-timing-button")?.addEventListener("click", startWatch);
   $("#stop-timing-button")?.addEventListener("click", () => stopWatch(false));
   $("#timing-clear-button")?.addEventListener("click", clearTimingSamples);
@@ -2006,12 +2017,13 @@ function stopWatch(resetValues = false) {
     state.watchValues = {};
     renderWatchList();
     clearTimingSamples();
+    clearWatchHistory();
   }
   $("#start-watch-button").disabled = false;
   $("#stop-watch-button").disabled = true;
   $("#start-timing-button") && ($("#start-timing-button").disabled = false);
   $("#stop-timing-button") && ($("#stop-timing-button").disabled = true);
-  setWatchStatus(i18n("watch.statusStopped"));
+  setWatchStatus(watchStoppedStatusText());
   setTimingStatus(state.timingSamples.length ? i18n("timing.statusStopped") : i18n("timing.statusIdle"));
 }
 
@@ -2139,6 +2151,7 @@ function handleWatchSocketMessage(message) {
   if (changed.size) updateWatchValueDisplays(changed);
   // 値が変わらなくてもサンプルを積む（時間軸はサーバ時刻）
   recordTimingSample(sampleAt, state.watchValues);
+  recordWatchHistory(sampleAt, Number(message.t));
   const uiNow = performance.now();
   if (uiNow - (state.watchPeriodLastAt || 0) > 100) {
     state.watchPeriodLastAt = uiNow;
@@ -2190,6 +2203,7 @@ async function pollWatchValues() {
     setWatchStatus(i18n("watch.statusRunning"), "running");
     updateWatchValueDisplays(changed);
     recordTimingSample(started, nextValues);
+    recordWatchHistory(started, Date.now());
   } catch (error) {
     state.watchValues = {};
     updateWatchValueDisplays();
@@ -2603,6 +2617,112 @@ function renderTimingChannelList() {
       </span>
     </label>`;
   }).join("");
+}
+
+function watchStoppedStatusText() {
+  return state.watchHistory.length
+    ? i18n("watch.statusStoppedKept")
+    : i18n("watch.statusStopped");
+}
+
+function watchHistorySignature(snapshot) {
+  if (!snapshot) return "missing";
+  if (snapshot.valid === false) return "invalid";
+  return `ok:${typeof snapshot.value}:${snapshot.value}`;
+}
+
+function watchHistoryRaw(snapshot, item) {
+  if (!snapshot || snapshot.valid === false) return "";
+  if (item.format === "bit") return snapshot.value ? 1 : 0;
+  if (typeof snapshot.value === "number") return snapshot.value;
+  return snapshot.value == null ? "" : String(snapshot.value);
+}
+
+function watchHistoryDisplayText(snapshot, item) {
+  if (!snapshot) return "—";
+  if (snapshot.valid === false) return i18n("watch.valueInvalid");
+  return formatWatchValue(snapshot.value, item).replaceAll("\n", " | ");
+}
+
+/** まだ一度も値が出ていない状態。0 / OFF は「出力なし」として最初の行にはしない。 */
+function watchHistoryIsIdle(snapshot, item) {
+  if (!snapshot) return true;
+  if (snapshot.valid === false) return false;
+  if (item.format === "bit") return !snapshot.value;
+  if (typeof snapshot.value === "number") return snapshot.value === 0;
+  return snapshot.value == null || snapshot.value === "";
+}
+
+function clearWatchHistory() {
+  state.watchHistory = [];
+  state.watchHistoryLast = new Map();
+  state.watchHistoryDisplay = new Map();
+  state.watchPollSeq = 0;
+}
+
+/**
+ * 監視サンプルを時系列に残す。
+ * 生値が変わった信号だけを積む。最初から 0 / OFF の信号は覚えているだけで行にしない。
+ * 結果データは隣のワードで解釈が変わるため、領域内のどれかが変わったら表示の変わった行も残す。
+ */
+function recordWatchHistory(t, wallMs) {
+  if (!state.watchItems.length) return;
+  state.watchPollSeq += 1;
+  const n = state.watchPollSeq;
+  const wall = formatTimestamp(new Date(Number.isFinite(wallMs) ? wallMs : Date.now()));
+  const rawChanged = new Set();
+  let resultChanged = false;
+  for (const item of state.watchItems) {
+    const snapshot = state.watchValues[item.id];
+    const signature = watchHistorySignature(snapshot);
+    const seen = state.watchHistoryLast.has(item.id);
+    if (seen && state.watchHistoryLast.get(item.id) === signature) continue;
+    state.watchHistoryLast.set(item.id, signature);
+    if (!seen && watchHistoryIsIdle(snapshot, item)) {
+      try {
+        state.watchHistoryDisplay.set(item.id, watchHistoryDisplayText(snapshot, item));
+      } catch (_) {
+        state.watchHistoryDisplay.set(item.id, "");
+      }
+      continue;
+    }
+    rawChanged.add(item.id);
+    if (item.valueKind === "result_data") resultChanged = true;
+  }
+  if (!rawChanged.size) return;
+
+  const logIds = new Set(rawChanged);
+  if (resultChanged) {
+    for (const item of state.watchItems) {
+      if (item.valueKind === "result_data") logIds.add(item.id);
+    }
+  }
+
+  for (const item of state.watchItems) {
+    if (!logIds.has(item.id)) continue;
+    const snapshot = state.watchValues[item.id];
+    let display;
+    try {
+      display = watchHistoryDisplayText(snapshot, item);
+    } catch (_) {
+      display = snapshot && snapshot.valid !== false ? String(snapshot.value) : "";
+    }
+    if (!rawChanged.has(item.id) && state.watchHistoryDisplay.get(item.id) === display) continue;
+    state.watchHistoryDisplay.set(item.id, display);
+    state.watchHistory.push({
+      id: item.id,
+      wall,
+      t,
+      n,
+      group: item.group || "",
+      label: item.label || item.id,
+      address: formatWatchAddress(item),
+      raw: watchHistoryRaw(snapshot, item),
+      display,
+    });
+  }
+  const overflow = state.watchHistory.length - state.watchHistoryMax;
+  if (overflow > 0) state.watchHistory.splice(0, overflow);
 }
 
 function bitValueFromSnapshot(snapshot) {
@@ -6047,6 +6167,46 @@ function exportTimingImage() {
   });
 }
 
+function watchHistoryExportRow(row, itemsById) {
+  const item = itemsById.get(row.id);
+  return [
+    row.wall,
+    row.t,
+    row.n,
+    item?.group || row.group,
+    item?.label || row.label,
+    item ? formatWatchAddress(item) : row.address,
+    row.raw,
+    row.display,
+  ];
+}
+
+function exportWatchCsv() {
+  if (!state.watchHistory.length) {
+    showToast(i18n("toast.noWatchHistory"));
+    return;
+  }
+  const itemsById = new Map(state.watchItems.map((item) => [item.id, item]));
+  const header = [
+    i18n("export.csvHeaderTime"),
+    i18n("timing.csvTime"),
+    i18n("watch.csvPoll"),
+    i18n("watch.csvArea"),
+    i18n("watch.csvSignal"),
+    i18n("watch.csvAddress"),
+    i18n("watch.csvRaw"),
+    i18n("watch.csvDisplay"),
+  ];
+  const rows = state.watchHistory.map((row) => watchHistoryExportRow(row, itemsById));
+  const content = [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
+  const blob = new Blob(["\uFEFF", content], { type: "text/csv;charset=utf-8" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `vtv-watch-${fileTimestamp(new Date())}.csv`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
 function exportTimingCsv() {
   if (!state.timingSamples.length) {
     showToast(i18n("toast.noWaveform"));
@@ -6622,7 +6782,7 @@ function refreshUiForLocale() {
     setWatchStatus(
       state.watchRunning
         ? i18n("watch.statusRunning")
-        : i18n("watch.statusStopped"),
+        : watchStoppedStatusText(),
       state.watchRunning ? "running" : "",
     );
   }

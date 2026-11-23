@@ -58,8 +58,8 @@ def test_index_is_served() -> None:
     response = client.get("/")
     assert response.status_code == 200
     assert "VTV Network Sequencer" in response.text
-    assert "/i18n.js?v=20261109-i18n1" in response.text
-    assert "/app.js?v=20261109-i18n1" in response.text
+    assert "/i18n.js?v=20261109-tours5" in response.text
+    assert "/app.js?v=20261124-watchcsv1" in response.text
     assert 'id="locale-select"' in response.text
     assert 'data-control="note"' in response.text
     assert 'data-control="variable"' in response.text
@@ -75,6 +75,7 @@ def test_index_is_served() -> None:
     assert 'id="log-filter"' in response.text
     assert 'id="watch-search"' in response.text
     assert 'id="timing-export-csv"' in response.text
+    assert 'id="watch-export-csv"' in response.text
     assert 'id="app-version"' in response.text
     assert 'id="help-dialog"' in response.text
     assert 'id="undo-toast"' in response.text

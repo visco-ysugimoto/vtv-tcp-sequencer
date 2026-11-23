@@ -167,6 +167,8 @@
               <span id="watch-status" class="watch-status" data-i18n="watch.statusStopped">停止中</span>
               <div class="watch-toolbar-actions">
                 <button id="refresh-map-button" class="icon-button" title="接続設定から一覧を再生成" aria-label="監視一覧を再読込" data-i18n="watch.reload" data-i18n-title="watch.reloadTitle" data-i18n-aria-label="watch.reloadAria">再読込</button>
+                <button id="watch-clear-button" class="icon-button" type="button" title="記録した時系列を消去" aria-label="記録した時系列を消去" data-i18n="watch.clear" data-i18n-title="watch.clearTitle" data-i18n-aria-label="watch.clearAria">消去</button>
+                <button id="watch-export-csv" class="icon-button" type="button" title="変化した信号を、領域・時刻・値の時系列CSVで保存" aria-label="監視の時系列をCSVで保存" data-i18n-title="watch.exportCsvTitle" data-i18n-aria-label="watch.exportCsvAria">CSV</button>
                 <button id="start-watch-button" class="icon-button" aria-label="監視を開始" data-i18n="common.start" data-i18n-aria-label="watch.startAria">開始</button>
                 <button id="stop-watch-button" class="icon-button" disabled aria-label="監視を停止" data-i18n="common.stop" data-i18n-aria-label="watch.stopAria">停止</button>
               </div>
@@ -669,6 +671,6 @@
   <script src="/vendor/driver.js/driver.js.iife.js"></script>
   <script src="/i18n.js?v=20261109-tours5"></script>
   <script src="/tours.js?v=20261109-firstrun2"></script>
-  <script src="/app.js?v=20261109-localio1" defer></script>
+  <script src="/app.js?v=20261124-watchcsv1" defer></script>
 </body>
 </html>
